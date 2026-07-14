@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "默认权限：允许所有核心命令调用",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:event:default",
+    "core:webview:default",
+    "core:app:default",
+    "dialog:default",
+    "shell:allow-open",
+    "shell:default"
+  ]
+}

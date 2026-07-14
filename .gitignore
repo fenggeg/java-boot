@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+node_modules_pnpm_old/
+pnpm-lock.yaml.bak
+
+# Build output
+dist/
+src-tauri/target/
+
+# Tauri
+src-tauri/gen/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+
+# Temp
+_tmp_*
+*.timestamp-*
+
+# Env
+.env
+.env.local
+
+.workbuddy/
+
+
