@@ -579,6 +579,9 @@ body {
 
 .log-line {
   white-space: pre;
+  /* 固定行高与 LogViewer 的 LINE_HEIGHT 常量一致，保证虚拟滚动定位精确 */
+  line-height: 19px;
+  height: 19px;
   position: relative;
   z-index: 2;
 }

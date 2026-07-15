@@ -22,6 +22,24 @@ interface Props {
   onConfigService: (service: Service) => void;
 }
 
+// 提取到模块顶层：避免每次 ServiceList 渲染时创建新组件类型导致重挂载（丢失内部状态）
+function ServiceRow({
+  service,
+  onConfig,
+}: {
+  service: Service;
+  onConfig: (service: Service) => void;
+}) {
+  const selectedServiceId = useStore((s) => s.selectedServiceId);
+  return (
+    <ServiceCard
+      service={service}
+      active={selectedServiceId === service.id}
+      onConfig={onConfig}
+    />
+  );
+}
+
 export default function ServiceList({ onAddProject, onAddService, onConfigService }: Props) {
   const projects = useStore((s) => s.projects);
   const services = useStore((s) => s.services);
@@ -162,23 +180,12 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
         </div>
         {!isCollapsed &&
           groupServices.map((s) => (
-            <ServiceRow key={s.id} service={s} />
+            <ServiceRow key={s.id} service={s} onConfig={onConfigService} />
           ))}
         {!isCollapsed && groupServices.length === 0 && (
           <div className="ungrouped-empty">// 无服务（点击项目头部可重新扫描）</div>
         )}
       </div>
-    );
-  };
-
-  const ServiceRow = ({ service }: { service: Service }) => {
-    const selectedServiceId = useStore((s) => s.selectedServiceId);
-    return (
-      <ServiceCard
-        service={service}
-        active={selectedServiceId === service.id}
-        onConfig={onConfigService}
-      />
     );
   };
 
@@ -234,7 +241,7 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
                 </div>
                 {!collapsed["__ungrouped__"] &&
                   ungroupedServices.map((s) => (
-                    <ServiceRow key={s.id} service={s} />
+                    <ServiceRow key={s.id} service={s} onConfig={onConfigService} />
                   ))}
               </div>
             )}

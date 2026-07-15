@@ -37,8 +37,6 @@ interface Store {
   removeService: (serviceId: string) => void;
 }
 
-const MAX_LOG_LINES = 10000;
-
 export const useStore = create<Store>((set, get) => ({
   projects: [],
   services: [],
@@ -129,18 +127,17 @@ export const useStore = create<Store>((set, get) => ({
         hasUnread: false,
       };
       const lines = [...existing.lines, log];
-      // 超限裁剪
+      // 超限裁剪：使用配置的 log_buffer_lines，配置缺失时回退 10000
+      const maxLines = state.config.log_buffer_lines || 10000;
       const trimmed =
-        lines.length > MAX_LOG_LINES
-          ? lines.slice(lines.length - MAX_LOG_LINES)
-          : lines;
+        lines.length > maxLines ? lines.slice(lines.length - maxLines) : lines;
       const isSelected = state.selectedServiceId === log.service_id;
       return {
         logs: {
           ...state.logs,
           [log.service_id]: {
             lines: trimmed,
-            hasUnread: isSelected ? false : true,
+            hasUnread: !isSelected,
           },
         },
       };

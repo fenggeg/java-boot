@@ -19,6 +19,10 @@ export interface Service {
   auto_restart: boolean;
   maven_opts: string | null;
   profiles: string | null;
+  /** 主类全限定名（首次启动成功后由后端自动写入） */
+  main_class: string | null;
+  /** 开发快速启动模式（JVM 优化、关 devtools 重启等） */
+  dev_mode: boolean;
   created_at: string;
 }
 
