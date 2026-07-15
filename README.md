@@ -137,4 +137,4 @@ A：当前只测过 Windows。macOS / Linux 上 Job Object、`taskkill` 路径�
 
 ## 许可
 
-Private / Internal（如需开源另行补 LICENSE）。
+本项目基于 [MIT License](./LICENSE) 开源。
