@@ -40,6 +40,8 @@ export default function LogViewer({ serviceId }: Props) {
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(600);
   const containerRef = useRef<HTMLDivElement>(null);
+  // 切换服务时标记需要跳到底部（内容渲染后再执行真正滚动）
+  const pendingJumpBottom = useRef(false);
 
   const allLines = logs?.lines ?? [];
   const filtered = useMemo<LogLine[]>(() => {
@@ -71,22 +73,31 @@ export default function LogViewer({ serviceId }: Props) {
     return () => ro.disconnect();
   }, []);
 
-  // 自动滚动到底部
+  // 自动滚动到底部 / 切换服务后跳转到底部
   useEffect(() => {
-    if (autoScroll && containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
-      setScrollTop(containerRef.current.scrollTop);
+    const el = containerRef.current;
+    if (!el) return;
+    if (pendingJumpBottom.current) {
+      // 切换服务：新内容可能还没渲染完，用 rAF 等下一帧再滚动
+      requestAnimationFrame(() => {
+        if (containerRef.current) {
+          containerRef.current.scrollTop = containerRef.current.scrollHeight;
+          setScrollTop(containerRef.current.scrollTop);
+        }
+        pendingJumpBottom.current = false;
+      });
+    } else if (autoScroll) {
+      el.scrollTop = el.scrollHeight;
+      setScrollTop(el.scrollTop);
     }
-  }, [filtered.length, autoScroll]);
+  }, [filtered.length, autoScroll, serviceId]);
 
-  // 切换服务时重置
+  // 切换服务时重置状态并标记需要跳到底部
   useEffect(() => {
     setAutoScroll(true);
     setLevel("all");
     setSearch("");
-    if (containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
-    }
+    pendingJumpBottom.current = true;
   }, [serviceId]);
 
   if (!serviceId) {
