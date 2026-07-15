@@ -23,7 +23,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 tokio = { version = "1", features = ["full"] }
 notify = "7"
 sysinfo = "0.32"
-quick-xml = { version = "0.37", features = ["serialize"] }
+quick-xml = "0.37"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 dirs = "5"
@@ -33,6 +33,7 @@ log = "0.4"
 env_logger = "0.11"
 thiserror = "2"
 open = "5"
+futures = { version = "0.3", default-features = false, features = ["std"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
@@ -48,3 +49,22 @@ windows = { version = "0.58", features = [
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+
+# ── 编译优化 ──
+# dev：开发时主 crate 内部保持 opt-level 0 以保证快多次重编，
+#      第三方依赖开 opt-level 1，避免 parking_lot / rusqlite / tokio 运行时卡。
+[profile.dev]
+opt-level = 0
+incremental = true
+debug = 1  # 只留行号，不需完整 debuginfo
+
+[profile.dev.package."*"]
+opt-level = 1
+
+# release：体积 + 启动速度优先
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
