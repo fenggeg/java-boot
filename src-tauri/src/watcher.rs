@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::Mutex;
@@ -13,8 +13,11 @@ use crate::process;
 const IGNORE_DIRS: &[&str] = &["target", ".idea", "node_modules", ".git", ".vscode"];
 const IGNORE_EXTS: &[&str] = &["class"];
 
+/// 每个服务的防抖 worker：单线程消费事件，避免每次事件都 spawn 新线程
 struct WatchState {
     _watcher: RecommendedWatcher,
+    /// drop 时关闭 channel，worker 线程随之退出
+    _disarm: Arc<Mutex<()>>,
 }
 
 pub struct WatchManager {
@@ -32,7 +35,7 @@ impl WatchManager {
     pub fn watch(&self, app: AppHandle, service: Service) -> crate::error::AppResult<()> {
         let sid = service.id.clone();
         let sid_for_map = sid.clone();
-        // 已存在则先移除
+        // 已存在则先移除（会 drop 旧 watcher 与 disarm，旧 worker 线程退出）
         self.unwatch(&sid);
 
         let cfg = crate::db::load_config().unwrap_or_default();
@@ -45,18 +48,43 @@ impl WatchManager {
             )));
         }
 
+        // 每服务一个 (oneshot 风格的) 信号 channel：事件只做 try_send，worker 做防抖
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let disarm = Arc::new(Mutex::new(()));
+
+        // 启动防抖 worker（单线程）
+        {
+            let sid_worker = sid.clone();
+            let app_worker = app.clone();
+            let disarm_worker = disarm.clone();
+            std::thread::spawn(move || {
+                // 持有 disarm 的引用，确保 unwatch 时通过 drop watcher 关闭 channel
+                let _guard = disarm_worker;
+                let debounce_dur = Duration::from_secs(debounce);
+                // 阻塞等待首个事件
+                while rx.recv().is_ok() {
+                    // 收到事件后进入防抖循环：直到 debounce 时间内无新事件才触发
+                    loop {
+                        match rx.recv_timeout(debounce_dur) {
+                            Ok(_) => continue, // 又有新事件，重置计时
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                        }
+                    }
+                    trigger_restart(&app_worker, &sid_worker);
+                }
+            });
+        }
+
+        let tx_for_cb = tx.clone();
         let mut watcher = RecommendedWatcher::new(
             move |res: Result<notify::Event, notify::Error>| {
                 if let Ok(event) = res {
                     if !is_relevant_event(&event) {
                         return;
                     }
-                    let sid_clone = sid.clone();
-                    let app_clone = app.clone();
-                    // 在独立线程处理防抖，避免阻塞 watcher
-                    std::thread::spawn(move || {
-                        handle_debounced(&app_clone, &sid_clone, debounce);
-                    });
+                    // 只发信号，不 spawn 线程；channel 满或已关闭则忽略
+                    let _ = tx_for_cb.send(());
                 }
             },
             Config::default(),
@@ -67,9 +95,19 @@ impl WatchManager {
             .watch(&src_main, RecursiveMode::Recursive)
             .map_err(|e| crate::error::AppError::Other(format!("监听失败: {}", e)))?;
 
-        self.watchers
-            .lock()
-            .insert(sid_for_map, WatchState { _watcher: watcher });
+        // 保留 tx 以保活 channel（worker 才不会因 recv 返回 Disconnected 提前退出）
+        self.watchers.lock().insert(
+            sid_for_map,
+            WatchState {
+                _watcher: watcher,
+                _disarm: disarm,
+            },
+        );
+        // 注意：tx 在此函数末尾 drop，但 worker 仍持有 rx；
+        // 我们需要让 channel 在 watcher 存活期间保持 open。
+        // watcher 回调里持有 tx_for_cb（tx 的克隆），所以 channel 保持 open，
+        // 直到 watcher 被 drop（unwatch 时）。worker 在 channel 关闭后退出。
+        let _ = tx;
         Ok(())
     }
 
@@ -127,54 +165,6 @@ fn is_relevant_event(event: &notify::Event) -> bool {
         }
         _ => false,
     }
-}
-
-use std::sync::Mutex as StdMutex;
-
-static DEBOUNCE_TIMERS: once_cell::sync::Lazy<StdMutex<HashMap<String, Arc<Mutex<Option<Instant>>>>>> =
-    once_cell::sync::Lazy::new(|| StdMutex::new(HashMap::new()));
-
-/// 防抖处理：debounce 秒内无新事件则触发重启
-fn handle_debounced(app: &AppHandle, service_id: &str, debounce: u64) {
-    let timer = {
-        let mut timers = DEBOUNCE_TIMERS.lock().unwrap();
-        timers
-            .entry(service_id.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(None)))
-            .clone()
-    };
-
-    {
-        let mut t = timer.lock();
-        *t = Some(Instant::now());
-    }
-
-    let sid = service_id.to_string();
-    let app_clone = app.clone();
-    let timer_clone = timer.clone();
-    std::thread::spawn(move || {
-        let debounce_dur = Duration::from_secs(debounce);
-        loop {
-            std::thread::sleep(Duration::from_millis(300));
-            let should_fire = {
-                let t = timer_clone.lock();
-                if let Some(start) = *t {
-                    start.elapsed() >= debounce_dur
-                } else {
-                    false
-                }
-            };
-            if should_fire {
-                // 清除 timer
-                {
-                    let mut t = timer_clone.lock();
-                    *t = None;
-                }
-                trigger_restart(&app_clone, &sid);
-                break;
-            }
-        }
-    });
 }
 
 fn trigger_restart(app: &AppHandle, service_id: &str) {

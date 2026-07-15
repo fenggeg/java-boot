@@ -1,11 +1,10 @@
-"""Generate JavaBoot Launcher icons — crisp at every size.
+"""Generate JavaBoot Launcher icons — pixel-perfect at every size.
 
-Strategy:
-- A bold, filled emblem (no thin strokes) so it reads at 16px.
-- Small sizes (<=64) are drawn NATIVELY at target pixel size for sharpness.
-- Large sizes are rendered from a 1024 source.
+For small sizes (<=48, the taskbar/titlebar range), the emblem is drawn
+with INTEGER pixel coordinates directly at the target size — no scaling,
+no sub-pixel anti-aliasing blur. Larger sizes use the 32-unit viewBox.
 """
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 import os
 
 # palette
@@ -15,46 +14,56 @@ LIME = (163, 230, 53, 255)
 LIME_DIM = (132, 204, 22, 255)
 
 
-def draw_emblem(d, sz, scale):
-    """Draw the emblem on draw object `d` at canvas size `sz`.
-    scale = sz / 32  (design viewBox is 32x32)
-    Use bold filled shapes only — no thin strokes."""
+def draw_emblem_small(d, sz):
+    """Pixel-perfect emblem for small sizes. All coordinates are integers."""
+    # bracket: left bar + top bar (bold, 2px for 16, scale up for bigger)
+    t = max(2, sz // 8)          # bracket thickness
+    m = sz // 8                  # margin from edge
+    # left vertical bar
+    d.rectangle([m, m, m + t - 1, sz - 1 - m], fill=LIME_DIM)
+    # top horizontal bar
+    d.rectangle([m, m, sz - 1 - m, m + t - 1], fill=LIME_DIM)
+    # bottom horizontal bar (close the bracket into a "[" shape on left)
+    d.rectangle([m, sz - 1 - m - (t - 1), sz - 1 - m, sz - 1 - m], fill=LIME_DIM)
+
+    # play triangle — bold, centered, integer vertices
+    cx = (m + t + sz - 1 - m) // 2 + t // 2
+    top_y = m + t + max(1, sz // 12)
+    bot_y = sz - 1 - m - t - max(1, sz // 12)
+    mid_y = (top_y + bot_y) // 2
+    left_x = m + t + max(1, sz // 10)
+    right_x = left_x + (bot_y - top_y) // 2
+    d.polygon([(left_x, top_y), (right_x, mid_y), (left_x, bot_y)], fill=LIME)
+
+
+def draw_emblem_large(d, sz):
+    """Scaled emblem for sizes >= 64. viewBox = 32 units."""
+    s = sz / 32.0
+
     def P(x, y):
-        return (x * scale, y * scale)
+        return (x * s, y * s)
 
-    # ── Bold bracket frame: two thick L-shapes (top-left + bottom-right) ──
-    t = 3.2  # frame thickness in viewBox units (bold)
-    # top-left L
-    d.polygon([
-        P(4, 4), P(4 + t, 4), P(4 + t, 4 + 28 - t), P(4 + 28 - t, 4 + 28 - t),
-        P(4 + 28 - t, 4 + 28), P(4, 4 + 28)
-    ], fill=LIME_DIM)
-    # cut inner to leave just the L-frame ring
-    d.polygon([
-        P(4 + t, 4 + t), P(4 + 28 - t, 4 + t), P(4 + 28 - t, 4 + 28 - t),
-        P(4 + t, 4 + 28 - t)
-    ], fill=BG)
-    # re-open the right side so it's a bracket "[" not a full frame
-    d.rectangle([P(4 + 28 - t, 4), P(4 + 28, 4 + 28)], fill=BG)
+    t = 3.2  # bold bracket thickness
+    # left bar
+    d.rectangle([P(4, 4), P(4 + t, 28)], fill=LIME_DIM)
+    # top bar
+    d.rectangle([P(4, 4), P(28, 4 + t)], fill=LIME_DIM)
+    # bottom bar
+    d.rectangle([P(4, 28 - t), P(28, 28)], fill=LIME_DIM)
 
-    # ── Bold play triangle (filled, centered) ──
-    tri = [P(12, 10), P(22, 16), P(12, 22)]
-    d.polygon(tri, fill=LIME)
-
-    # ── Bold baseline rule ──
-    d.rectangle([P(12, 24.5), P(22, 24.5 + 2.4)], fill=LIME)
+    # play triangle
+    d.polygon([P(12, 10), P(22, 16), P(12, 22)], fill=LIME)
 
 
 def make_icon(sz):
-    """Render the icon at exact pixel size `sz` — native, no downscale."""
     img = Image.new("RGBA", (sz, sz), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
 
     # rounded-square dark background
-    radius = int(sz * 0.22)
+    radius = max(1, int(sz * 0.2))
     d.rounded_rectangle([0, 0, sz - 1, sz - 1], radius=radius, fill=BG)
 
-    # subtle center highlight (skip for tiny sizes, keeps them crisp)
+    # subtle center highlight only for larger sizes (keeps small ones crisp)
     if sz >= 64:
         hl = Image.new("RGBA", (sz, sz), (0, 0, 0, 0))
         hd = ImageDraw.Draw(hl)
@@ -74,11 +83,13 @@ def make_icon(sz):
         )
         img.paste(hl, (0, 0), mask)
 
-    # emblem (draw natively at this size)
-    scale = sz / 32.0
-    draw_emblem(d, sz, scale)
+    # emblem
+    if sz <= 48:
+        draw_emblem_small(d, sz)
+    else:
+        draw_emblem_large(d, sz)
 
-    # apply rounded mask to clean edges
+    # clean rounded edges
     final = Image.new("RGBA", (sz, sz), (0, 0, 0, 0))
     mask = Image.new("L", (sz, sz), 0)
     ImageDraw.Draw(mask).rounded_rectangle(
@@ -93,11 +104,8 @@ def main():
     icons_dir = os.path.join(base, "src-tauri", "icons")
     os.makedirs(icons_dir, exist_ok=True)
 
-    # save high-res source (for reference)
-    source = make_icon(1024)
-    source.save(os.path.join(icons_dir, "source.png"))
+    make_icon(1024).save(os.path.join(icons_dir, "source.png"))
 
-    # PNG variants — EACH rendered natively at its target size (no blur)
     sizes = {
         "16x16.png": 16,
         "24x24.png": 24,
@@ -115,18 +123,20 @@ def main():
     for name, sz in sizes.items():
         make_icon(sz).save(os.path.join(icons_dir, name))
 
-    # ICO multi-size — Pillow generates each size from the 256 source
-    ico_source = make_icon(256)
-    ico_source.save(
+    # ICO — render each size natively so all are crisp
+    ico_imgs = [make_icon(s) for s in [16, 24, 32, 48, 64, 128, 256]]
+    # Pillow ICO: save the largest with sizes param, it rescales internally.
+    # To keep our native renders, concatenate manually.
+    ico_imgs[-1].save(
         os.path.join(icons_dir, "icon.ico"),
-        sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+        append_images=ico_imgs[:-1],
+        sizes=[(im.width, im.height) for im in ico_imgs],
     )
 
-    print("icons generated (native render per size):")
+    print("icons generated (pixel-perfect per size):")
     for f in sorted(os.listdir(icons_dir)):
         if f.endswith((".png", ".ico")):
-            p = os.path.join(icons_dir, f)
-            print(f"  {f:30s} {os.path.getsize(p):>8d} bytes")
+            print(f"  {f:30s} {os.path.getsize(os.path.join(icons_dir, f)):>8d} bytes")
 
 
 if __name__ == "__main__":

@@ -26,8 +26,9 @@ pub fn run() {
                     let app_handle = window.app_handle().clone();
                     api.prevent_close();
                     tauri::async_runtime::spawn(async move {
-                        process::get_manager().stop_all(app_handle).await.ok();
-                        std::process::exit(0);
+                        process::get_manager().stop_all(app_handle.clone()).await.ok();
+                        // 用 app.exit 走正常退出流程，确保 Drop/清理执行
+                        app_handle.exit(0);
                     });
                 }
             }
@@ -47,12 +48,14 @@ pub fn run() {
             let handle = app.handle().clone();
             watcher::get_watch_manager().refresh_all(&handle);
 
-            // 启动 CPU/内存占用定时刷新
+            // 启动 CPU/内存占用 + 端口定时刷新（集中执行，避免每服务独立轮询）
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    process::get_manager().refresh_resource_usage(&handle);
+                    let mgr = process::get_manager();
+                    mgr.refresh_resource_usage(&handle);
+                    mgr.refresh_ports(&handle);
                 }
             });
 
