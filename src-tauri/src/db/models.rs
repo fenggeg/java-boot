@@ -27,6 +27,10 @@ pub struct Service {
     pub maven_opts: Option<String>,
     /// Spring profiles，如 "dev"
     pub profiles: Option<String>,
+    /// 主类全限定名（首次启动后自动写入）
+    pub main_class: Option<String>,
+    /// 开发快速启动模式（JVM/Spring 优化参数）
+    pub dev_mode: bool,
     pub created_at: String,
 }
 

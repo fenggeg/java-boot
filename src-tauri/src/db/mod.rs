@@ -1,7 +1,7 @@
 pub mod models;
 pub mod schema;
 
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use chrono::Utc;
 use once_cell::sync::Lazy;
@@ -12,7 +12,7 @@ use crate::error::AppResult;
 
 use models::{AppConfig, Project, Service};
 
-/// 全局数据库连接（Mutex 包裹，Tauri 命令可跨线程访问）
+/// 全局数据库连接（parking_lot Mutex 包裹，跨线程访问且不会中毒）
 static DB: Lazy<Mutex<Option<Connection>>> = Lazy::new(|| Mutex::new(None));
 
 /// 初始化数据库，在 app setup 阶段调用一次
@@ -29,7 +29,7 @@ pub fn init() -> AppResult<()> {
     conn.pragma_update(None, "foreign_keys", "ON")?;
     schema::run_migrations(&conn)?;
 
-    *DB.lock().unwrap() = Some(conn);
+    *DB.lock() = Some(conn);
     Ok(())
 }
 
@@ -37,7 +37,7 @@ fn with_conn<F, R>(f: F) -> AppResult<R>
 where
     F: FnOnce(&Connection) -> AppResult<R>,
 {
-    let guard = DB.lock().unwrap();
+    let guard = DB.lock();
     let conn = guard.as_ref().ok_or_else(|| {
         crate::error::AppError::Other("数据库未初始化".into())
     })?;
@@ -123,16 +123,22 @@ pub fn find_project_by_path(root_path: &str) -> AppResult<Option<Project>> {
 
 pub fn delete_project(id: &str) -> AppResult<()> {
     with_conn(|conn| {
-        // 先删关联服务
-        conn.execute("DELETE FROM services WHERE project_id = ?1", rusqlite::params![id])?;
-        conn.execute("DELETE FROM projects WHERE id = ?1", rusqlite::params![id])?;
+        // 事务保证原子性：先删服务（及其运行 PID），再删项目
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM service_run_pids WHERE service_id IN (SELECT id FROM services WHERE project_id = ?1)",
+            rusqlite::params![id],
+        )?;
+        tx.execute("DELETE FROM services WHERE project_id = ?1", rusqlite::params![id])?;
+        tx.execute("DELETE FROM projects WHERE id = ?1", rusqlite::params![id])?;
+        tx.commit()?;
         Ok(())
     })
 }
 
 // ============================ Service CRUD ============================
 
-const SERVICE_COLS: &str = "id, name, pom_path, working_dir, project_id, auto_restart, maven_opts, profiles, created_at";
+const SERVICE_COLS: &str = "id, name, pom_path, working_dir, project_id, auto_restart, maven_opts, profiles, main_class, dev_mode, created_at";
 
 macro_rules! row_to_service {
     ($row:expr) => {
@@ -145,7 +151,9 @@ macro_rules! row_to_service {
             auto_restart: $row.get::<_, i64>(5)? != 0,
             maven_opts: $row.get(6)?,
             profiles: $row.get(7)?,
-            created_at: $row.get(8)?,
+            main_class: $row.get(8)?,
+            dev_mode: $row.get::<_, i64>(9)? != 0,
+            created_at: $row.get(10)?,
         }
     };
 }
@@ -200,15 +208,19 @@ pub fn insert_service(
         auto_restart: false,
         maven_opts: None,
         profiles: None,
+        main_class: None,
+        dev_mode: false,
         created_at: Utc::now().to_rfc3339(),
     };
     with_conn(|conn| {
         conn.execute(
-            "INSERT INTO services (id, name, pom_path, working_dir, project_id, auto_restart, maven_opts, profiles, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO services (id, name, pom_path, working_dir, project_id, auto_restart, maven_opts, profiles, main_class, dev_mode, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             rusqlite::params![
                 service.id, service.name, service.pom_path, service.working_dir,
                 service.project_id, service.auto_restart as i32,
-                service.maven_opts, service.profiles, service.created_at
+                service.maven_opts, service.profiles,
+                service.main_class, service.dev_mode as i32,
+                service.created_at
             ],
         )?;
         Ok(())
@@ -236,6 +248,8 @@ pub fn update_service(
     auto_restart: Option<bool>,
     maven_opts: Option<Option<&str>>,
     profiles: Option<Option<&str>>,
+    dev_mode: Option<bool>,
+    main_class: Option<Option<&str>>,
 ) -> AppResult<()> {
     with_conn(|conn| {
         if let Some(n) = name {
@@ -262,6 +276,29 @@ pub fn update_service(
                 rusqlite::params![pf, id],
             )?;
         }
+        if let Some(dm) = dev_mode {
+            conn.execute(
+                "UPDATE services SET dev_mode = ?1 WHERE id = ?2",
+                rusqlite::params![dm as i32, id],
+            )?;
+        }
+        if let Some(mc) = main_class {
+            conn.execute(
+                "UPDATE services SET main_class = ?1 WHERE id = ?2",
+                rusqlite::params![mc, id],
+            )?;
+        }
+        Ok(())
+    })
+}
+
+/// 快速写入主类（探测到后内部缓存，失败不阻断启动）
+pub fn set_service_main_class(id: &str, main_class: &str) -> AppResult<()> {
+    with_conn(|conn| {
+        conn.execute(
+            "UPDATE services SET main_class = ?1 WHERE id = ?2",
+            rusqlite::params![main_class, id],
+        )?;
         Ok(())
     })
 }

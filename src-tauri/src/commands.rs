@@ -164,6 +164,8 @@ pub fn update_service(
     auto_restart: Option<bool>,
     maven_opts: Option<Option<String>>,
     profiles: Option<Option<String>>,
+    dev_mode: Option<bool>,
+    main_class: Option<Option<String>>,
 ) -> AppResult<()> {
     db::update_service(
         &id,
@@ -171,6 +173,8 @@ pub fn update_service(
         auto_restart,
         maven_opts.as_ref().map(|o| o.as_deref()),
         profiles.as_ref().map(|o| o.as_deref()),
+        dev_mode,
+        main_class.as_ref().map(|o| o.as_deref()),
     )
 }
 
@@ -199,7 +203,7 @@ pub async fn delete_service(id: String, app: AppHandle) -> AppResult<()> {
 /// 切换自动重启开关
 #[tauri::command]
 pub fn toggle_auto_restart(id: String, enabled: bool, app: AppHandle) -> AppResult<()> {
-    db::update_service(&id, None, Some(enabled), None, None)?;
+    db::update_service(&id, None, Some(enabled), None, None, None, None)?;
     let service = db::get_service(&id)?;
     if enabled {
         let _ = watcher::get_watch_manager().watch(app, service);
@@ -298,16 +302,21 @@ pub fn open_in_browser(port: u16) -> AppResult<()> {
 
 /// 探测系统已安装的 JDK 列表（扫描常见安装位置）
 #[tauri::command]
-pub fn detect_jdks() -> Vec<JdkInfo> {
-    let mut found: Vec<JdkInfo> = vec![];
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+pub async fn detect_jdks() -> Vec<JdkInfo> {
+    use std::collections::HashSet;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut candidates: Vec<String> = vec![];
+
+    let norm = |p: &str| p.to_lowercase().replace('\\', "/");
+    let push = |candidates: &mut Vec<String>, seen: &mut HashSet<String>, p: String| {
+        if seen.insert(norm(&p)) {
+            candidates.push(p);
+        }
+    };
 
     // 1. JAVA_HOME 环境变量
     if let Ok(jh) = std::env::var("JAVA_HOME") {
-        if let Some(info) = probe_jdk(&jh) {
-            seen.insert(jh.to_lowercase().replace('\\', "/"));
-            found.push(info);
-        }
+        push(&mut candidates, &mut seen, jh);
     }
 
     // 2. PATH 中的 java
@@ -315,14 +324,8 @@ pub fn detect_jdks() -> Vec<JdkInfo> {
         for dir in std::env::split_paths(&path) {
             let java_exe = dir.join("java.exe");
             if java_exe.exists() {
-                // java 的父目录是 bin，JAVA_HOME 是 bin 的父目录
                 if let Some(bin_dir) = dir.parent() {
-                    let jh = bin_dir.to_string_lossy().to_string();
-                    if seen.insert(jh.to_lowercase().replace('\\', "/")) {
-                        if let Some(info) = probe_jdk(&jh) {
-                            found.push(info);
-                        }
-                    }
+                    push(&mut candidates, &mut seen, bin_dir.to_string_lossy().to_string());
                 }
             }
         }
@@ -337,36 +340,24 @@ pub fn detect_jdks() -> Vec<JdkInfo> {
         r"C:\Program Files\Amazon Corretto",
         r"C:\Program Files\BellSoft",
     ];
-    // scoop 安装目录
     if let Ok(home) = std::env::var("USERPROFILE") {
         let scoop_apps = format!("{}\\scoop\\apps", home);
-        let mut scoop_dirs = common_dirs.to_vec();
-        scoop_dirs.push(&scoop_apps);
-        for base in &scoop_dirs {
+        let mut scan_bases = common_dirs.to_vec();
+        scan_bases.push(&scoop_apps);
+        for base in &scan_bases {
             if let Ok(entries) = std::fs::read_dir(base) {
                 for entry in entries.flatten() {
                     let p = entry.path();
                     if p.is_dir() {
-                        // 检查是否含 bin/java.exe
                         if p.join("bin").join("java.exe").exists() {
-                            let jh = p.to_string_lossy().to_string();
-                            if seen.insert(jh.to_lowercase().replace('\\', "/")) {
-                                if let Some(info) = probe_jdk(&jh) {
-                                    found.push(info);
-                                }
-                            }
+                            push(&mut candidates, &mut seen, p.to_string_lossy().to_string());
                         }
                         // scoop 下可能再嵌套一层（如 temurin17-jdk/current）
                         if let Ok(sub_entries) = std::fs::read_dir(&p) {
                             for sub in sub_entries.flatten() {
                                 let sp = sub.path();
                                 if sp.join("bin").join("java.exe").exists() {
-                                    let jh = sp.to_string_lossy().to_string();
-                                    if seen.insert(jh.to_lowercase().replace('\\', "/")) {
-                                        if let Some(info) = probe_jdk(&jh) {
-                                            found.push(info);
-                                        }
-                                    }
+                                    push(&mut candidates, &mut seen, sp.to_string_lossy().to_string());
                                 }
                             }
                         }
@@ -380,18 +371,24 @@ pub fn detect_jdks() -> Vec<JdkInfo> {
                 for entry in entries.flatten() {
                     let p = entry.path();
                     if p.is_dir() && p.join("bin").join("java.exe").exists() {
-                        let jh = p.to_string_lossy().to_string();
-                        if seen.insert(jh.to_lowercase().replace('\\', "/")) {
-                            if let Some(info) = probe_jdk(&jh) {
-                                found.push(info);
-                            }
-                        }
+                        push(&mut candidates, &mut seen, p.to_string_lossy().to_string());
                     }
                 }
             }
         }
     }
 
+    // 并行探测各候选 JDK（spawn_blocking + JoinSet，避免阻塞 async runtime）
+    let mut set = tokio::task::JoinSet::new();
+    for c in candidates {
+        set.spawn_blocking(move || probe_jdk(&c));
+    }
+    let mut found = vec![];
+    while let Some(res) = set.join_next().await {
+        if let Ok(Some(info)) = res {
+            found.push(info);
+        }
+    }
     found
 }
 
@@ -458,18 +455,22 @@ pub struct MavenInfo {
 
 /// 探测系统已安装的 Maven 列表
 #[tauri::command]
-pub fn detect_mavens() -> Vec<MavenInfo> {
-    let mut found: Vec<MavenInfo> = vec![];
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+pub async fn detect_mavens() -> Vec<MavenInfo> {
+    use std::collections::HashSet;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut candidates: Vec<String> = vec![];
+
+    let norm = |p: &str| p.to_lowercase().replace('\\', "/");
+    let push = |candidates: &mut Vec<String>, seen: &mut HashSet<String>, p: String| {
+        if seen.insert(norm(&p)) {
+            candidates.push(p);
+        }
+    };
 
     // 1. MAVEN_HOME / M2_HOME 环境变量
     for var in ["MAVEN_HOME", "M2_HOME"] {
         if let Ok(mh) = std::env::var(var) {
-            if let Some(info) = probe_maven(&mh) {
-                if seen.insert(mh.to_lowercase().replace('\\', "/")) {
-                    found.push(info);
-                }
-            }
+            push(&mut candidates, &mut seen, mh);
         }
     }
 
@@ -478,14 +479,8 @@ pub fn detect_mavens() -> Vec<MavenInfo> {
         for dir in std::env::split_paths(&path) {
             let mvn_exe = dir.join("mvn.cmd");
             if mvn_exe.exists() {
-                // mvn.cmd 的父目录是 bin，MAVEN_HOME 是 bin 的父目录
                 if let Some(bin_dir) = dir.parent() {
-                    let mh = bin_dir.to_string_lossy().to_string();
-                    if seen.insert(mh.to_lowercase().replace('\\', "/")) {
-                        if let Some(info) = probe_maven(&mh) {
-                            found.push(info);
-                        }
-                    }
+                    push(&mut candidates, &mut seen, bin_dir.to_string_lossy().to_string());
                 }
             }
         }
@@ -498,22 +493,13 @@ pub fn detect_mavens() -> Vec<MavenInfo> {
             for entry in entries.flatten() {
                 let p = entry.path();
                 if p.join("bin").join("mvn.cmd").exists() {
-                    let mh = p.to_string_lossy().to_string();
-                    if seen.insert(mh.to_lowercase().replace('\\', "/")) {
-                        if let Some(info) = probe_maven(&mh) {
-                            found.push(info);
-                        }
-                    }
+                    push(&mut candidates, &mut seen, p.to_string_lossy().to_string());
                 }
             }
         }
         let scoop_current = format!("{}\\scoop\\apps\\maven\\current", home);
         if std::path::Path::new(&scoop_current).join("bin").join("mvn.cmd").exists() {
-            if seen.insert(scoop_current.to_lowercase().replace('\\', "/")) {
-                if let Some(info) = probe_maven(&scoop_current) {
-                    found.push(info);
-                }
-            }
+            push(&mut candidates, &mut seen, scoop_current);
         }
     }
 
@@ -528,17 +514,23 @@ pub fn detect_mavens() -> Vec<MavenInfo> {
             for entry in entries.flatten() {
                 let p = entry.path();
                 if p.is_dir() && p.join("bin").join("mvn.cmd").exists() {
-                    let mh = p.to_string_lossy().to_string();
-                    if seen.insert(mh.to_lowercase().replace('\\', "/")) {
-                        if let Some(info) = probe_maven(&mh) {
-                            found.push(info);
-                        }
-                    }
+                    push(&mut candidates, &mut seen, p.to_string_lossy().to_string());
                 }
             }
         }
     }
 
+    // 并行探测各候选 Maven（spawn_blocking + JoinSet）
+    let mut set = tokio::task::JoinSet::new();
+    for c in candidates {
+        set.spawn_blocking(move || probe_maven(&c));
+    }
+    let mut found = vec![];
+    while let Some(res) = set.join_next().await {
+        if let Ok(Some(info)) = res {
+            found.push(info);
+        }
+    }
     found
 }
 

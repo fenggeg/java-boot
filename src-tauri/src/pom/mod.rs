@@ -112,8 +112,11 @@ fn scan_recursive(
     visited.insert(pom_path.to_path_buf());
 
     let info = parse_pom(pom_path)?;
-    let is_service = matches!(info.packaging.as_str(), "jar" | "war") || info.packaging == "jar";
     let dir = pom_path.parent().unwrap_or(Path::new(""));
+    // 判定是否为可启动服务：packaging 必须是 jar/war，且模块内存在带 @SpringBootApplication 的主类
+    // 单纯 jar 且不含 SpringBoot 主类的（工具/公共模块）不算服务，避免污染勾选列表
+    let is_service = matches!(info.packaging.as_str(), "jar" | "war")
+        && has_spring_boot_application(dir);
     let relative = if rel_prefix.is_empty() {
         dir.strip_prefix(base_dir).unwrap_or(dir).to_string_lossy().to_string()
     } else {
@@ -161,6 +164,53 @@ fn scan_recursive(
     // 返回扁平结构（树结构在前端按路径重建，此处平铺便于勾选）
     // 但保留 children 以备层级展示
     Ok(vec![module])
+}
+
+/// 判定模块目录内是否存在带 `@SpringBootApplication` 注解的类。
+///
+/// 只扫 `src/main/java`（IDEA 判定 SpringBoot 模块的关键位置），跳过 target/.git/node_modules，
+/// 每个 .java 只读前 4KB（注解通常出现在类声明附近）。命中即返回 true，短路。
+fn has_spring_boot_application(module_dir: &Path) -> bool {
+    let src_java = module_dir.join("src").join("main").join("java");
+    if !src_java.is_dir() {
+        return false;
+    }
+    scan_annotation(&src_java)
+}
+
+fn scan_annotation(dir: &Path) -> bool {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if matches!(name, "target" | ".git" | "node_modules" | ".idea") {
+                continue;
+            }
+            if scan_annotation(&path) {
+                return true;
+            }
+        } else if path.extension().and_then(|e| e.to_str()) == Some("java") {
+            if let Ok(head) = read_head(&path, 4096) {
+                if head.contains("@SpringBootApplication") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn read_head(path: &Path, n: usize) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let mut buf = vec![0u8; n];
+    let read = f.read(&mut buf)?;
+    buf.truncate(read);
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 /// 将扫描树展平为可勾选列表

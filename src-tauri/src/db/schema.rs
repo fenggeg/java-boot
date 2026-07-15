@@ -37,25 +37,34 @@ pub const MIGRATIONS: &[&str] = &[
     "#,
 ];
 
+/// 通用工具：安全 ADD COLUMN（幂等）
+fn add_column(conn: &Connection, table: &str, col: &str, ty: &str) -> rusqlite::Result<()> {
+    let exists: i64 = conn.query_row(
+        &format!("SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name = ?1", table),
+        rusqlite::params![col],
+        |r| r.get(0),
+    )?;
+    if exists == 0 {
+        conn.execute_batch(&format!("ALTER TABLE {} ADD COLUMN {} {}", table, col, ty))?;
+    }
+    Ok(())
+}
+
 /// 增量迁移：projects 加 JDK/Maven 列，services 保留 maven_opts/profiles
 fn migrate_v2(conn: &Connection) -> rusqlite::Result<()> {
-    let add_column = |table: &str, col: &str, ty: &str| -> rusqlite::Result<()> {
-        let exists: i64 = conn.query_row(
-            &format!("SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name = ?1", table),
-            rusqlite::params![col],
-            |r| r.get(0),
-        )?;
-        if exists == 0 {
-            conn.execute_batch(&format!("ALTER TABLE {} ADD COLUMN {} {}", table, col, ty))?;
-        }
-        Ok(())
-    };
     // projects: 加 java_home / maven_home（项目级）
-    add_column("projects", "java_home", "TEXT")?;
-    add_column("projects", "maven_home", "TEXT")?;
+    add_column(conn, "projects", "java_home", "TEXT")?;
+    add_column(conn, "projects", "maven_home", "TEXT")?;
     // services: 加 maven_opts / profiles（服务级）
-    add_column("services", "maven_opts", "TEXT")?;
-    add_column("services", "profiles", "TEXT")?;
+    add_column(conn, "services", "maven_opts", "TEXT")?;
+    add_column(conn, "services", "profiles", "TEXT")?;
+    Ok(())
+}
+
+/// v3：services 增加 main_class（缓存主类）与 dev_mode（快速启动开关）
+fn migrate_v3(conn: &Connection) -> rusqlite::Result<()> {
+    add_column(conn, "services", "main_class", "TEXT")?;
+    add_column(conn, "services", "dev_mode", "INTEGER NOT NULL DEFAULT 0")?;
     Ok(())
 }
 
@@ -64,6 +73,7 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute_batch(sql)?;
     }
     migrate_v2(conn)?;
+    migrate_v3(conn)?;
     // seed default config
     let defaults = [
         ("port_refresh_interval_secs", "2"),
