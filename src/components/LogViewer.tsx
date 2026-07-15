@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
-import { Tooltip, Input, Segmented } from "antd";
-import { Clear, Search, ArrowDown, Terminal } from "./Icons";
-import { useStore } from "../store";
-import type { LogLine } from "../types";
+import {useCallback, useEffect, useMemo, useRef, useState} from "react";
+import {Input, Segmented, Tooltip} from "antd";
+import {ArrowDown, Clear, Search, Terminal} from "./Icons";
+import {useStore} from "../store";
+import type {LogLine} from "../types";
 
 interface Props {
   serviceId: string | null;
@@ -104,10 +104,10 @@ export default function LogViewer({ serviceId }: Props) {
     return (
       <div className="log-empty">
         <div style={{ textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
-          <span style={{ color: "#a3e635", display: "inline-flex" }}>
+          <span style={{ color: "var(--text-3)", display: "inline-flex" }}>
             <Terminal size={36} />
           </span>
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, letterSpacing: "0.08em", color: "#626771", textTransform: "uppercase" }}>
+          <div style={{ fontSize: 13, color: "var(--text-3)" }}>
             选择左侧服务查看日志
           </div>
         </div>
@@ -134,6 +134,7 @@ export default function LogViewer({ serviceId }: Props) {
           onChange={(v) => setLevel(v as LogLevel)}
           options={[
             { label: "全部", value: "all" },
+            { label: "INFO", value: "info" },
             { label: "WARN", value: "warn" },
             { label: "ERROR", value: "error" },
           ]}
@@ -141,7 +142,7 @@ export default function LogViewer({ serviceId }: Props) {
         <Input
           size="small"
           allowClear
-          prefix={<Search size={13} style={{ color: "#626771" }} />}
+          prefix={<Search size={13} style={{ color: "var(--text-3)" }} />}
           placeholder="搜索日志..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -187,18 +188,16 @@ export default function LogViewer({ serviceId }: Props) {
         {renderLines.length === 0 ? (
           <div
             style={{
-              color: "#4d525c",
+              color: "var(--text-4)",
               textAlign: "center",
               padding: 40,
-              fontFamily: "var(--font-mono)",
-              fontSize: 11,
-              letterSpacing: "0.08em",
-              fontStyle: "italic",
+              fontFamily: "var(--font-sans)",
+              fontSize: 13,
               position: "relative",
               zIndex: 2,
             }}
           >
-            // 暂无日志
+            暂无日志
           </div>
         ) : (
           <div style={{ height: totalHeight, position: "relative" }}>

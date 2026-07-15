@@ -1,7 +1,7 @@
-import { useState } from "react";
-import { Modal, Input, Form, App } from "antd";
-import { Plus } from "./Icons";
-import { open } from "@tauri-apps/plugin-dialog";
+import {useState} from "react";
+import {App, Form, Input, Modal} from "antd";
+import {Plus} from "./Icons";
+import {open} from "@tauri-apps/plugin-dialog";
 import * as api from "../api";
 
 interface Props {
@@ -58,7 +58,7 @@ export default function AddServiceModal({
     <Modal
       title={
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <Plus size={15} style={{ color: "#a3e635" }} />
+          <Plus size={15} style={{ color: "#0071e3" }} />
           添加服务
         </span>
       }

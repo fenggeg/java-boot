@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
-import { Modal, Form, Input, AutoComplete, App, Typography } from "antd";
-import { FolderOpen } from "./Icons";
-import { open } from "@tauri-apps/plugin-dialog";
+import {useEffect, useState} from "react";
+import {App, AutoComplete, Form, Input, Modal, Typography} from "antd";
+import {FolderOpen} from "./Icons";
+import {open} from "@tauri-apps/plugin-dialog";
 import * as api from "../api";
-import type { Project, JdkInfo, MavenInfo } from "../types";
+import type {JdkInfo, MavenInfo, Project} from "../types";
 
 const { Text } = Typography;
 
@@ -98,7 +98,7 @@ export default function ProjectConfigModal({
     <Modal
       title={
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <FolderOpen size={15} style={{ color: "#a3e635" }} />
+          <FolderOpen size={15} style={{ color: "#0071e3" }} />
           项目环境配置 — {project?.name}
         </span>
       }
@@ -142,7 +142,7 @@ export default function ProjectConfigModal({
               suffix={
                 <FolderOpen
                   onClick={handlePickJdk}
-                  style={{ cursor: "pointer", color: "#a3e635" }}
+                  style={{ cursor: "pointer", color: "#0071e3" }}
                 />
               }
             />
@@ -176,7 +176,7 @@ export default function ProjectConfigModal({
               suffix={
                 <FolderOpen
                   onClick={handlePickMaven}
-                  style={{ cursor: "pointer", color: "#a3e635" }}
+                  style={{ cursor: "pointer", color: "#0071e3" }}
                 />
               }
             />

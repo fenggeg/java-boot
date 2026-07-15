@@ -1,20 +1,11 @@
-import { useState } from "react";
-import { Button, Tooltip, Popconfirm, Empty, App } from "antd";
-import {
-  FolderOpen,
-  Plus,
-  GitPull,
-  GitPullRestart,
-  Trash,
-  Settings,
-  CaretDown,
-  CaretRight,
-} from "./Icons";
-import { useStore } from "../store";
+import {useState} from "react";
+import {App, Button, Empty, Popconfirm, Tooltip} from "antd";
+import {CaretDown, CaretRight, FolderOpen, GitPull, GitPullRestart, Plus, Settings, Trash,} from "./Icons";
+import {useStore} from "../store";
 import * as api from "../api";
 import ServiceCard from "./ServiceCard";
 import ProjectConfigModal from "./ProjectConfigModal";
-import type { Project, Service } from "../types";
+import type {Project, Service} from "../types";
 
 interface Props {
   onAddProject: () => void;
@@ -48,13 +39,28 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
   const removeProject = useStore((s) => s.removeProject);
   const refreshServices = useStore((s) => s.refreshServices);
   const { message } = App.useApp();
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
+    try {
+      const saved = localStorage.getItem("jb_collapsed_groups");
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
   const [configProject, setConfigProject] = useState<Project | null>(null);
 
   const ungroupedServices = services.filter((s) => !s.project_id);
 
   const toggleCollapse = (id: string) => {
-    setCollapsed((prev) => ({ ...prev, [id]: !prev[id] }));
+    setCollapsed((prev) => {
+      const next = { ...prev, [id]: !prev[id] };
+      try {
+        localStorage.setItem("jb_collapsed_groups", JSON.stringify(next));
+      } catch {
+        /* ignore quota / serialization errors */
+      }
+      return next;
+    });
   };
 
   const handlePull = async (project: Project, restart: boolean) => {
@@ -231,7 +237,7 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
                       <CaretDown size={10} />
                     )}
                   </span>
-                  <span className="group-icon" style={{ color: "#626771" }}>
+                  <span className="group-icon" style={{ color: "#86868b" }}>
                     <FolderOpen size={14} />
                   </span>
                   <span className="group-name">未分组</span>

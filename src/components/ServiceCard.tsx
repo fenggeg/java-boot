@@ -1,17 +1,9 @@
-import { Tooltip, Dropdown, App, Switch } from "antd";
-import {
-  Play,
-  Stop,
-  Restart,
-  Code,
-  Settings,
-  More,
-  Warning,
-} from "./Icons";
-import { useStore } from "../store";
-import { STATUS_META } from "../types";
+import {App, Dropdown, Switch, Tooltip} from "antd";
+import {Code, More, Play, Restart, Settings, Stop, Warning,} from "./Icons";
+import {useStore} from "../store";
+import type {Service} from "../types";
+import {STATUS_META} from "../types";
 import * as api from "../api";
-import type { Service } from "../types";
 
 interface Props {
   service: Service;
@@ -172,16 +164,17 @@ export default function ServiceCard({ service, active, onConfig }: Props) {
             return (
               <div className="service-card-ports">
                 {ports.map((p) => (
-                  <span
-                    key={p}
-                    className={`port-tag ${runtime.port_conflict ? "conflict" : ""}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handlePortClick(p);
-                    }}
-                  >
-                    :{p}
-                  </span>
+                  <Tooltip key={p} title={`在浏览器中打开 :${p}`}>
+                    <span
+                      className={`port-tag ${runtime.port_conflict ? "conflict" : ""}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handlePortClick(p);
+                      }}
+                    >
+                      :{p}
+                    </span>
+                  </Tooltip>
                 ))}
               </div>
             );
@@ -190,7 +183,7 @@ export default function ServiceCard({ service, active, onConfig }: Props) {
             <Tooltip
               title={`端口冲突: ${runtime.conflict_with.join(", ")}`}
             >
-              <span style={{ display: "inline-flex", color: "#f87171" }}>
+              <span style={{ display: "inline-flex", color: "#ff3b30" }}>
                 <Warning size={12} />
               </span>
             </Tooltip>
@@ -212,7 +205,7 @@ export default function ServiceCard({ service, active, onConfig }: Props) {
               className="icon-btn sm"
               onClick={handleStart}
               aria-label="启动"
-              style={{ color: "#a3e635" }}
+              style={{ color: "#34c759" }}
             >
               <Play size={13} />
             </button>
@@ -223,7 +216,7 @@ export default function ServiceCard({ service, active, onConfig }: Props) {
               className="icon-btn sm danger"
               onClick={handleStop}
               aria-label="停止"
-              style={{ color: "#f87171" }}
+              style={{ color: "#ff3b30" }}
             >
               <Stop size={12} />
             </button>
@@ -234,7 +227,7 @@ export default function ServiceCard({ service, active, onConfig }: Props) {
             className="icon-btn sm"
             onClick={handleRestart}
             aria-label="重启"
-            style={{ color: "#22d3ee" }}
+            style={{ color: "#0071e3" }}
           >
             <Restart size={13} />
           </button>

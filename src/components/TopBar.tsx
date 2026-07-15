@@ -1,8 +1,8 @@
-import { Button, Tooltip, Popconfirm, App } from "antd";
-import { Logo, Stop, Settings, GitPull } from "./Icons";
-import { useStore } from "../store";
+import {App, Button, Popconfirm, Tooltip} from "antd";
+import {GitPull, Logo, Settings, Stop} from "./Icons";
+import {useStore} from "../store";
 import * as api from "../api";
-import { STATUS_META } from "../types";
+import {STATUS_META} from "../types";
 
 interface Props {
   onOpenSettings: () => void;
@@ -36,8 +36,8 @@ export default function TopBar({ onOpenSettings }: Props) {
   return (
     <div className="topbar">
       <div className="topbar-brand">
-        <span className="brand-mark" style={{ color: "#a3e635" }}>
-          <Logo size={24} />
+        <span className="brand-mark">
+          <Logo size={28} />
         </span>
         <div className="brand-word">
           <span className="brand-name">
@@ -53,7 +53,7 @@ export default function TopBar({ onOpenSettings }: Props) {
             className="stat-dot"
             style={{ background: STATUS_META.running.dot, color: STATUS_META.running.dot }}
           />
-          <span className="stat-label">run</span>
+          <span className="stat-label">运行</span>
           <span className="stat-val">{running}</span>
           <span className="stat-label">/ {total}</span>
         </span>
@@ -63,8 +63,8 @@ export default function TopBar({ onOpenSettings }: Props) {
               className="stat-dot"
               style={{ background: STATUS_META.error.dot, color: STATUS_META.error.dot }}
             />
-            <span className="stat-label">err</span>
-            <span className="stat-val" style={{ color: "#f87171" }}>{errorCount}</span>
+            <span className="stat-label">异常</span>
+            <span className="stat-val" style={{ color: "#ff3b30" }}>{errorCount}</span>
           </span>
         )}
         {!gitAvailable && (
@@ -74,15 +74,13 @@ export default function TopBar({ onOpenSettings }: Props) {
                 display: "inline-flex",
                 alignItems: "center",
                 gap: 5,
-                color: "#fbbf24",
-                fontFamily: "var(--font-mono)",
-                fontSize: 10,
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
+                color: "#ff9500",
+                fontSize: 12,
+                fontWeight: 500,
               }}
             >
-              <GitPull size={13} />
-              git n/a
+              <GitPull size={14} />
+              Git 不可用
             </span>
           </Tooltip>
         )}

@@ -1,8 +1,8 @@
-import { Drawer, Form, InputNumber, Switch, Divider, App, Typography } from "antd";
-import { Settings } from "./Icons";
-import { useStore } from "../store";
-import type { AppConfig } from "../types";
-import { useEffect, useState } from "react";
+import {App, Divider, Drawer, Form, InputNumber, Switch, Typography} from "antd";
+import {Settings} from "./Icons";
+import {useStore} from "../store";
+import type {AppConfig} from "../types";
+import {useEffect, useState} from "react";
 
 const { Text } = Typography;
 
@@ -35,7 +35,7 @@ export default function SettingsDrawer({ open, onClose }: Props) {
     <Drawer
       title={
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <Settings size={14} style={{ color: "#a3e635" }} />
+          <Settings size={14} style={{ color: "#0071e3" }} />
           设置
         </span>
       }

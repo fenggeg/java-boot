@@ -1,9 +1,9 @@
 /**
- * JavaBoot Launcher — custom icon set
- * Hand-crafted SVGs in a sharp, geometric, terminal-brutalist idiom.
+ * JavaBoot Launcher — icon set
+ * Clean SF-Symbol-style line glyphs with round caps/joins.
  * All icons inherit `currentColor`; 24×24 viewBox unless noted.
  */
-import type { SVGProps, ReactNode } from "react";
+import type {ReactNode, SVGProps} from "react";
 
 type IconProps = SVGProps<SVGSVGElement> & { size?: number };
 
@@ -15,9 +15,9 @@ function Svg({ size = 16, children, ...rest }: IconProps & { children: ReactNode
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth={1.6}
-      strokeLinecap="square"
-      strokeLinejoin="miter"
+      strokeWidth={1.7}
+      strokeLinecap="round"
+      strokeLinejoin="round"
       style={{ display: "inline-block", flexShrink: 0 }}
       {...rest}
     >
@@ -26,9 +26,11 @@ function Svg({ size = 16, children, ...rest }: IconProps & { children: ReactNode
   );
 }
 
-/* ── Brand mark: angular launch console ──────────────────────
-   A bracketed play-triangle with a notch — "terminal + launch". */
-export function Logo({ size = 22, ...rest }: IconProps) {
+/* ── Brand mark: iOS-style squircle app icon ─────────────────
+   Rounded squircle with blue gradient + white play glyph,
+   echoing the macOS/iOS app icon idiom. */
+export function Logo({ size = 24, ...rest }: IconProps) {
+  const uid = "jblogo";
   return (
     <svg
       width={size}
@@ -38,21 +40,46 @@ export function Logo({ size = 22, ...rest }: IconProps) {
       style={{ display: "inline-block", flexShrink: 0 }}
       {...rest}
     >
-      {/* frame */}
-      <path
-        d="M3 6 V26 H29 V6 Z"
-        stroke="currentColor"
-        strokeWidth={2}
-        strokeLinejoin="miter"
+      <defs>
+        <linearGradient id={uid} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#0a84ff" />
+          <stop offset="100%" stopColor="#0051d5" />
+        </linearGradient>
+      </defs>
+      {/* squircle (approximated via rounded rect) */}
+      <rect
+        x="1"
+        y="1"
+        width="30"
+        height="30"
+        rx="8"
+        fill={`url(#${uid})`}
       />
-      {/* lime accent bar (top-left corner notch) */}
-      <path d="M3 6 L9 6 L9 8 L5 8 L5 12 L3 12 Z" fill="currentColor" />
-      {/* play triangle */}
-      <path d="M13 12 L21 16 L13 20 Z" fill="currentColor" />
-      {/* baseline rule */}
-      <path d="M12 24 L20 24" stroke="currentColor" strokeWidth={2} />
+      {/* glossy top highlight */}
+      <rect
+        x="1"
+        y="1"
+        width="30"
+        height="15"
+        rx="8"
+        fill="white"
+        opacity="0.12"
+      />
+      {/* white play glyph */}
+      <path
+        d="M12.5 10 L22 16 L12.5 22 Z"
+        fill="#ffffff"
+        stroke="#ffffff"
+        strokeWidth={1.4}
+        strokeLinejoin="round"
+      />
     </svg>
   );
+}
+
+/* Larger hero variant — same glyph, optimized for big display. */
+export function HeroLogo({ size = 64, ...rest }: IconProps) {
+  return <Logo size={size} {...rest} />;
 }
 
 export function Play({ size, ...rest }: IconProps) {

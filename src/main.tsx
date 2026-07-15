@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { ConfigProvider, theme, App as AntApp, Button } from "antd";
+import {App as AntApp, Button, ConfigProvider, theme} from "antd";
 import zhCN from "antd/locale/zh_CN";
 import App from "./App";
 import "./styles.css";
@@ -26,15 +26,26 @@ class ErrorBoundary extends React.Component<
         <div
           style={{
             padding: 32,
-            color: "#f87171",
-            background: "#0a0b0d",
+            color: "#1d1d1f",
+            background: "#f5f5f7",
             height: "100vh",
-            fontFamily: "monospace",
+            fontFamily:
+              '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "PingFang SC", "Segoe UI", sans-serif',
             overflow: "auto",
           }}
         >
-          <h2 style={{ marginBottom: 16 }}>// 渲染崩溃</h2>
-          <pre style={{ whiteSpace: "pre-wrap", marginBottom: 16 }}>
+          <h2 style={{ marginBottom: 16, fontWeight: 600, letterSpacing: "-0.02em" }}>
+            渲染崩溃
+          </h2>
+          <pre
+            style={{
+              whiteSpace: "pre-wrap",
+              marginBottom: 16,
+              color: "#ff3b30",
+              fontFamily: '"SF Mono", "JetBrains Mono", ui-monospace, monospace',
+              fontSize: 12,
+            }}
+          >
             {this.state.error.message}
             {"\n\n"}
             {this.state.error.stack}
@@ -57,32 +68,32 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
   <ConfigProvider
     locale={zhCN}
     theme={{
-      algorithm: theme.darkAlgorithm,
+      algorithm: theme.defaultAlgorithm,
       token: {
-        colorPrimary: "#a3e635",
-        colorBgContainer: "#16191d",
-        colorBgElevated: "#1c2025",
-        colorBgBase: "#0a0b0d",
-        colorText: "#e6e8eb",
-        colorTextSecondary: "#9ba1a8",
-        colorTextTertiary: "#626771",
-        colorBorder: "#2e333c",
-        colorBorderSecondary: "#23272e",
-        colorSuccess: "#a3e635",
-        colorWarning: "#fbbf24",
-        colorError: "#f87171",
-        colorInfo: "#22d3ee",
-        borderRadius: 2,
-        fontSize: 13,
+        colorPrimary: "#0071e3",
+        colorBgContainer: "#ffffff",
+        colorBgElevated: "#ffffff",
+        colorBgBase: "#f5f5f7",
+        colorText: "#1d1d1f",
+        colorTextSecondary: "#6e6e73",
+        colorTextTertiary: "#86868b",
+        colorBorder: "#d2d2d7",
+        colorBorderSecondary: "#e8e8ed",
+        colorSuccess: "#34c759",
+        colorWarning: "#ff9500",
+        colorError: "#ff3b30",
+        colorInfo: "#5ac8fa",
+        borderRadius: 10,
+        fontSize: 14,
         fontFamily:
-          '"IBM Plex Sans", -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif',
+          '-apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif',
         wireframe: false,
       },
       components: {
-        Modal: { contentBg: "#111316", headerBg: "#111316" },
-        Drawer: { colorBgElevated: "#111316" },
-        Tabs: { cardBg: "#16191d", titleFontSize: 11 },
-        Segmented: { itemColor: "#9ba1a8" },
+        Modal: { contentBg: "#ffffff", headerBg: "#ffffff" },
+        Drawer: { colorBgElevated: "#ffffff" },
+        Tabs: { cardBg: "transparent", titleFontSize: 13 },
+        Segmented: { itemColor: "#6e6e73" },
       },
     }}
   >

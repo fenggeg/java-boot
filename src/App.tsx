@@ -1,12 +1,9 @@
-import { useEffect, useState } from "react";
-import { Tabs, Badge, Empty } from "antd";
-import {
-  listen,
-  type UnlistenFn,
-} from "@tauri-apps/api/event";
-import { useStore } from "./store";
-import type { ServiceRuntime, LogLine, Service } from "./types";
-import { STATUS_META } from "./types";
+import {useEffect, useState} from "react";
+import {Badge, Tabs} from "antd";
+import {listen, type UnlistenFn,} from "@tauri-apps/api/event";
+import {useStore} from "./store";
+import type {LogLine, Service, ServiceRuntime} from "./types";
+import {STATUS_META} from "./types";
 import TopBar from "./components/TopBar";
 import ServiceList from "./components/ServiceList";
 import LogViewer from "./components/LogViewer";
@@ -14,6 +11,7 @@ import AddProjectModal from "./components/AddProjectModal";
 import AddServiceModal from "./components/AddServiceModal";
 import ServiceConfigModal from "./components/ServiceConfigModal";
 import SettingsDrawer from "./components/SettingsDrawer";
+import {HeroLogo, Terminal} from "./components/Icons";
 
 export default function App() {
   const init = useStore((s) => s.init);
@@ -87,8 +85,8 @@ export default function App() {
           {s.name}
           {hasUnread && (
             <Badge
-              color="#22d3ee"
-              style={{ width: 6, height: 6, minWidth: 6, boxShadow: "0 0 6px #22d3ee" }}
+              color="#0071e3"
+              style={{ width: 6, height: 6, minWidth: 6, boxShadow: "0 0 6px rgba(0,113,227,0.6)" }}
             />
           )}
         </span>
@@ -110,20 +108,22 @@ export default function App() {
         <div className="log-panel">
           {services.length === 0 ? (
             <div className="hero-empty">
-              <pre className="hero-ascii">{`  ┌─────────────────────┐
-  │  ▶  J A V A B O O T  │
-  └─────────────────────┘`}</pre>
-              <div className="hero-title">
-                SpringBoot Launcher<span className="cursor" />
+              <div className="hero-mark">
+                <HeroLogo size={88} />
               </div>
+              <div className="hero-title">JavaBoot Launcher</div>
               <div className="hero-sub">
-                轻量本地服务编排 · 点击左侧 <span className="accent">+ 添加项目</span> 开始
+                轻量本地 Spring Boot 服务编排。点击左侧
+                <span className="accent"> 添加项目</span> 开始
               </div>
             </div>
           ) : openedTabs.length === 0 ? (
             <div className="hero-empty">
+              <div className="hero-mark subtle">
+                <Terminal size={56} />
+              </div>
               <div className="hero-sub">
-                ← 从左侧服务列表点击一个服务，在此查看日志
+                从左侧服务列表选择一个服务，在此查看实时日志
               </div>
             </div>
           ) : (

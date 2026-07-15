@@ -1,26 +1,10 @@
-import { useState, useMemo } from "react";
-import {
-  Modal,
-  Input,
-  Tree,
-  Spin,
-  Alert,
-  App,
-  Typography,
-  Button,
-  Space,
-  Checkbox,
-} from "antd";
-import type { TreeDataNode } from "antd";
-import {
-  Folder,
-  File,
-  FolderOpen,
-  CheckSquare,
-} from "./Icons";
-import { open } from "@tauri-apps/plugin-dialog";
+import {useMemo, useState} from "react";
+import type {TreeDataNode} from "antd";
+import {Alert, App, Button, Checkbox, Input, Modal, Space, Spin, Tree, Typography,} from "antd";
+import {CheckSquare, File, Folder, FolderOpen,} from "./Icons";
+import {open} from "@tauri-apps/plugin-dialog";
 import * as api from "../api";
-import type { ScannedModule } from "../types";
+import type {ScannedModule} from "../types";
 
 const { Text } = Typography;
 
@@ -51,10 +35,10 @@ function toTreeData(modules: ScannedModule[]): TreeDataNode[] {
       <span
         style={{
           color: m.already_added
-            ? "#626771"
+            ? "#aeaeb2"
             : isService
-            ? "#e6e8eb"
-            : "#9ba1a8",
+            ? "#1d1d1f"
+            : "#86868b",
         }}
       >
         {m.artifact_id}
@@ -81,7 +65,7 @@ function toTreeData(modules: ScannedModule[]): TreeDataNode[] {
       icon: isService ? (
         <File size={14} />
       ) : (
-        <Folder size={14} style={{ color: "#fbbf24" }} />
+        <Folder size={14} style={{ color: "#ff9500" }} />
       ),
       children:
         m.children.length > 0
@@ -217,7 +201,7 @@ export default function AddProjectModal({
     <Modal
       title={
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <FolderOpen size={15} style={{ color: "#a3e635" }} />
+          <FolderOpen size={15} style={{ color: "#0071e3" }} />
           添加项目
         </span>
       }

@@ -1,8 +1,8 @@
-import { useEffect, useState, useMemo } from "react";
-import { Modal, Form, Input, App, Segmented, InputNumber, Divider, Switch, Tooltip, Button } from "antd";
-import { Settings, Plus, Trash } from "./Icons";
+import {useEffect, useMemo, useState} from "react";
+import {App, Button, Divider, Form, Input, InputNumber, Modal, Segmented, Switch, Tooltip} from "antd";
+import {Plus, Settings, Trash} from "./Icons";
 import * as api from "../api";
-import type { Service, OverrideProperty } from "../types";
+import type {OverrideProperty, Service} from "../types";
 
 interface Props {
   service: Service | null;
@@ -224,7 +224,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
     <Modal
       title={
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <Settings size={14} style={{ color: "#a3e635" }} />
+          <Settings size={14} style={{ color: "#0071e3" }} />
           服务配置 — {service?.name}
         </span>
       }
@@ -313,7 +313,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
             padding: "10px 12px",
             background: "var(--surface-2)",
             border: "1px solid var(--border-2)",
-            borderRadius: 2,
+            borderRadius: "var(--r-md)",
             marginBottom: 12,
           }}
         >
@@ -342,7 +342,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
             padding: "10px 12px",
             background: "var(--surface-2)",
             border: "1px solid var(--border-2)",
-            borderRadius: 2,
+            borderRadius: "var(--r-md)",
             marginBottom: 12,
           }}
         >
@@ -374,7 +374,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
             padding: "10px 12px",
             background: "var(--surface-2)",
             border: "1px solid var(--border-2)",
-            borderRadius: 2,
+            borderRadius: "var(--r-md)",
             marginBottom: 12,
           }}
         >
@@ -436,7 +436,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
         <Divider style={{ marginTop: 16, marginBottom: 12 }}>配置覆盖属性</Divider>
 
         <div style={{ marginBottom: 8, fontSize: 11, color: "var(--text-3)", lineHeight: 1.6 }}>
-          以 <code style={{ color: "var(--lime)" }}>-Dkey=value</code> 注入 JVM 系统属性，
+          以 <code style={{ color: "var(--blue)" }}>-Dkey=value</code> 注入 JVM 系统属性，
           Spring Boot 优先级高于 application.yml。常用于覆盖注册中心 IP、数据源、日志级别等。
         </div>
 
@@ -497,7 +497,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
             marginTop: 4, padding: "8px 10px",
             background: "var(--surface-2)",
             border: "1px solid var(--border-2)",
-            borderRadius: 2,
+            borderRadius: "var(--r-md)",
             fontFamily: "var(--font-code)",
             fontSize: 11,
             color: "var(--text-2)",
@@ -506,7 +506,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
           }}
         >
           <span style={{ color: "var(--text-3)", marginRight: 8 }}>最终 maven_opts:</span>
-          <span style={{ color: finalOpts ? "var(--lime)" : "var(--text-3)" }}>
+          <span style={{ color: finalOpts ? "var(--blue)" : "var(--text-3)" }}>
             {finalOpts || "（空）"}
           </span>
         </div>

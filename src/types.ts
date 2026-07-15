@@ -107,11 +107,11 @@ export const STATUS_META: Record<
   ServiceStatus,
   { label: string; color: string; dot: string; live?: boolean }
 > = {
-  stopped: { label: "已停止", color: "default", dot: "#626771" },
-  starting: { label: "启动中", color: "processing", dot: "#22d3ee", live: true },
-  running: { label: "运行中", color: "success", dot: "#a3e635", live: true },
-  recompiling: { label: "重新编译中", color: "processing", dot: "#fbbf24", live: true },
-  pulling: { label: "拉取中", color: "processing", dot: "#c084fc", live: true },
-  error: { label: "异常", color: "error", dot: "#f87171", live: true },
-  stopping: { label: "停止中", color: "processing", dot: "#f97316", live: true },
+  stopped: { label: "已停止", color: "default", dot: "#86868b" },
+  starting: { label: "启动中", color: "processing", dot: "#5ac8fa", live: true },
+  running: { label: "运行中", color: "success", dot: "#34c759", live: true },
+  recompiling: { label: "重新编译中", color: "processing", dot: "#ff9500", live: true },
+  pulling: { label: "拉取中", color: "processing", dot: "#af52de", live: true },
+  error: { label: "异常", color: "error", dot: "#ff3b30", live: true },
+  stopping: { label: "停止中", color: "processing", dot: "#ff9500", live: true },
 };
