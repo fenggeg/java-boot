@@ -23,7 +23,15 @@ export interface Service {
   main_class: string | null;
   /** 开发快速启动模式（JVM 优化、关 devtools 重启等） */
   dev_mode: boolean;
+  /** 配置覆盖属性 JSON：`[{"key":"...","value":"..."}]`，启动时转 -Dkey=value */
+  override_properties: string | null;
   created_at: string;
+}
+
+/** 覆盖属性条目（前端编辑用，存库时序列化为 JSON 字符串） */
+export interface OverrideProperty {
+  key: string;
+  value: string;
 }
 
 export type ServiceStatus =
@@ -39,7 +47,10 @@ export interface ServiceRuntime {
   service_id: string;
   status: ServiceStatus;
   pid: number | null;
+  /** PID 下所有 LISTENING 端口（含 JMX/RMI/H2 等噪声），用于冲突检测 */
   ports: number[];
+  /** 从 Spring Boot 启动日志解析的 HTTP 服务端口，前端展示优先用此字段 */
+  service_ports: number[];
   started_at: string | null;
   port_conflict: boolean;
   conflict_with: string[];
@@ -62,6 +73,8 @@ export interface ScannedModule {
   packaging: string;
   is_service: boolean;
   already_added: boolean;
+  /** 扫描期识别到的 @SpringBootApplication 主类全限定名 */
+  main_class?: string | null;
   children: ScannedModule[];
 }
 

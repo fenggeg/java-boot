@@ -138,7 +138,7 @@ pub fn delete_project(id: &str) -> AppResult<()> {
 
 // ============================ Service CRUD ============================
 
-const SERVICE_COLS: &str = "id, name, pom_path, working_dir, project_id, auto_restart, maven_opts, profiles, main_class, dev_mode, created_at";
+const SERVICE_COLS: &str = "id, name, pom_path, working_dir, project_id, auto_restart, maven_opts, profiles, main_class, dev_mode, override_properties, created_at";
 
 macro_rules! row_to_service {
     ($row:expr) => {
@@ -153,7 +153,8 @@ macro_rules! row_to_service {
             profiles: $row.get(7)?,
             main_class: $row.get(8)?,
             dev_mode: $row.get::<_, i64>(9)? != 0,
-            created_at: $row.get(10)?,
+            override_properties: $row.get(10)?,
+            created_at: $row.get(11)?,
         }
     };
 }
@@ -198,6 +199,7 @@ pub fn insert_service(
     pom_path: &str,
     working_dir: &str,
     project_id: Option<&str>,
+    main_class: Option<&str>,
 ) -> AppResult<Service> {
     let service = Service {
         id: Uuid::new_v4().to_string(),
@@ -208,18 +210,20 @@ pub fn insert_service(
         auto_restart: false,
         maven_opts: None,
         profiles: None,
-        main_class: None,
+        main_class: main_class.map(String::from),
         dev_mode: false,
+        override_properties: None,
         created_at: Utc::now().to_rfc3339(),
     };
     with_conn(|conn| {
         conn.execute(
-            "INSERT INTO services (id, name, pom_path, working_dir, project_id, auto_restart, maven_opts, profiles, main_class, dev_mode, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO services (id, name, pom_path, working_dir, project_id, auto_restart, maven_opts, profiles, main_class, dev_mode, override_properties, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             rusqlite::params![
                 service.id, service.name, service.pom_path, service.working_dir,
                 service.project_id, service.auto_restart as i32,
                 service.maven_opts, service.profiles,
                 service.main_class, service.dev_mode as i32,
+                service.override_properties,
                 service.created_at
             ],
         )?;
@@ -250,6 +254,7 @@ pub fn update_service(
     profiles: Option<Option<&str>>,
     dev_mode: Option<bool>,
     main_class: Option<Option<&str>>,
+    override_properties: Option<Option<&str>>,
 ) -> AppResult<()> {
     with_conn(|conn| {
         if let Some(n) = name {
@@ -286,6 +291,12 @@ pub fn update_service(
             conn.execute(
                 "UPDATE services SET main_class = ?1 WHERE id = ?2",
                 rusqlite::params![mc, id],
+            )?;
+        }
+        if let Some(op) = override_properties {
+            conn.execute(
+                "UPDATE services SET override_properties = ?1 WHERE id = ?2",
+                rusqlite::params![op, id],
             )?;
         }
         Ok(())

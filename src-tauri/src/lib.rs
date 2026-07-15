@@ -48,11 +48,43 @@ pub fn run() {
             let handle = app.handle().clone();
             watcher::get_watch_manager().refresh_all(&handle);
 
+            // 后台预热：为历史服务回填 main_class（旧版本添加的服务可能为空，避免启动阶段现扫）
+            // 把 7 秒消耗移到 app 启动后的后台，用户手动启动服务时已 DB 命中
+            tauri::async_runtime::spawn_blocking(|| {
+                let services = match db::list_services() {
+                    Ok(v) => v,
+                    Err(_) => return,
+                };
+                for s in services {
+                    if s.main_class.as_deref().map(|m| !m.trim().is_empty()).unwrap_or(false) {
+                        continue;
+                    }
+                    let dir = std::path::PathBuf::from(&s.working_dir);
+                    // 1. pom.xml 里的 spring-boot-maven-plugin.mainClass
+                    let pom_path = dir.join("pom.xml");
+                    if let Ok(content) = std::fs::read_to_string(&pom_path) {
+                        if let Some(mc) = process::build::extract_main_class_from_pom_xml(&content) {
+                            let _ = db::set_service_main_class(&s.id, &mc);
+                            continue;
+                        }
+                    }
+                    // 2. 扫源码（同级优先）
+                    if let Some(mc) = pom::find_spring_boot_main_class(&dir) {
+                        let _ = db::set_service_main_class(&s.id, &mc);
+                    }
+                }
+            });
+
             // 启动 CPU/内存占用 + 端口定时刷新（集中执行，避免每服务独立轮询）
+            // 间隔由 AppConfig.port_refresh_interval_secs 控制（默认 2s）
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    let interval = db::load_config()
+                        .map(|c| c.port_refresh_interval_secs)
+                        .unwrap_or(2)
+                        .max(1);
+                    tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
                     let mgr = process::get_manager();
                     mgr.refresh_resource_usage(&handle);
                     mgr.refresh_ports(&handle);

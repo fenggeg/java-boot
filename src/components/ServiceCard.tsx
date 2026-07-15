@@ -154,22 +154,38 @@ export default function ServiceCard({ service, active, onConfig }: Props) {
                 : `${(runtime.memory_mb / 1024).toFixed(1)}g`}
             </span>
           )}
-          {runtime?.ports && runtime.ports.length > 0 && (
-            <div className="service-card-ports">
-              {runtime.ports.map((p) => (
-                <span
-                  key={p}
-                  className={`port-tag ${runtime.port_conflict ? "conflict" : ""}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handlePortClick(p);
-                  }}
-                >
-                  :{p}
-                </span>
-              ))}
-            </div>
-          )}
+          {(() => {
+            // 优先展示从启动日志解析出的 HTTP 服务端口
+            // 为空时回退到所有 LISTENING 端口，但过滤掉已知噪声端口（JMX/DevTools/H2 等）
+            const NOISE_PORTS = new Set([
+              35729, // Spring DevTools restart
+              1099,  // JMX/RMI registry
+              9092,  // H2 DB TCP
+              4848,  // JMXMP
+            ]);
+            const raw =
+              runtime?.service_ports && runtime.service_ports.length > 0
+                ? runtime.service_ports
+                : runtime?.ports ?? [];
+            const ports = raw.filter((p) => !NOISE_PORTS.has(p));
+            if (ports.length === 0) return null;
+            return (
+              <div className="service-card-ports">
+                {ports.map((p) => (
+                  <span
+                    key={p}
+                    className={`port-tag ${runtime.port_conflict ? "conflict" : ""}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handlePortClick(p);
+                    }}
+                  >
+                    :{p}
+                  </span>
+                ))}
+              </div>
+            );
+          })()}
           {runtime?.port_conflict && (
             <Tooltip
               title={`端口冲突: ${runtime.conflict_with.join(", ")}`}

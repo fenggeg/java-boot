@@ -73,6 +73,7 @@ pub fn add_project(path: String, selected_modules: Vec<ScannedModule>) -> AppRes
             &module.pom_path,
             &working_dir,
             Some(&project.id),
+            module.main_class.as_deref(),
         )?;
     }
 
@@ -154,7 +155,7 @@ pub fn add_service(pom_path: String, name: Option<String>) -> AppResult<Service>
         None
     };
 
-    db::insert_service(&svc_name, &pom_path, &working_dir, project_id.as_deref())
+    db::insert_service(&svc_name, &pom_path, &working_dir, project_id.as_deref(), None)
 }
 
 #[tauri::command]
@@ -166,6 +167,7 @@ pub fn update_service(
     profiles: Option<Option<String>>,
     dev_mode: Option<bool>,
     main_class: Option<Option<String>>,
+    override_properties: Option<Option<String>>,
 ) -> AppResult<()> {
     db::update_service(
         &id,
@@ -175,6 +177,7 @@ pub fn update_service(
         profiles.as_ref().map(|o| o.as_deref()),
         dev_mode,
         main_class.as_ref().map(|o| o.as_deref()),
+        override_properties.as_ref().map(|o| o.as_deref()),
     )
 }
 
@@ -203,7 +206,7 @@ pub async fn delete_service(id: String, app: AppHandle) -> AppResult<()> {
 /// 切换自动重启开关
 #[tauri::command]
 pub fn toggle_auto_restart(id: String, enabled: bool, app: AppHandle) -> AppResult<()> {
-    db::update_service(&id, None, Some(enabled), None, None, None, None)?;
+    db::update_service(&id, None, Some(enabled), None, None, None, None, None)?;
     let service = db::get_service(&id)?;
     if enabled {
         let _ = watcher::get_watch_manager().watch(app, service);

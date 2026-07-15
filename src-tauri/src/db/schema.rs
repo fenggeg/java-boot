@@ -68,12 +68,19 @@ fn migrate_v3(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// v4：services 增加 override_properties（JSON 数组，存 -D 覆盖属性 key/value）
+fn migrate_v4(conn: &Connection) -> rusqlite::Result<()> {
+    add_column(conn, "services", "override_properties", "TEXT")?;
+    Ok(())
+}
+
 pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
     for sql in MIGRATIONS {
         conn.execute_batch(sql)?;
     }
     migrate_v2(conn)?;
     migrate_v3(conn)?;
+    migrate_v4(conn)?;
     // seed default config
     let defaults = [
         ("port_refresh_interval_secs", "2"),

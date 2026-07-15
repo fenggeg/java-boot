@@ -273,12 +273,12 @@ export default function AddProjectModal({
               justifyContent: "space-between",
               marginBottom: 8,
               padding: "6px 10px",
-              background: "#fafafa",
+              background: "var(--surface-2)",
               borderRadius: 6,
-              border: "1px solid #f0f0f0",
+              border: "1px solid var(--border)",
             }}
           >
-            <span style={{ fontSize: 12, color: "#666" }}>
+            <span style={{ fontSize: 12, color: "var(--text-2)" }}>
               共 {serviceCount} 个可启动服务，已选 {checkedServiceCount} 个
             </span>
             <Space size={4}>
@@ -309,7 +309,7 @@ export default function AddProjectModal({
             style={{
               maxHeight: 340,
               overflow: "auto",
-              border: "1px solid #f0f0f0",
+              border: "1px solid var(--border)",
               borderRadius: 6,
               padding: 8,
             }}

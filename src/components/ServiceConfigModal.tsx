@@ -1,8 +1,8 @@
 import { useEffect, useState, useMemo } from "react";
-import { Modal, Form, Input, App, Segmented, InputNumber, Divider, Switch, Tooltip } from "antd";
-import { Settings } from "./Icons";
+import { Modal, Form, Input, App, Segmented, InputNumber, Divider, Switch, Tooltip, Button } from "antd";
+import { Settings, Plus, Trash } from "./Icons";
 import * as api from "../api";
-import type { Service } from "../types";
+import type { Service, OverrideProperty } from "../types";
 
 interface Props {
   service: Service | null;
@@ -123,6 +123,26 @@ function buildMavenOpts(
   return parts.join(" ");
 }
 
+// ── 覆盖属性 解析 / 序列化 ──────────────────────────────────
+function parseOverrideProperties(json: string | null | undefined): OverrideProperty[] {
+  if (!json || !json.trim()) return [];
+  try {
+    const arr = JSON.parse(json);
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((x: any) => x && typeof x.key === "string" && x.key.trim())
+      .map((x: any) => ({ key: x.key, value: String(x.value ?? "") }));
+  } catch {
+    return [];
+  }
+}
+
+function serializeOverrideProperties(list: OverrideProperty[]): string | null {
+  const cleaned = list.filter((x) => x.key.trim());
+  if (cleaned.length === 0) return null;
+  return JSON.stringify(cleaned);
+}
+
 export default function ServiceConfigModal({ service, onClose, onSaved }: Props) {
   const [form] = Form.useForm();
   const { message } = App.useApp();
@@ -136,6 +156,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
   const [debugCfg, setDebugCfg] = useState<DebugConfig>({ enabled: false, port: 5005, suspend: false });
   const [restOpts, setRestOpts] = useState<string>("");
   const [devMode, setDevMode] = useState<boolean>(false);
+  const [overrides, setOverrides] = useState<OverrideProperty[]>([]);
 
   useEffect(() => {
     if (service) {
@@ -148,6 +169,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
       setPortCfg(p.port.enabled ? p.port : { enabled: false, port: 8080 });
       setDebugCfg(p.debug.enabled ? p.debug : { enabled: false, port: 5005, suspend: false });
       setDevMode(!!service.dev_mode);
+      setOverrides(parseOverrideProperties(service.override_properties));
 
       const hit = matchPreset(p.xms, p.xmx);
       if (hit >= 0) {
@@ -184,6 +206,8 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
         finalOpts || null,
         values.profiles?.trim() || null,
         devMode,
+        undefined,
+        serializeOverrideProperties(overrides),
       );
       message.success("配置已保存");
       onSaved();
@@ -408,6 +432,64 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
             onChange={(e) => setRestOpts(e.target.value)}
           />
         </Form.Item>
+
+        <Divider style={{ marginTop: 16, marginBottom: 12 }}>配置覆盖属性</Divider>
+
+        <div style={{ marginBottom: 8, fontSize: 11, color: "var(--text-3)", lineHeight: 1.6 }}>
+          以 <code style={{ color: "var(--lime)" }}>-Dkey=value</code> 注入 JVM 系统属性，
+          Spring Boot 优先级高于 application.yml。常用于覆盖注册中心 IP、数据源、日志级别等。
+        </div>
+
+        {/* 覆盖属性 key-value 编辑器 */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {overrides.map((item, idx) => (
+            <div key={idx} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <Input
+                placeholder="key，如 spring.cloud.nacos.discovery.ip"
+                value={item.key}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setOverrides((list) =>
+                    list.map((x, i) => (i === idx ? { ...x, key: v } : x))
+                  );
+                }}
+                style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 12 }}
+              />
+              <span style={{ color: "var(--text-3)", fontSize: 12 }}>=</span>
+              <Input
+                placeholder="value，如 192.168.1.100"
+                value={item.value}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setOverrides((list) =>
+                    list.map((x, i) => (i === idx ? { ...x, value: v } : x))
+                  );
+                }}
+                style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 12 }}
+              />
+              <Button
+                size="small"
+                type="text"
+                danger
+                onClick={() =>
+                  setOverrides((list) => list.filter((_, i) => i !== idx))
+                }
+                style={{ flexShrink: 0, padding: "0 6px" }}
+              >
+                <Trash size={13} />
+              </Button>
+            </div>
+          ))}
+          <Button
+            size="small"
+            type="dashed"
+            block
+            onClick={() => setOverrides((list) => [...list, { key: "", value: "" }])}
+            style={{ marginTop: 2 }}
+          >
+            <Plus size={12} /> 添加属性
+          </Button>
+        </div>
 
         {/* 最终合成预览 */}
         <div

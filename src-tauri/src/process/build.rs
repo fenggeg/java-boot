@@ -27,6 +27,23 @@ use super::log_pipe::emit_log_raw;
 /// 编译期子进程 PID，用于 stop 时中断
 pub type CompilePidSlot = Arc<PMutex<Option<u32>>>;
 
+/// 剥掉 Windows 扩展长路径前缀 `\\?\` / `\\?\UNC\`。
+///
+/// `std::fs::canonicalize()` 在 Windows 上会返回 `\\?\D:\...` 形式的 verbatim 路径；
+/// 老 Java / Plexus / 部分 mvn 插件不认识路径里的 `?`，会抛
+/// `Illegal character [?] in path at index 2`。传给外部程序前需要剥掉。
+pub fn strip_verbatim_prefix(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        // UNC 路径要还原为 \\server\share\...
+        PathBuf::from(format!(r"\\{}", rest))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        p.to_path_buf()
+    }
+}
+
 // ================================================================
 // Maven 通用执行器
 // ================================================================
@@ -145,12 +162,42 @@ pub fn detect_main_class(service: &Service, working_dir: &Path) -> AppResult<Str
     )))
 }
 
-/// 从 pom.xml 文本中提取 `<mainClass>xxx</mainClass>`（跳过注释）
+/// 从 pom.xml 文本中提取主类全限定名。
+///
+/// 支持两种写法：
+/// - `<mainClass>com.foo.App</mainClass>` 直接字面
+/// - `<mainClass>${start-class}</mainClass>` + `<properties><start-class>com.foo.App</start-class></properties>`
+///   （BladeX / Spring Boot Parent 约定写法），递归解引用（深度限 5）
+/// - 无 mainClass 但 properties 里有 `<start-class>` →直接采用
+///
+/// 跳过 XML 注释。
 pub fn extract_main_class_from_pom_xml(content: &str) -> Option<String> {
+    // 首先尝试 <mainClass>...</mainClass>
+    let mc_raw = find_tag_value(content, "mainClass");
+    if let Some(v) = mc_raw {
+        let resolved = resolve_pom_placeholders(&v, content, 0);
+        let t = resolved.trim();
+        if !t.is_empty() && !t.contains('$') {
+            return Some(t.to_string());
+        }
+    }
+    // 兜底：Spring Boot Parent 约定的 <start-class>
+    if let Some(v) = find_tag_value(content, "start-class") {
+        let t = v.trim();
+        if !t.is_empty() && !t.contains('$') {
+            return Some(t.to_string());
+        }
+    }
+    None
+}
+
+/// 在 pom.xml 中查找第一个 `<tag>value</tag>`（跳过注释）。
+fn find_tag_value(content: &str, tag: &str) -> Option<String> {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
     let mut in_comment = false;
     let mut i = 0;
-    let bytes = content.as_bytes();
-    while i < bytes.len() {
+    while i < content.len() {
         if !in_comment && content[i..].starts_with("<!--") {
             in_comment = true;
             i += 4;
@@ -162,50 +209,85 @@ pub fn extract_main_class_from_pom_xml(content: &str) -> Option<String> {
                 i += 3;
                 continue;
             }
-            i += 1;
+            // 按 UTF-8 字符推进，避免落在多字节字符中间导致切片 panic
+            i += content[i..].chars().next().map_or(1, |c| c.len_utf8());
             continue;
         }
-        if content[i..].starts_with("<mainClass>") {
-            if let Some(end) = content[i + 11..].find("</mainClass>") {
-                let mc = &content[i + 11..i + 11 + end];
-                let trimmed = mc.trim();
-                if !trimmed.is_empty() {
-                    return Some(trimmed.to_string());
-                }
-            }
-            if let Some(pos) = content[i + 11..].find("</mainClass>") {
-                i = i + 11 + pos + 12;
-                continue;
+        if content[i..].starts_with(&open) {
+            let start = i + open.len();
+            if let Some(end) = content[start..].find(&close) {
+                return Some(content[start..start + end].to_string());
             }
             break;
         }
-        i += 1;
+        i += content[i..].chars().next().map_or(1, |c| c.len_utf8());
     }
     None
 }
 
-/// 递归扫描 java 文件找 `@SpringBootApplication`（只读文件头 4KB，命中概率 99%）
+/// 递归解 `${name}` 占位符（深度限 5，避免循环）。
+/// - 从 `<properties>` 里找 `<name>value</name>`
+/// - Spring Boot Parent 历史上使用 `${start-class}` 作为“平台约定”，且 property 名包含“-”，
+///   带“-”的 XML 标签能直接匹配，不需额外处理
+fn resolve_pom_placeholders(input: &str, pom_content: &str, depth: u32) -> String {
+    if depth >= 5 {
+        return input.to_string();
+    }
+    let mut out = String::new();
+    let mut i = 0;
+    while i < input.len() {
+        if input[i..].starts_with("${") {
+            if let Some(end) = input[i + 2..].find('}') {
+                let name = &input[i + 2..i + 2 + end];
+                let raw = find_tag_value(pom_content, name)
+                    .unwrap_or_else(|| format!("${{{}}}", name));
+                let resolved = resolve_pom_placeholders(&raw, pom_content, depth + 1);
+                out.push_str(&resolved);
+                i = i + 2 + end + 1;
+                continue;
+            }
+        }
+        // 按完整 UTF-8 字符输出，避免逐字节 push 导致多字节字符损坏
+        let ch = input[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// 递归扫描 java 文件找 `@SpringBootApplication`（只读文件头 4KB，命中率 99%）
+///
+/// **同级优先**：先扫当前目录下的 .java，再递归子目录。主类多数位于包根目录，
+/// 这样在重型项目上能尽早命中，避免陷入业务包里扫几百个文件。
 fn scan_spring_application(root: &Path, dir: &Path) -> Option<String> {
     let entries = std::fs::read_dir(dir).ok()?;
+    let mut files: Vec<std::path::PathBuf> = vec![];
+    let mut dirs: Vec<std::path::PathBuf> = vec![];
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            if let Some(mc) = scan_spring_application(root, &path) {
-                return Some(mc);
-            }
+            dirs.push(path);
         } else if path.extension().and_then(|e| e.to_str()) == Some("java") {
-            if let Ok(head) = read_head(&path, 4096) {
-                if head.contains("@SpringBootApplication") {
-                    if let Ok(rel) = path.strip_prefix(root) {
-                        let class_path = rel
-                            .to_string_lossy()
-                            .replace('\\', "/")
-                            .replace('/', ".");
-                        let fqcn = class_path.trim_end_matches(".java").to_string();
-                        return Some(fqcn);
-                    }
+            files.push(path);
+        }
+    }
+    for path in &files {
+        if let Ok(head) = read_head(path, 4096) {
+            if head.contains("@SpringBootApplication") {
+                if let Ok(rel) = path.strip_prefix(root) {
+                    let class_path = rel
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                        .replace('/', ".");
+                    let fqcn = class_path.trim_end_matches(".java").to_string();
+                    return Some(fqcn);
                 }
             }
+        }
+    }
+    for d in &dirs {
+        if let Some(mc) = scan_spring_application(root, d) {
+            return Some(mc);
         }
     }
     None
@@ -312,7 +394,7 @@ pub struct ClasspathCache {
 
 impl ClasspathCache {
     pub fn for_module(working_dir: &Path) -> Self {
-        let target = working_dir.join("target");
+        let target = strip_verbatim_prefix(&working_dir.join("target"));
         Self {
             cp_file: target.join(".javaboot-cp.txt"),
             key_file: target.join(".javaboot-cp.key"),

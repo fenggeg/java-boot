@@ -22,7 +22,7 @@ pub enum AppError {
     #[error("项目未找到: {0}")]
     ProjectNotFound(String),
 
-    #[error("服务正在运行: {0}")]
+    #[error("服务已在运行中，如需重启请先点击停止")]
     ServiceRunning(String),
 
     #[error("进程错误: {0}")]

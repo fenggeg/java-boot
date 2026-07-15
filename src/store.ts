@@ -21,6 +21,8 @@ interface Store {
   logs: Record<string, LogBuffer>;
   config: AppConfig;
   selectedServiceId: string | null;
+  /** 已打开的日志 Tab (IDE-like)，按打开顺序；只有在这里的 service 才会在日志区顶部显示 Tab */
+  openedTabs: string[];
   gitAvailable: boolean;
   loading: boolean;
 
@@ -28,6 +30,7 @@ interface Store {
   init: () => Promise<void>;
   refreshServices: () => Promise<void>;
   selectService: (id: string | null) => void;
+  closeTab: (id: string) => void;
   setRuntime: (rt: ServiceRuntime) => void;
   appendLog: (log: LogLine) => void;
   clearLog: (serviceId: string) => void;
@@ -50,6 +53,7 @@ export const useStore = create<Store>((set, get) => ({
     stop_all_on_exit: true,
   },
   selectedServiceId: null,
+  openedTabs: [],
   gitAvailable: false,
   loading: false,
 
@@ -73,6 +77,7 @@ export const useStore = create<Store>((set, get) => ({
             status: "stopped",
             pid: null,
             ports: [],
+            service_ports: [],
             started_at: null,
             port_conflict: false,
             conflict_with: [],
@@ -94,6 +99,7 @@ export const useStore = create<Store>((set, get) => ({
         gitAvailable: gitOk,
         loading: false,
         selectedServiceId: services[0]?.id ?? null,
+        openedTabs: services[0] ? [services[0].id] : [],
       });
     } catch (e) {
       console.error("init failed", e);
@@ -110,8 +116,28 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   selectService: (id) => {
-    set({ selectedServiceId: id });
+    set((state) => {
+      const nextOpened =
+        id && !state.openedTabs.includes(id)
+          ? [...state.openedTabs, id]
+          : state.openedTabs;
+      return { selectedServiceId: id, openedTabs: nextOpened };
+    });
     if (id) get().markRead(id);
+  },
+
+  closeTab: (id) => {
+    set((state) => {
+      const idx = state.openedTabs.indexOf(id);
+      if (idx < 0) return state;
+      const nextOpened = state.openedTabs.filter((x) => x !== id);
+      let nextSelected = state.selectedServiceId;
+      if (state.selectedServiceId === id) {
+        // 关的是当前选中：切到相邻 tab（优先右、否则左）
+        nextSelected = nextOpened[idx] ?? nextOpened[idx - 1] ?? null;
+      }
+      return { openedTabs: nextOpened, selectedServiceId: nextSelected };
+    });
   },
 
   setRuntime: (rt) => {
@@ -176,22 +202,24 @@ export const useStore = create<Store>((set, get) => ({
       const remainingServices = state.services.filter(
         (s) => s.project_id !== projectId
       );
+      const remainingIds = new Set(remainingServices.map((s) => s.id));
       const remainingRuntimes: Record<string, ServiceRuntime> = {};
       const remainingLogs: Record<string, LogBuffer> = {};
       for (const s of remainingServices) {
         if (state.runtimes[s.id]) remainingRuntimes[s.id] = state.runtimes[s.id];
         if (state.logs[s.id]) remainingLogs[s.id] = state.logs[s.id];
       }
+      const nextOpened = state.openedTabs.filter((id) => remainingIds.has(id));
       return {
         projects: state.projects.filter((p) => p.id !== projectId),
         services: remainingServices,
         runtimes: remainingRuntimes,
         logs: remainingLogs,
+        openedTabs: nextOpened,
         selectedServiceId:
-          state.selectedServiceId &&
-          remainingServices.some((s) => s.id === state.selectedServiceId)
+          state.selectedServiceId && remainingIds.has(state.selectedServiceId)
             ? state.selectedServiceId
-            : remainingServices[0]?.id ?? null,
+            : nextOpened[0] ?? null,
       };
     });
   },
@@ -203,13 +231,15 @@ export const useStore = create<Store>((set, get) => ({
       );
       const { [serviceId]: _, ...remainingRuntimes } = state.runtimes;
       const { [serviceId]: __, ...remainingLogs } = state.logs;
+      const nextOpened = state.openedTabs.filter((id) => id !== serviceId);
       return {
         services: remainingServices,
         runtimes: remainingRuntimes,
         logs: remainingLogs,
+        openedTabs: nextOpened,
         selectedServiceId:
           state.selectedServiceId === serviceId
-            ? remainingServices[0]?.id ?? null
+            ? nextOpened[0] ?? null
             : state.selectedServiceId,
       };
     });

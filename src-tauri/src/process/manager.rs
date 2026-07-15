@@ -23,14 +23,14 @@ use crate::error::{AppError, AppResult};
 
 use super::build::{
     self, collect_sibling_classes, common_mvn_flags, decide_build_strategy, detect_main_class,
-    run_mvn_capture, BuildStrategy, ClasspathCache, CompilePidSlot,
+    run_mvn_capture, strip_verbatim_prefix, BuildStrategy, ClasspathCache, CompilePidSlot,
 };
 use super::env::{
     inject_env, preflight_check, resolve_env_config, resolve_java_home, resolve_maven_cmd,
     EnvConfig,
 };
 use super::job::JobObject;
-use super::log_pipe::{check_failed, check_started, emit_log_raw, LogSource};
+use super::log_pipe::{check_failed, check_started, emit_log_raw, extract_service_ports, LogSource};
 
 // ================================================================
 // ProcessHandle
@@ -45,6 +45,8 @@ struct ProcessHandle {
     kill_token: Arc<AtomicBool>,
     /// 编译期子进程 PID（用于 stop 中断编译）
     compile_pid: CompilePidSlot,
+    /// handle 创建时间；用于识别“死 placeholder”（pid=0 且长时间未推进）
+    created_at: std::time::Instant,
 }
 
 impl ProcessHandle {
@@ -54,6 +56,7 @@ impl ProcessHandle {
             job: None,
             kill_token: Arc::new(AtomicBool::new(false)),
             compile_pid: Arc::new(PMutex::new(None)),
+            created_at: std::time::Instant::now(),
         }
     }
 }
@@ -182,6 +185,9 @@ impl ProcessManager {
     }
 
     /// 集中刷新监听端口（单次全表扫描，按 PID 归属分发）
+    ///
+    /// `ports` 字段保留 PID 下所有 LISTENING 端口（含 JMX/RMI/H2 等噪声端口），
+    /// 用于冲突检测；前端展示用 `service_ports`（从 Spring Boot 启动日志解析）。
     pub fn refresh_ports(&self, app: &AppHandle) {
         let service_pids: Vec<(String, u32)> = {
             let rt = self.runtimes.lock();
@@ -199,19 +205,25 @@ impl ProcessManager {
         };
         let mut pid_ports: HashMap<u32, Vec<u16>> = HashMap::new();
         for (port, owner_pid) in &table {
-            pid_ports.entry(*owner_pid).or_default().push(*port);
+            // 去重：IPv4/IPv6 双栈绑定会让同一端口对同一 PID 出现两次
+            let vec = pid_ports.entry(*owner_pid).or_default();
+            if !vec.contains(port) {
+                vec.push(*port);
+            }
         }
         let mut changed = false;
         {
             let mut rt = self.runtimes.lock();
             for (service_id, pid) in &service_pids {
-                let ports = pid_ports.get(pid).cloned().unwrap_or_default();
+                let all_ports = pid_ports.get(pid).cloned().unwrap_or_default();
                 let entry = rt.entry(service_id.clone()).or_default();
                 entry.service_id = service_id.clone();
-                if entry.ports != ports {
-                    entry.ports = ports;
+                if entry.ports != all_ports {
+                    entry.ports = all_ports;
                     changed = true;
                 }
+                // service_ports 由日志解析设置，这里不覆盖；前端展示时若 service_ports
+                // 为空则回退到 ports（兜底，保证日志未匹配上时也有显示）
             }
         }
         if changed {
@@ -230,8 +242,12 @@ impl ProcessManager {
         if status == ServiceStatus::Stopped || status == ServiceStatus::Error {
             entry.pid = None;
             entry.ports.clear();
+            entry.service_ports.clear();
             entry.port_conflict = false;
             entry.conflict_with.clear();
+            // 清掉陈旧的 CPU/内存，避免 UI 在停止/异常状态下仍显示上一次的数值
+            entry.cpu_usage = None;
+            entry.memory_mb = None;
             if status == ServiceStatus::Stopped {
                 entry.started_at = None;
             }
@@ -306,6 +322,24 @@ impl ProcessManager {
         self.set_status(app, service_id, ServiceStatus::Running);
     }
 
+    /// 设置从 Spring Boot 启动日志解析出的 HTTP 服务端口
+    ///
+    /// 前端会优先展示 `service_ports`；为空时回退到 `ports`（PID 所有 LISTENING 端口）。
+    fn set_service_ports(&self, app: &AppHandle, service_id: &str, ports: Vec<u16>) {
+        let mut rt = self.runtimes.lock();
+        let entry = rt.entry(service_id.to_string()).or_default();
+        entry.service_id = service_id.to_string();
+        // 多次匹配（多 web server 启动）累加去重
+        for p in &ports {
+            if !entry.service_ports.contains(p) {
+                entry.service_ports.push(*p);
+            }
+        }
+        let snapshot = entry.clone();
+        drop(rt);
+        let _ = app.emit("service://status", snapshot);
+    }
+
     // ================================================================
     // start：核心启动流程（三档策略 + classpath 缓存 + dev_mode）
     // ================================================================
@@ -313,8 +347,37 @@ impl ProcessManager {
     pub async fn start(&self, app: AppHandle, service: Service) -> AppResult<()> {
         let (kill_token, compile_pid) = {
             let mut handles = self.handles.lock();
-            if handles.contains_key(&service.id) {
-                return Err(AppError::ServiceRunning(service.id));
+            if let Some(existing) = handles.get(&service.id) {
+                // 已有条目：细分三种情况
+                //   (a) pid > 0 且 sysinfo 查得到       → 真运行中，拒绝
+                //   (b) pid > 0 但进程已死（僵尸）     → 静默清理后继续
+                //   (c) pid == 0（placeholder）：
+                //         - kill_token 已 signal → 已被 stop，残留→清理
+                //         - 创建超过 5 分钟未推进  → 死 placeholder →清理
+                //         - 否则看作并发启动中       →拒绝
+                let alive = if existing.pid > 0 {
+                    let pid = sysinfo::Pid::from_u32(existing.pid);
+                    let mut sys = SYS.lock();
+                    sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), false);
+                    sys.process(pid).is_some()
+                } else {
+                    let signaled = existing.kill_token.load(Ordering::Relaxed);
+                    let stale = existing.created_at.elapsed() > std::time::Duration::from_secs(300);
+                    !(signaled || stale)
+                };
+                if alive {
+                    return Err(AppError::ServiceRunning(service.id));
+                }
+                log::info!(
+                    "堆叠残留 handle(PID {}, elapsed {:?})，已自动清理：{}",
+                    existing.pid,
+                    existing.created_at.elapsed(),
+                    service.id
+                );
+                // 主动 signal，避免可能还在后台卡着的旧 async task 拉长系统状态
+                existing.kill_token.store(true, Ordering::Relaxed);
+                handles.remove(&service.id);
+                let _ = db::clear_run_pid(&service.id);
             }
             let placeholder = ProcessHandle::placeholder();
             let kt = placeholder.kill_token.clone();
@@ -348,7 +411,7 @@ impl ProcessManager {
             };
         }
 
-        let working_dir = PathBuf::from(&service.working_dir);
+        let working_dir = strip_verbatim_prefix(&PathBuf::from(&service.working_dir));
         let env_cfg = try_cleanup!(resolve_env_config(&service));
         let (program, base_args) = resolve_maven_cmd(&working_dir, &env_cfg);
         try_cleanup!(preflight_check(&env_cfg, &working_dir, &program));
@@ -381,7 +444,16 @@ impl ProcessManager {
 
         let classpath = if cache_valid {
             match cache.load() {
-                Some(cp) => Self::assemble_classpath(&working_dir, &env_cfg, &cp),
+                Some(cp) => {
+                    let jars = cp.split(';').filter(|s| !s.is_empty()).count();
+                    Self::emit_log(
+                        &app,
+                        &service.id,
+                        LogSource::Mvn,
+                        &format!("[javaboot] classpath 缓存已加载 ({} 个依赖)", jars),
+                    );
+                    Self::assemble_classpath(&working_dir, &env_cfg, &cp)
+                }
                 None => {
                     let cp = try_cleanup!(
                         self.resolve_classpath_via_mvn(
@@ -403,6 +475,7 @@ impl ProcessManager {
         };
         check_cancel!();
 
+        Self::emit_log(&app, &service.id, LogSource::Mvn, "[javaboot] 探测主类...");
         let main_class = try_cleanup!(detect_main_class(&service, &working_dir));
 
         let java_home = resolve_java_home(&env_cfg);
@@ -422,35 +495,102 @@ impl ProcessManager {
             ),
         );
 
-        let mut cmd = Command::new(&java_bin);
-        cmd.arg("-Dfile.encoding=UTF-8");
+        // 收集所有 java 参数，便于按需走 @argfile（Windows 命令行上限 32767 字符）
+        let mut args: Vec<String> = vec!["-Dfile.encoding=UTF-8".to_string()];
         if service.dev_mode {
-            cmd.arg("-XX:TieredStopAtLevel=1");
-            cmd.arg("-XX:+AlwaysPreTouch");
-            cmd.arg("-Dspring.jmx.enabled=false");
-            cmd.arg("-Dspring.output.ansi.enabled=never");
-            cmd.arg("-Dspring.devtools.restart.enabled=false");
+            args.extend([
+                "-XX:TieredStopAtLevel=1".into(),
+                "-XX:+AlwaysPreTouch".into(),
+                "-Dspring.jmx.enabled=false".into(),
+                "-Dspring.output.ansi.enabled=never".into(),
+                "-Dspring.devtools.restart.enabled=false".into(),
+            ]);
         }
         if let Some(pf) = &service.profiles {
             if !pf.trim().is_empty() {
-                cmd.arg(format!("-Dspring.profiles.active={}", pf.trim()));
+                args.push(format!("-Dspring.profiles.active={}", pf.trim()));
             }
         }
         if let Some(mo) = &service.maven_opts {
             for a in mo.split_whitespace() {
                 if a.starts_with("-D") || a.starts_with("-X") {
-                    cmd.arg(a);
+                    args.push(a.to_string());
                 }
             }
         }
-        cmd.arg("-cp");
-        cmd.arg(&classpath);
-        cmd.arg(&main_class);
+        // 配置覆盖属性：JSON → -Dkey=value，放在 maven_opts 的 -D 之后，
+        // 确保用户在 UI 里配置的覆盖值优先级最高（Spring Boot 系统属性优先于 application.yml）
+        if let Some(overrides) = parse_override_properties(&service.override_properties) {
+            if !overrides.is_empty() {
+                for (k, v) in &overrides {
+                    args.push(format!("-D{}={}", k, v));
+                }
+                Self::emit_log(
+                    &app,
+                    &service.id,
+                    LogSource::Mvn,
+                    &format!("[javaboot] 注入 {} 个覆盖属性", overrides.len()),
+                );
+            }
+        }
+        args.push("-cp".into());
+        args.push(classpath.clone());
+        args.push(main_class.clone());
         if let Some(mo) = &service.maven_opts {
             for a in mo.split_whitespace() {
                 if !a.starts_with("-D") && !a.starts_with("-X") {
-                    cmd.arg(a);
+                    args.push(a.to_string());
                 }
+            }
+        }
+
+        // 估算命令行长度：java_bin + 各 arg + 分隔符
+        let cmd_len = java_bin.len() + 1 + args.iter().map(|a| a.len() + 1).sum::<usize>();
+        // Windows CreateProcessW 命令行上限 32767 字符；留余量给 quoting/program
+        let use_argfile = cmd_len > 30000;
+
+        let mut cmd = Command::new(&java_bin);
+        if use_argfile {
+            // classpath 太长，写入 @argfile 启动（Java 原生支持）
+            let argfile_path = working_dir.join("target").join(".javaboot-args.txt");
+            let mut content = String::new();
+            for arg in &args {
+                // argfile 里含空格/tab 的参数需要双引号包裹；路径里的反斜杠在引号内是字面量
+                if arg.contains(' ') || arg.contains('\t') {
+                    let escaped = arg.replace('"', "\\\"");
+                    content.push('"');
+                    content.push_str(&escaped);
+                    content.push('"');
+                } else {
+                    content.push_str(arg);
+                }
+                content.push('\n');
+            }
+            if let Some(parent) = argfile_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Err(e) = std::fs::write(&argfile_path, &content) {
+                self.handles.lock().remove(&service.id);
+                self.set_status(&app, &service.id, ServiceStatus::Stopped);
+                return Err(AppError::Process(format!(
+                    "写入 argfile 失败 ({}): {}",
+                    argfile_path.display(), e
+                )));
+            }
+            cmd.arg(format!("@{}", argfile_path.to_string_lossy()));
+            Self::emit_log(
+                &app,
+                &service.id,
+                LogSource::Mvn,
+                &format!(
+                    "[javaboot] 命令行较长 ({} 字符)，使用 @argfile 启动: {}",
+                    cmd_len,
+                    argfile_path.file_name().unwrap_or_default().to_string_lossy()
+                ),
+            );
+        } else {
+            for arg in &args {
+                cmd.arg(arg);
             }
         }
         cmd.current_dir(&working_dir);
@@ -466,12 +606,16 @@ impl ProcessManager {
 
         check_cancel!();
 
+        Self::emit_log(&app, &service.id, LogSource::Mvn, "[javaboot] 启动 java 子进程...");
         let mut child = cmd.spawn().map_err(|e| {
+            let msg = format!("启动失败 ({}): {}", program, e);
+            // 同步推到日志面板，避免只在前端 toast 看到，日志面板却一片空白
+            Self::emit_log(&app, &service.id, LogSource::Mvn, &format!("[javaboot] {}", msg));
             self.handles.lock().remove(&service.id);
             self.set_status(&app, &service.id, ServiceStatus::Stopped);
             AppError::Process(format!(
-                "启动失败 ({}): {}\n请检查该服务配置的 JDK 路径和 Maven 是否可用。",
-                program, e
+                "{}\n请检查该服务配置的 JDK 路径和 Maven 是否可用。\n（若 classpath 过长，已自动切换 @argfile；若仍失败请检查 target/.javaboot-args.txt）",
+                msg
             ))
         })?;
         let pid = child.id().unwrap_or(0);
@@ -511,11 +655,12 @@ impl ProcessManager {
             if !killed {
                 match status {
                     Ok(s) => {
+                        // 不论成功失败都打退出码，避免"进程默默退出、日志一片空白"的情况
+                        Self::emit_log(
+                            &app3, &sid3, LogSource::App,
+                            &format!("[javaboot] 进程退出，退出码: {:?}", s.code()),
+                        );
                         if !s.success() {
-                            Self::emit_log(
-                                &app3, &sid3, LogSource::App,
-                                &format!("[javaboot] 进程退出，退出码: {:?}", s.code()),
-                            );
                             get_manager().set_status(&app3, &sid3, ServiceStatus::Error);
                         } else {
                             get_manager().set_status(&app3, &sid3, ServiceStatus::Stopped);
@@ -554,6 +699,11 @@ impl ProcessManager {
                 while let Ok(Some(line)) = reader.next_line().await {
                     Self::emit_log(&app_c, &sid_c, LogSource::App, &line);
                     if check_started(&line) {
+                        // 从 Spring Boot 启动日志中解析 HTTP 服务端口，覆盖噪声端口
+                        let ports = extract_service_ports(&line);
+                        if !ports.is_empty() {
+                            get_manager().set_service_ports(&app_c, &sid_c, ports);
+                        }
                         get_manager().mark_running(&app_c, &sid_c);
                     } else if check_failed(&line) {
                         get_manager().set_status(&app_c, &sid_c, ServiceStatus::Error);
@@ -871,6 +1021,40 @@ impl ProcessManager {
 #[allow(dead_code)]
 fn _keep_build_helpers() {
     let _ = build::pom_newer_than;
+}
+
+// ================================================================
+// 配置覆盖属性解析
+// ================================================================
+
+/// 解析 service.override_properties（JSON）为有序 (key, value) 列表。
+///
+/// JSON 格式：`[{"key":"spring.cloud.nacos.discovery.ip","value":"192.168.1.100"}]`
+/// 跳过 key 为空或解析失败的条目；解析失败时返回 None（不影响启动）。
+fn parse_override_properties(json: &Option<String>) -> Option<Vec<(String, String)>> {
+    let raw = json.as_ref()?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    #[derive(serde::Deserialize)]
+    struct Kv {
+        key: String,
+        value: String,
+    }
+    match serde_json::from_str::<Vec<Kv>>(raw) {
+        Ok(list) => {
+            let out: Vec<(String, String)> = list
+                .into_iter()
+                .filter(|kv| !kv.key.trim().is_empty())
+                .map(|kv| (kv.key.trim().to_string(), kv.value))
+                .collect();
+            Some(out)
+        }
+        Err(e) => {
+            log::warn!("override_properties JSON 解析失败: {}", e);
+            None
+        }
+    }
 }
 
 // ================================================================

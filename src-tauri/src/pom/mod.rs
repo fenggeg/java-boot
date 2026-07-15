@@ -115,8 +115,12 @@ fn scan_recursive(
     let dir = pom_path.parent().unwrap_or(Path::new(""));
     // 判定是否为可启动服务：packaging 必须是 jar/war，且模块内存在带 @SpringBootApplication 的主类
     // 单纯 jar 且不含 SpringBoot 主类的（工具/公共模块）不算服务，避免污染勾选列表
-    let is_service = matches!(info.packaging.as_str(), "jar" | "war")
-        && has_spring_boot_application(dir);
+    let main_class_opt = if matches!(info.packaging.as_str(), "jar" | "war") {
+        find_spring_boot_main_class(dir)
+    } else {
+        None
+    };
+    let is_service = main_class_opt.is_some();
     let relative = if rel_prefix.is_empty() {
         dir.strip_prefix(base_dir).unwrap_or(dir).to_string_lossy().to_string()
     } else {
@@ -158,6 +162,7 @@ fn scan_recursive(
         packaging: info.packaging.clone(),
         is_service,
         already_added,
+        main_class: main_class_opt,
         children,
     };
 
@@ -166,23 +171,33 @@ fn scan_recursive(
     Ok(vec![module])
 }
 
-/// 判定模块目录内是否存在带 `@SpringBootApplication` 注解的类。
+/// 在模块的 `src/main/java` 下查找带 `@SpringBootApplication` 注解的类，命中则返回其全限定名。
 ///
-/// 只扫 `src/main/java`（IDEA 判定 SpringBoot 模块的关键位置），跳过 target/.git/node_modules，
-/// 每个 .java 只读前 4KB（注解通常出现在类声明附近）。命中即返回 true，短路。
-fn has_spring_boot_application(module_dir: &Path) -> bool {
+/// - 先从模块 pom.xml 里直接取 mainClass / start-class（支持 ${xxx} 变量解引用）——
+///   BladeX / Spring Boot Parent 项目能直接命中，避免扫数百个 java 文件
+/// - 命中不了才去 `src/main/java` 递归扫 @SpringBootApplication
+/// - 扫描时跳过 target/.git/node_modules/.idea，每个 .java 只读前 4KB
+pub fn find_spring_boot_main_class(module_dir: &Path) -> Option<String> {
+    // 1. pom.xml 直取（最快）
+    let pom_path = module_dir.join("pom.xml");
+    if let Ok(content) = std::fs::read_to_string(&pom_path) {
+        if let Some(mc) = crate::process::build::extract_main_class_from_pom_xml(&content) {
+            return Some(mc);
+        }
+    }
+    // 2. 扫源码兜底
     let src_java = module_dir.join("src").join("main").join("java");
     if !src_java.is_dir() {
-        return false;
+        return None;
     }
-    scan_annotation(&src_java)
+    scan_annotation(&src_java, &src_java)
 }
 
-fn scan_annotation(dir: &Path) -> bool {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return false,
-    };
+fn scan_annotation(root: &Path, dir: &Path) -> Option<String> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    // 先累积后排序：先扫同级 .java（主类多数在包根目录），再递归子目录，命中即返
+    let mut files: Vec<PathBuf> = vec![];
+    let mut dirs: Vec<PathBuf> = vec![];
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -190,18 +205,32 @@ fn scan_annotation(dir: &Path) -> bool {
             if matches!(name, "target" | ".git" | "node_modules" | ".idea") {
                 continue;
             }
-            if scan_annotation(&path) {
-                return true;
-            }
+            dirs.push(path);
         } else if path.extension().and_then(|e| e.to_str()) == Some("java") {
-            if let Ok(head) = read_head(&path, 4096) {
-                if head.contains("@SpringBootApplication") {
-                    return true;
+            files.push(path);
+        }
+    }
+    for path in &files {
+        if let Ok(head) = read_head(path, 4096) {
+            if head.contains("@SpringBootApplication") {
+                if let Ok(rel) = path.strip_prefix(root) {
+                    let fqcn = rel
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                        .replace('/', ".")
+                        .trim_end_matches(".java")
+                        .to_string();
+                    return Some(fqcn);
                 }
             }
         }
     }
-    false
+    for d in &dirs {
+        if let Some(mc) = scan_annotation(root, d) {
+            return Some(mc);
+        }
+    }
+    None
 }
 
 fn read_head(path: &Path, n: usize) -> std::io::Result<String> {

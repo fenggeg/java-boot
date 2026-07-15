@@ -24,6 +24,8 @@ export default function App() {
   const runtimes = useStore((s) => s.runtimes);
   const selectedServiceId = useStore((s) => s.selectedServiceId);
   const selectService = useStore((s) => s.selectService);
+  const closeTab = useStore((s) => s.closeTab);
+  const openedTabs = useStore((s) => s.openedTabs);
   const logs = useStore((s) => s.logs);
 
   const [addProjectOpen, setAddProjectOpen] = useState(false);
@@ -61,15 +63,11 @@ export default function App() {
     await refreshServices();
   };
 
-  // 构建 Tab：所有服务（含已停止，方便查看历史日志）
-  const allTabs = [...services].sort((a, b) => {
-    // 选中优先，运行中其次
-    const ra = runtimes[a.id]?.status;
-    const rb = runtimes[b.id]?.status;
-    const score = (s?: string) =>
-      s === "running" ? 0 : s === "starting" ? 1 : s === "error" ? 2 : 3;
-    return score(ra) - score(rb);
-  });
+  // 只渲染“已打开”的 tab（IDE-like），保持打开顺序
+  const serviceMap = new Map(services.map((s) => [s.id, s]));
+  const allTabs = openedTabs
+    .map((id) => serviceMap.get(id))
+    .filter((s): s is Service => !!s);
 
   const tabItems = allTabs.map((s) => {
     const rt = runtimes[s.id];
@@ -79,6 +77,7 @@ export default function App() {
     const hasUnread = logBuf?.hasUnread ?? false;
     return {
       key: s.id,
+      closable: true,
       label: (
         <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
           <span
@@ -121,14 +120,26 @@ export default function App() {
                 轻量本地服务编排 · 点击左侧 <span className="accent">+ 添加项目</span> 开始
               </div>
             </div>
+          ) : openedTabs.length === 0 ? (
+            <div className="hero-empty">
+              <div className="hero-sub">
+                ← 从左侧服务列表点击一个服务，在此查看日志
+              </div>
+            </div>
           ) : (
             <>
               <div className="log-tabs">
                 <Tabs
                   size="small"
-                  type="card"
+                  type="editable-card"
+                  hideAdd
                   activeKey={selectedServiceId ?? undefined}
                   onChange={(key) => selectService(key)}
+                  onEdit={(key, action) => {
+                    if (action === "remove" && typeof key === "string") {
+                      closeTab(key);
+                    }
+                  }}
                   items={tabItems}
                   tabBarStyle={{ margin: 0, padding: "4px 8px 0" }}
                 />

@@ -35,6 +35,7 @@ export const updateService = (
   profiles?: string | null,
   devMode?: boolean,
   mainClass?: string | null,
+  overrideProperties?: string | null,
 ) =>
   invoke<void>("update_service", {
     id,
@@ -44,6 +45,7 @@ export const updateService = (
     profiles: profiles ?? null,
     devMode: devMode ?? null,
     mainClass: mainClass ?? null,
+    overrideProperties: overrideProperties ?? null,
   });
 
 /// 更新项目级 JDK / Maven 配置

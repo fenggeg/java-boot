@@ -89,6 +89,51 @@ pub fn check_started(line: &str) -> bool {
         || line.contains("Undertow started")
 }
 
+/// 从 Spring Boot 启动日志里提取 HTTP 服务端口。
+///
+/// 覆盖的格式（Spring Boot 2.x/3.x，Tomcat/Jetty/Netty/Undertow）：
+/// - `Tomcat started on port(s): 8080 (http) with context path ''`
+/// - `Tomcat started on port(s): 8080 (http)`
+/// - `Jetty started on port(s) 8080 (http) with context path '/'`
+/// - `Netty started on port(s): 8080`
+/// - `Undertow started on port(s) 8080 (http)`
+///
+/// 多端口场景（如 `8080, 8081`）也会全部解析出来。
+pub fn extract_service_ports(line: &str) -> Vec<u16> {
+    // 关键字命中后再解析，避免每行都跑正则
+    let anchor = if line.contains("started on port") {
+        "started on port"
+    } else {
+        return vec![];
+    };
+    let idx = match line.find(anchor) {
+        Some(i) => i + anchor.len(),
+        None => return vec![],
+    };
+    // 跳过分隔符 `:` 或空格
+    let tail = line[idx..].trim_start_matches([':', ' ']);
+    // 解析连续的数字端口（逗号/空格分隔，遇到非数字非分隔符停止）
+    let mut ports = vec![];
+    for tok in tail.split(|c: char| c == ',' || c.is_whitespace()) {
+        if tok.is_empty() {
+            continue;
+        }
+        // 取 token 开头连续数字部分
+        let num: String = tok.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if num.is_empty() {
+            break; // 遇到 "(http)" 这种非数字 token，端口列表已结束
+        }
+        if let Ok(p) = num.parse::<u16>() {
+            if !ports.contains(&p) {
+                ports.push(p);
+            }
+        } else {
+            break;
+        }
+    }
+    ports
+}
+
 /// 启动失败检测：Spring Boot 打印 `APPLICATION FAILED TO START` 时立刻置错
 pub fn check_failed(line: &str) -> bool {
     line.contains("APPLICATION FAILED TO START")

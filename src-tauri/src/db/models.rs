@@ -31,6 +31,9 @@ pub struct Service {
     pub main_class: Option<String>,
     /// 开发快速启动模式（JVM/Spring 优化参数）
     pub dev_mode: bool,
+    /// 配置覆盖属性 JSON：`[{"key":"spring.cloud.nacos.discovery.ip","value":"192.168.1.100"}]`
+    /// 启动时转成 `-Dkey=value` 注入 JVM 系统属性，Spring Boot 优先级高于 application.yml
+    pub override_properties: Option<String>,
     pub created_at: String,
 }
 
@@ -67,13 +70,16 @@ pub struct ServiceRuntime {
     pub service_id: String,
     pub status: ServiceStatus,
     pub pid: Option<u32>,
+    /// 该 PID 所有 LISTENING 端口（含 JMX/RMI/H2 等噪声端口），用于冲突检测
     pub ports: Vec<u16>,
+    /// 从 Spring Boot 启动日志解析出的真实 HTTP 服务端口（前端只展示这些）
+    pub service_ports: Vec<u16>,
     pub started_at: Option<String>,
     pub port_conflict: bool,
     pub conflict_with: Vec<String>,
     /// CPU 占用百分比
     pub cpu_usage: Option<f32>,
-    /// 内存占用（MB）
+    /// 内存占用（MB）— JVM RSS，包含 heap + Metaspace + 线程栈 + 代码缓存等
     pub memory_mb: Option<f64>,
 }
 
@@ -84,6 +90,7 @@ impl Default for ServiceRuntime {
             status: ServiceStatus::Stopped,
             pid: None,
             ports: vec![],
+            service_ports: vec![],
             started_at: None,
             port_conflict: false,
             conflict_with: vec![],
@@ -124,5 +131,8 @@ pub struct ScannedModule {
     pub packaging: String,
     pub is_service: bool, // jar/war 且可作为服务
     pub already_added: bool,
+    /// 扫描期识别到的主类全限定名（有 @SpringBootApplication 才写入），用于服务落库时直填 DB，
+    /// 避免启动阶段再次扫源码（大项目串行读文件头累计可达数秒）
+    pub main_class: Option<String>,
     pub children: Vec<ScannedModule>,
 }
