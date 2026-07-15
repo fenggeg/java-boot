@@ -33,5 +33,6 @@ _tmp_*
 .env.local
 
 .workbuddy/
+.codefree/
 
 
