@@ -995,12 +995,11 @@ impl ProcessManager {
         if count == 0 {
             return Ok(());
         }
-        Self::emit_log_static(
-            &app,
-            &ids[0],
-            "[javaboot]",
-            &format!("[javaboot] 正在停止全部 {} 个服务...", count),
-        );
+        // 推送到每个相关服务面板，让用户在每个 tab 都能看到停止原因
+        let msg = format!("[javaboot] 正在停止全部 {} 个服务...", count);
+        for id in &ids {
+            Self::emit_log_static(&app, id, "[javaboot]", &msg);
+        }
         let futures: Vec<_> = ids
             .into_iter()
             .map(|id| {
