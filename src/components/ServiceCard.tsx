@@ -68,6 +68,15 @@ export default function ServiceCard({ service, active, onConfig }: Props) {
     }
   };
 
+  const handleRecompile = async () => {
+    try {
+      await api.recompileAndStart(service.id);
+      // 重新编译并启动是异步的
+    } catch (e: any) {
+      message.error(`重新编译失败: ${e}`);
+    }
+  };
+
   const handleDelete = async () => {
     try {
       await api.deleteService(service.id);
@@ -103,6 +112,12 @@ export default function ServiceCard({ service, active, onConfig }: Props) {
       label: "编译并启动",
       icon: <Code size={13} />,
       onClick: handleCompile,
+    },
+    {
+      key: "recompile",
+      label: "重新编译并启动",
+      icon: <Code size={13} />,
+      onClick: handleRecompile,
     },
     { type: "divider" as const },
     {

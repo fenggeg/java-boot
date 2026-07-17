@@ -12,9 +12,28 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .try_init()
-        .ok();
+    // 日志写入文件（%APPDATA%/javaboot-launcher/javaboot.log），便于排查安装器启动时环境缺失等问题
+    {
+        let log_dir = dirs::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("javaboot-launcher");
+        let _ = std::fs::create_dir_all(&log_dir);
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_dir.join("javaboot.log"));
+        if let Ok(f) = log_file {
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+                .target(env_logger::Target::Pipe(Box::new(f)))
+                .format_timestamp_secs()
+                .try_init()
+                .ok();
+        } else {
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+                .try_init()
+                .ok();
+        }
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -35,6 +54,21 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // 最早期：从注册表合并完整 PATH（修复安装器启动时 PATH 不完整导致 git/java/maven 检测失败）
+            process::env::merge_registry_path();
+
+            // 诊断：打印关键环境变量（排查安装器启动时环境缺失问题）
+            {
+                log::info!("=== 环境变量诊断 ===");
+                log::info!("USERPROFILE = {:?}", std::env::var("USERPROFILE"));
+                log::info!("JAVA_HOME = {:?}", std::env::var("JAVA_HOME"));
+                log::info!("MAVEN_HOME = {:?}", std::env::var("MAVEN_HOME"));
+                log::info!("M2_HOME = {:?}", std::env::var("M2_HOME"));
+                let path = std::env::var("PATH").unwrap_or_default();
+                log::info!("PATH ({} chars): {}", path.len(), path);
+                log::info!("=== 环境变量诊断结束 ===");
+            }
+
             // 初始化数据库
             db::init().map_err(|e| {
                 log::error!("数据库初始化失败: {}", e);
@@ -104,6 +138,7 @@ pub fn run() {
             commands::stop_service,
             commands::restart_service,
             commands::compile_and_start,
+            commands::recompile_and_start,
             commands::stop_all,
             commands::get_runtime,
             commands::get_all_runtimes,

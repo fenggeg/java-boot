@@ -7,6 +7,7 @@ use crate::db;
 use crate::db::models::{AppConfig, Project, ScannedModule, Service, ServiceRuntime};
 use crate::error::AppResult;
 use crate::util::CandidateCollector;
+use crate::util::NoWindow;
 use crate::git;
 use crate::pom;
 use crate::process;
@@ -198,10 +199,43 @@ pub fn update_project_env(
     java_home: Option<Option<String>>,
     maven_home: Option<Option<String>>,
 ) -> AppResult<()> {
+    // 路径规范化：去除首尾空白，统一正斜杠为反斜杠（Windows），去除多余分隔符
+    let normalize = |s: Option<Option<String>>| -> Option<Option<String>> {
+        s.map(|inner| {
+            inner.map(|v| {
+                let trimmed = v.trim();
+                if trimmed.is_empty() {
+                    String::new()
+                } else {
+                    // 统一斜杠方向，合并连续反斜杠（但保留 UNC 前缀 \\）
+                    let mut result = String::with_capacity(trimmed.len());
+                    let mut prev_bs = false;
+                    for (i, c) in trimmed.chars().enumerate() {
+                        if c == '/' {
+                            result.push('\\');
+                            prev_bs = true;
+                        } else if c == '\\' {
+                            // 保留 UNC 路径开头的双反斜杠
+                            if i < 2 && trimmed.starts_with(r"\\") {
+                                result.push('\\');
+                            } else if !prev_bs {
+                                result.push('\\');
+                            }
+                            prev_bs = true;
+                        } else {
+                            result.push(c);
+                            prev_bs = false;
+                        }
+                    }
+                    result
+                }
+            })
+        })
+    };
     db::update_project_env(
         &project_id,
-        java_home.as_ref().map(|o| o.as_deref()),
-        maven_home.as_ref().map(|o| o.as_deref()),
+        normalize(java_home).as_ref().map(|o| o.as_deref()),
+        normalize(maven_home).as_ref().map(|o| o.as_deref()),
     )
 }
 
@@ -249,6 +283,12 @@ pub async fn restart_service(id: String, app: AppHandle) -> AppResult<()> {
 pub async fn compile_and_start(id: String, app: AppHandle) -> AppResult<()> {
     let service = db::get_service(&id)?;
     process::get_manager().compile_and_start(app, service).await
+}
+
+#[tauri::command]
+pub async fn recompile_and_start(id: String, app: AppHandle) -> AppResult<()> {
+    let service = db::get_service(&id)?;
+    process::get_manager().recompile_and_start(app, service).await
 }
 
 #[tauri::command]
@@ -435,6 +475,7 @@ fn probe_jdk(java_home: &str) -> Option<JdkInfo> {
     }
     let output = std::process::Command::new(&java_exe)
         .arg("-version")
+        .creation_flags_no_window()
         .output()
         .ok()?;
     // java -version 输出到 stderr
@@ -488,7 +529,14 @@ pub async fn detect_mavens() -> Vec<MavenInfo> {
     let candidates = tokio::task::spawn_blocking(collect_maven_candidates)
         .await
         .unwrap_or_default();
-    detect_tools(candidates, probe_maven).await
+    // 先检测 JDK，把第一个可用 JAVA_HOME 传给 maven 探测
+    // （安装器启动时 PATH 不完整，probe_maven 内部 which_java() 可能失败）
+    let jdk_candidates = tokio::task::spawn_blocking(collect_jdk_candidates)
+        .await
+        .unwrap_or_default();
+    let jdks = detect_tools(jdk_candidates, probe_jdk).await;
+    let fallback_java_home = jdks.first().map(|j| j.path.clone());
+    detect_tools(candidates, move |m| probe_maven(m, fallback_java_home.as_deref())).await
 }
 
 /// 收集 Maven 候选路径（同步阻塞 IO，须在 spawn_blocking 中调用）
@@ -552,13 +600,29 @@ fn collect_maven_candidates() -> Vec<String> {
 }
 
 /// 探测某 MAVEN_HOME 的版本信息
-fn probe_maven(maven_home: &str) -> Option<MavenInfo> {
+/// `fallback_java_home`: 由 detect_mavens 传入的已检测到的 JDK 路径，用于 PATH 不完整时
+fn probe_maven(maven_home: &str, fallback_java_home: Option<&str>) -> Option<MavenInfo> {
     let mvn_cmd = std::path::PathBuf::from(maven_home).join("bin").join("mvn.cmd");
     if !mvn_cmd.exists() {
         return None;
     }
-    // 用 JAVA_HOME（如有）执行 mvn -v
-    let java_home = std::env::var("JAVA_HOME").ok();
+    // mvn.cmd 强制要求 JAVA_HOME；优先用系统 JAVA_HOME，否则 fallback 到传入的 JDK 路径，
+    // 最后尝试 which_java() 反推（PATH 不完整时可能失败）
+    let java_home = std::env::var("JAVA_HOME").ok().filter(|s| !s.is_empty());
+    let java_home = if java_home.is_some() {
+        java_home
+    } else if let Some(fbh) = fallback_java_home {
+        Some(fbh.to_string())
+    } else {
+        // JAVA_HOME 未设置时，从 PATH 里的 java.exe 反推 JAVA_HOME
+        crate::process::env::which_java().and_then(|java_exe| {
+            std::path::PathBuf::from(java_exe)
+                .parent() // bin
+                .and_then(|bin| bin.parent()) // java_home
+                .map(|p| p.to_string_lossy().to_string())
+        })
+    };
+
     let mut cmd = std::process::Command::new("cmd");
     cmd.arg("/c").arg(&mvn_cmd).arg("-v");
     if let Some(jh) = &java_home {
@@ -566,9 +630,21 @@ fn probe_maven(maven_home: &str) -> Option<MavenInfo> {
         let cur_path = std::env::var("PATH").unwrap_or_default();
         cmd.env("PATH", format!("{}\\bin;{}", jh, cur_path));
     }
-    let output = cmd.output().ok()?;
-    let text = String::from_utf8_lossy(&output.stdout);
+    let output = cmd.creation_flags_no_window().output().ok()?;
+    // mvn.cmd 失败时错误信息在 stderr，stdout 为空；合并两者避免漏掉
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // 优先取 stdout 第一行（正常 "Apache Maven 3.9.6 ..."），fallback 到 stderr
+    let text = if stdout.trim().is_empty() { &stderr } else { &stdout };
     let version = text.lines().next().unwrap_or("unknown").trim().to_string();
+    // 如果版本信息含错误关键字，视为探测失败
+    if version.is_empty()
+        || version.contains("not found")
+        || version.contains("ERROR")
+        || version.contains("Exception")
+    {
+        return None;
+    }
     Some(MavenInfo {
         path: maven_home.to_string(),
         version,

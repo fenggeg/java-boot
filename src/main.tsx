@@ -5,6 +5,9 @@ import App from "./App";
 import ErrorBoundary from "./components/ErrorBoundary";
 import "./styles.css";
 
+// 禁用 webview 内容区右键菜单（打包后不暴露浏览器上下文菜单）
+document.addEventListener("contextmenu", (e) => e.preventDefault());
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <ConfigProvider
     locale={zhCN}

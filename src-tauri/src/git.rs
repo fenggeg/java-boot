@@ -6,6 +6,7 @@ use tauri::AppHandle;
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::process;
+use crate::util::NoWindow;
 
 /// 拉取结果
 #[derive(Debug, Clone, serde::Serialize)]
@@ -17,11 +18,37 @@ pub struct PullResult {
 }
 
 pub fn git_available() -> bool {
-    Command::new("git")
+    resolve_git().is_some()
+}
+
+/// 定位 git 可执行文件：PATH 优先，fallback 到 scoop shims
+fn resolve_git() -> Option<String> {
+    // 1. PATH 里的 git
+    if Command::new("git")
         .arg("--version")
+        .creation_flags_no_window()
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+    {
+        return Some("git".to_string());
+    }
+    // 2. scoop shims（打包后应用可能不继承用户 PATH）
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        let scoop_git = format!("{}\\scoop\\shims\\git.exe", home);
+        if std::path::Path::new(&scoop_git).exists() {
+            if Command::new(&scoop_git)
+                .arg("--version")
+                .creation_flags_no_window()
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+            {
+                return Some(scoop_git);
+            }
+        }
+    }
+    None
 }
 
 /// 检测目录是否为 Git 仓库
@@ -72,6 +99,16 @@ pub async fn pull(app: AppHandle, project_id: &str) -> AppResult<PullResult> {
     let app_clone = app.clone();
     let services_clone = services.clone();
 
+    // 定位 git（PATH 优先，fallback scoop shims）
+    let git_exe = match resolve_git() {
+        Some(g) => g,
+        None => {
+            return Err(AppError::Git(
+                "未找到 git 命令，请安装 Git 并加入 PATH".to_string(),
+            ));
+        }
+    };
+
     // git pull 可能因需要认证而永久阻塞 spawn_blocking 线程，
     // 用 tokio::time::timeout 包裹，60 秒超时
     let pull_timeout = std::time::Duration::from_secs(60);
@@ -79,14 +116,14 @@ pub async fn pull(app: AppHandle, project_id: &str) -> AppResult<PullResult> {
         pull_timeout,
         tokio::task::spawn_blocking(move || {
             // 禁止交互式凭据提示，避免私有仓库卡住
-            let mut cmd = Command::new("git");
+            let mut cmd = Command::new(&git_exe);
             cmd.arg("pull")
                 .arg("--no-progress")
                 .current_dir(&root_clone)
                 .env("GIT_TERMINAL_PROMPT", "0")
                 .env("GIT_ASKPASS", "")
                 .env("SSH_ASKPASS", "");
-            cmd.output()
+            cmd.creation_flags_no_window().output()
         }),
     )
     .await;

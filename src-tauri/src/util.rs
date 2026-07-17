@@ -26,3 +26,37 @@ impl CandidateCollector {
         self.candidates
     }
 }
+
+/// 为 `std::process::Command` 和 `tokio::process::Command` 提供统一的
+/// `CREATE_NO_WINDOW` 设置，避免在打包后的 GUI 应用中弹出终端窗口。
+pub trait NoWindow {
+    fn creation_flags_no_window(&mut self) -> &mut Self;
+}
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+impl NoWindow for std::process::Command {
+    #[cfg(windows)]
+    fn creation_flags_no_window(&mut self) -> &mut Self {
+        use std::os::windows::process::CommandExt;
+        self.creation_flags(CREATE_NO_WINDOW);
+        self
+    }
+    #[cfg(not(windows))]
+    fn creation_flags_no_window(&mut self) -> &mut Self {
+        self
+    }
+}
+
+impl NoWindow for tokio::process::Command {
+    #[cfg(windows)]
+    fn creation_flags_no_window(&mut self) -> &mut Self {
+        self.creation_flags(CREATE_NO_WINDOW);
+        self
+    }
+    #[cfg(not(windows))]
+    fn creation_flags_no_window(&mut self) -> &mut Self {
+        self
+    }
+}

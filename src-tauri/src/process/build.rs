@@ -23,6 +23,7 @@ use crate::error::{AppError, AppResult};
 
 use super::env::{inject_env, EnvConfig};
 use super::log_pipe::emit_log_raw;
+use crate::util::NoWindow;
 
 /// 编译期子进程 PID，用于 stop 时中断
 pub type CompilePidSlot = Arc<PMutex<Option<u32>>>;
@@ -71,6 +72,7 @@ pub fn run_mvn_capture(
     cmd.stderr(std::process::Stdio::piped());
     cmd.stdin(std::process::Stdio::null());
     inject_env(&mut cmd, env_cfg);
+    cmd.creation_flags_no_window();
 
     let mut child = cmd.spawn()?;
     let child_pid = child.id();
@@ -523,6 +525,7 @@ fn siblings_all_built(root: &Path, current: &Path) -> bool {
 }
 
 /// 收集兄弟模块的 target/classes 列表，加入 classpath
+#[allow(dead_code)]
 pub fn collect_sibling_classes(root: &Path, current: &Path) -> Vec<String> {
     let mut extra_cp: Vec<String> = vec![];
     let current_classes = current.join("target").join("classes");

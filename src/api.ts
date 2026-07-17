@@ -72,6 +72,8 @@ export const restartService = (id: string) =>
   invoke<void>("restart_service", { id });
 export const compileAndStart = (id: string) =>
   invoke<void>("compile_and_start", { id });
+export const recompileAndStart = (id: string) =>
+  invoke<void>("recompile_and_start", { id });
 export const stopAll = () => invoke<void>("stop_all");
 export const getRuntime = (id: string) =>
   invoke<ServiceRuntime>("get_runtime", { id });

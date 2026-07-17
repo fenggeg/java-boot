@@ -23,6 +23,7 @@ export default function ProjectConfigModal({
   const [jdks, setJdks] = useState<JdkInfo[]>([]);
   const [mavens, setMavens] = useState<MavenInfo[]>([]);
   const [saving, setSaving] = useState(false);
+  const isOpen = !!project;
 
   useEffect(() => {
     if (project) {
@@ -32,6 +33,11 @@ export default function ProjectConfigModal({
       });
       api.detectJdks().then(setJdks).catch(() => setJdks([]));
       api.detectMavens().then(setMavens).catch(() => setMavens([]));
+    } else {
+      // 关闭时重置，避免下次打开闪现旧数据
+      form.resetFields();
+      setJdks([]);
+      setMavens([]);
     }
   }, [project, form]);
 
@@ -102,7 +108,7 @@ export default function ProjectConfigModal({
           项目环境配置 — {project?.name}
         </span>
       }
-      open={!!project}
+      open={isOpen}
       onCancel={onClose}
       onOk={handleSave}
       okText="保存"
@@ -110,6 +116,7 @@ export default function ProjectConfigModal({
       confirmLoading={saving}
       width={560}
       destroyOnClose
+      maskClosable={false}
     >
       <Text type="secondary" style={{ display: "block", marginBottom: 16, fontSize: 12 }}>
         JDK 和 Maven 路径为项目级配置，对该项目下所有服务生效。

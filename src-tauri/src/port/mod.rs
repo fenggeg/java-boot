@@ -1,4 +1,5 @@
 use crate::error::AppResult;
+use crate::util::NoWindow;
 
 /// 根据 PID 查询该进程监听的所有 TCP 端口（LISTENING 状态）
 pub fn ports_for_pid(pid: u32) -> AppResult<Vec<u16>> {
@@ -140,6 +141,7 @@ fn build_tcp_table() -> AppResult<Vec<(u16, u32)>> {
 pub fn ports_for_pid_netstat(pid: u32) -> AppResult<Vec<u16>> {
     let output = std::process::Command::new("netstat")
         .args(["-ano"])
+        .creation_flags_no_window()
         .output()
         .map_err(|e| crate::error::AppError::Process(format!("netstat 执行失败: {}", e)))?;
     let text = String::from_utf8_lossy(&output.stdout);

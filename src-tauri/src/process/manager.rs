@@ -36,9 +36,10 @@ use tokio::process::Command;
 use crate::db;
 use crate::db::models::{Service, ServiceRuntime, ServiceStatus};
 use crate::error::{AppError, AppResult};
+use crate::util::NoWindow;
 
 use super::build::{
-    collect_sibling_classes, common_mvn_flags, decide_build_strategy, detect_main_class,
+    common_mvn_flags, decide_build_strategy, detect_main_class,
     run_mvn_capture, strip_verbatim_prefix, BuildStrategy, ClasspathCache, CompilePidSlot,
 };
 use super::env::{
@@ -91,6 +92,7 @@ pub(crate) fn kill_process_tree_by_pid(pid: u32) {
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
+            .creation_flags_no_window()
             .status();
     }
     #[cfg(not(windows))]
@@ -507,7 +509,7 @@ impl ProcessManager {
             try_cleanup!(
                 self.run_maven_build(
                     &app, &service, &env_cfg, &working_dir, &program, &base_args,
-                    &compile_pid, strategy,
+                    &compile_pid, strategy, false,
                 ).await
             );
         }
@@ -679,7 +681,8 @@ impl ProcessManager {
         #[cfg(windows)]
         {
             const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
         }
 
         check_cancel!();
@@ -816,6 +819,7 @@ impl ProcessManager {
         base_args: &[String],
         compile_pid: &CompilePidSlot,
         strategy: BuildStrategy,
+        clean: bool,
     ) -> AppResult<()> {
         let project_root = env_cfg.project_root.clone();
         let (cwd, module_rel) = match &project_root {
@@ -845,6 +849,9 @@ impl ProcessManager {
 
         let mut args: Vec<String> = base_args.to_vec();
         args.extend(common_mvn_flags());
+        if clean {
+            args.push("clean".to_string());
+        }
         args.push("compile".to_string());
         if !module_rel.is_empty() {
             args.push("-pl".into());
@@ -854,21 +861,27 @@ impl ProcessManager {
             }
         }
 
+        let action_desc = if clean {
+            if module_rel.is_empty() {
+                "清理并编译当前模块"
+            } else if strategy == BuildStrategy::CompileAll {
+                "清理并编译当前模块+依赖模块"
+            } else {
+                "清理并编译当前模块"
+            }
+        } else if module_rel.is_empty() {
+            "编译当前模块"
+        } else if strategy == BuildStrategy::CompileAll {
+            "编译当前模块+依赖模块"
+        } else {
+            "编译当前模块"
+        };
+
         Self::emit_log(
             app,
             &service.id,
             LogSource::Mvn,
-            &format!(
-                "[javaboot] {}: mvn {}",
-                if module_rel.is_empty() {
-                    "编译当前模块"
-                } else if strategy == BuildStrategy::CompileAll {
-                    "编译当前模块+依赖模块"
-                } else {
-                    "编译当前模块"
-                },
-                args.join(" ")
-            ),
+            &format!("[javaboot] {}: mvn {}", action_desc, args.join(" ")),
         );
 
         let program = program.to_string();
@@ -903,6 +916,10 @@ impl ProcessManager {
     }
 
     /// 用 `mvn dependency:build-classpath` 拉全量依赖 classpath 并写入缓存
+    ///
+    /// 在项目根目录用 `-pl <module> -am` 执行，让 Maven 精确解析当前模块及其上游依赖模块的
+    /// classpath（含兄弟模块的 target/classes），避免无差别加入所有兄弟模块导致 Flyway 等
+    /// classpath 扫描型工具冲突。
     async fn resolve_classpath_via_mvn(
         &self,
         app: &AppHandle,
@@ -920,14 +937,40 @@ impl ProcessManager {
         let _ = std::fs::create_dir_all(working_dir.join("target"));
         let cp_file = cache.cp_file.clone();
 
+        // 计算执行目录和模块相对路径：有 project_root 时在根目录执行 -pl <mod> -am
+        let (cwd, module_rel) = if let Some(root) = &env_cfg.project_root {
+            let root_path = std::path::Path::new(root);
+            let rel = match working_dir.strip_prefix(root_path) {
+                Ok(r) => r.to_string_lossy().replace('\\', "/").trim_matches('/').to_string(),
+                Err(_) => {
+                    let wd = working_dir.canonicalize().unwrap_or_default();
+                    let pr = root_path.canonicalize().unwrap_or_default();
+                    wd.strip_prefix(&pr)
+                        .map(|r| r.to_string_lossy().replace('\\', "/").trim_matches('/').to_string())
+                        .unwrap_or_default()
+                }
+            };
+            if rel.is_empty() {
+                (working_dir.to_path_buf(), String::new())
+            } else {
+                (root_path.to_path_buf(), rel)
+            }
+        } else {
+            (working_dir.to_path_buf(), String::new())
+        };
+
         let mut args: Vec<String> = base_args.to_vec();
         args.push("dependency:build-classpath".into());
         args.push(format!("-Dmdep.outputFile={}", cp_file.to_string_lossy()));
+        if !module_rel.is_empty() {
+            args.push("-pl".into());
+            args.push(module_rel.clone());
+            args.push("-am".into());
+        }
         args.push("--batch-mode".into());
         args.push("--no-transfer-progress".into());
 
         let program = program.to_string();
-        let cwd = working_dir.to_path_buf();
         let env_cfg_clone = env_cfg.clone();
         let compile_pid_clone = compile_pid.clone();
         let app_clone = app.clone();
@@ -975,7 +1018,17 @@ impl ProcessManager {
         Ok(dep_cp)
     }
 
-    /// 组装完整 classpath：target/classes + 兄弟模块 classes + jar 依赖
+    /// 组装完整 classpath：target/classes + jar 依赖
+    ///
+    /// **关键优化**：把 `dependency:build-classpath` 输出中属于**项目内模块**的本地仓库 jar
+    /// 替换为该模块的 `target/classes`（如果存在）。
+    ///
+    /// 原因：多模块项目中，兄弟模块 `mvn install` 到本地仓库后源码再更新但没重新 install，
+    /// `dependency:build-classpath` 输出的是本地仓库的**过期 jar**，而 `target/classes` 是最新编译的。
+    /// IDEA 直接用 `target/classes` 所以正常，我们替换后行为与 IDEA 一致。
+    ///
+    /// 同时避免了之前 `collect_sibling_classes` 无差别加入所有兄弟模块导致的 Flyway 冲突——
+    /// 只有 Maven 依赖解析中出现的模块才会被替换。
     fn assemble_classpath(
         working_dir: &std::path::Path,
         env_cfg: &EnvConfig,
@@ -983,11 +1036,22 @@ impl ProcessManager {
     ) -> String {
         let classes_dir = working_dir.join("target").join("classes");
         let mut parts: Vec<String> = vec![classes_dir.to_string_lossy().to_string()];
-        if let Some(root) = &env_cfg.project_root {
-            parts.extend(collect_sibling_classes(std::path::Path::new(root), working_dir));
-        }
+
         if !dep_cp.is_empty() {
-            parts.push(dep_cp.to_string());
+            // 扫描项目内所有有 target/classes 的模块，建立 artifactId → classes 路径 映射
+            let module_map = env_cfg.project_root
+                .as_ref()
+                .map(|root| build_module_classes_map(std::path::Path::new(root)))
+                .unwrap_or_default();
+
+            for entry in dep_cp.split(CP_SEP) {
+                if entry.is_empty() {
+                    continue;
+                }
+                // 尝试从本地仓库 jar 路径提取 artifactId，替换为项目内 target/classes
+                let replaced = replace_with_module_classes(entry, &module_map);
+                parts.push(replaced);
+            }
         }
         parts.join(CP_SEP)
     }
@@ -995,7 +1059,6 @@ impl ProcessManager {
     // ================================================================
     // stop / restart / compile_and_start / stop_all
     // ================================================================
-
     pub async fn stop(&self, app: AppHandle, service_id: &str) -> AppResult<()> {
         Self::emit_log(&app, service_id, LogSource::Mvn, "[javaboot] 正在停止服务...");
         let handle = {
@@ -1121,10 +1184,46 @@ impl ProcessManager {
             let compile_pid = Arc::new(PMutex::new(None));
             self.run_maven_build(
                 app, service, &env_cfg, &working_dir, &program, &base_args,
-                &compile_pid, strategy,
+                &compile_pid, strategy, false,
             ).await?;
         }
         Ok(())
+    }
+
+    /// 重新编译并启动：先停旧进程，强制 `mvn clean compile`，再启动
+    ///
+    /// 与 `compile_and_start` 的区别：
+    /// - 强制 clean，清除 target 下旧编译产物
+    /// - 强制走编译（忽略 classpath 缓存命中和 Skip 策略）
+    /// - 先停旧进程再编译（clean 会删除 target/classes，旧进程可能持有 class 文件锁）
+    pub async fn recompile_and_start(&self, app: AppHandle, service: Service) -> AppResult<()> {
+        // 先停旧进程（clean 会删 target，避免 class 文件锁冲突）
+        self.stop(app.clone(), &service.id).await?;
+        self.set_status(&app, &service.id, ServiceStatus::Recompiling);
+
+        use super::build::{strip_verbatim_prefix, BuildStrategy};
+        use super::env::{preflight_check, resolve_env_config, resolve_maven_cmd};
+
+        let working_dir = strip_verbatim_prefix(&PathBuf::from(&service.working_dir));
+        let env_cfg = resolve_env_config(&service)?;
+        let (program, base_args) = resolve_maven_cmd(&working_dir, &env_cfg);
+        preflight_check(&env_cfg, &working_dir, &program)?;
+
+        // clean 后 classpath 缓存必然失效，强制 CompileAll
+        let strategy = BuildStrategy::CompileAll;
+        Self::emit_log(
+            &app, &service.id, LogSource::Mvn,
+            "[javaboot] 重新编译：强制 clean compile（忽略缓存）",
+        );
+
+        let compile_pid = Arc::new(PMutex::new(None));
+        self.run_maven_build(
+            &app, &service, &env_cfg, &working_dir, &program, &base_args,
+            &compile_pid, strategy, true,
+        ).await?;
+
+        // 编译成功，启动（mvn clean 已删除 target，classpath 缓存文件也随之删除）
+        self.start(app, service).await
     }
 
     /// 停止所有运行中的服务（真正并行：每个 stop 独立 spawn 到 tokio runtime）
@@ -1210,3 +1309,87 @@ pub fn get_manager() -> &'static ProcessManager {
 }
 
 static SYS: Lazy<PMutex<sysinfo::System>> = Lazy::new(|| PMutex::new(sysinfo::System::new()));
+
+// ================================================================
+// classpath 替换：本地仓库 jar → 项目内 target/classes
+// ================================================================
+
+/// 扫描项目根下所有含 `target/classes` 的模块目录，建立 `artifactId → classes 路径` 映射。
+///
+/// 扫描深度：根下一级和两级子目录（匹配 `scs-common/scs-common-core`、`wip-eims/wip-eims-api` 等结构）。
+/// artifactId 取目录名（与 Maven 默认 artifactId 一致）。
+fn build_module_classes_map(root: &std::path::Path) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    scan_module_dir(root, root, &mut map, 0, 2);
+    map
+}
+
+fn scan_module_dir(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    map: &mut std::collections::HashMap<String, String>,
+    depth: usize,
+    max_depth: usize,
+) {
+    if depth > max_depth {
+        return;
+    }
+    // 当前目录有 pom.xml 且有 target/classes → 注册
+    let classes = dir.join("target").join("classes");
+    if dir.join("pom.xml").exists() && classes.exists() {
+        let artifact_id = dir.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if !artifact_id.is_empty() {
+            map.insert(artifact_id, classes.to_string_lossy().to_string());
+        }
+    }
+    // 递归子目录
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                // 跳过 target、node_modules、.git 等
+                if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                    if name == "target" || name == "node_modules" || name.starts_with('.') {
+                        continue;
+                    }
+                }
+                scan_module_dir(root, &p, map, depth + 1, max_depth);
+            }
+        }
+    }
+}
+
+/// 尝试把本地仓库 jar 路径替换为项目内模块的 `target/classes`。
+///
+/// jar 路径格式：`D:\repository\com\gyyjy\wip-eims-api\1.0-SNAPSHOT\wip-eims-api-1.0-SNAPSHOT.jar`
+/// 提取文件名 `wip-eims-api-1.0-SNAPSHOT.jar`，去掉版本号后得到 artifactId `wip-eims-api`。
+/// 如果映射表中有该 artifactId，返回对应的 `target/classes` 路径；否则返回原路径。
+fn replace_with_module_classes(
+    jar_path: &str,
+    module_map: &std::collections::HashMap<String, String>,
+) -> String {
+    // 只处理 .jar 路径
+    if !jar_path.to_lowercase().ends_with(".jar") {
+        return jar_path.to_string();
+    }
+    // 提取文件名（不含扩展名）
+    let file_name = std::path::Path::new(jar_path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if file_name.is_empty() {
+        return jar_path.to_string();
+    }
+    // 文件名格式：artifactId-version[-classifier]
+    // 从后往前找第一个 '-' 分隔的版本号段，剩余部分为 artifactId
+    // 但 artifactId 本身可能含 '-'（如 wip-eims-api），所以用映射表匹配：
+    // 遍历映射表所有 key，找 file_name 以 "key-" 开头的
+    for (artifact_id, classes_path) in module_map {
+        if file_name == *artifact_id || file_name.starts_with(&format!("{}-", artifact_id)) {
+            return classes_path.clone();
+        }
+    }
+    jar_path.to_string()
+}

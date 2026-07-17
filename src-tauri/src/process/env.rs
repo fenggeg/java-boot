@@ -2,12 +2,11 @@
 //!
 //! 从原 manager.rs 抽离：
 //! - `EnvConfig` / `resolve_env_config` / `resolve_maven_cmd` / `resolve_java_home`
-//! - `preflight_check` / `which_java` / `which_mvn`（用 `OnceLock` 缓存 PATH 探测）
+//! - `preflight_check` / `which_java` / `which_mvn`（PATH + scoop shims fallback，不缓存）
 //! - `inject_env`：给子进程注入 JAVA_HOME / MAVEN_HOME / PATH
 //!   （去掉了 `env_clear + 复制全部环境变量` 的反模式，直接 override 需要的 key）
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 
 use tokio::process::Command;
 
@@ -142,13 +141,9 @@ pub fn preflight_check(
     Ok(())
 }
 
-/// 在 PATH 中查找 java（首次调用时扫描 PATH，之后走缓存）
+/// 在 PATH 中查找 java（不缓存，因为安装器启动时 PATH 可能不完整）
 pub fn which_java() -> Option<String> {
-    static CACHE: OnceLock<Option<String>> = OnceLock::new();
-    CACHE.get_or_init(scan_java).clone()
-}
-
-fn scan_java() -> Option<String> {
+    // 1. PATH 中的 java
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join("java.exe");
@@ -156,25 +151,36 @@ fn scan_java() -> Option<String> {
             return Some(candidate.to_string_lossy().to_string());
         }
     }
+    // 2. scoop shims（安装器启动时可能不继承用户 PATH）
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        let shim = format!("{}\\scoop\\shims\\java.exe", home);
+        if std::path::Path::new(&shim).exists() {
+            return Some(shim);
+        }
+    }
     None
 }
 
-/// 在 PATH 中查找 mvn（缓存）
+/// 在 PATH 中查找 mvn（不缓存，因为安装器启动时 PATH 可能不完整）
 pub fn which_mvn() -> Option<String> {
-    static CACHE: OnceLock<Option<String>> = OnceLock::new();
-    CACHE.get_or_init(scan_mvn).clone()
-}
-
-fn scan_mvn() -> Option<String> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join("mvn.cmd");
-        if candidate.exists() {
-            return Some(candidate.to_string_lossy().to_string());
+    // 1. PATH 中的 mvn
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let candidate = dir.join("mvn.cmd");
+            if candidate.exists() {
+                return Some(candidate.to_string_lossy().to_string());
+            }
+            let candidate = dir.join("mvn");
+            if candidate.exists() {
+                return Some(candidate.to_string_lossy().to_string());
+            }
         }
-        let candidate = dir.join("mvn");
-        if candidate.exists() {
-            return Some(candidate.to_string_lossy().to_string());
+    }
+    // 2. scoop shims（安装器启动时可能不继承用户 PATH）
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        let shim = format!("{}\\scoop\\shims\\mvn.exe", home);
+        if std::path::Path::new(&shim).exists() {
+            return Some(shim);
         }
     }
     None
@@ -217,3 +223,156 @@ pub fn inject_env<C: CmdEnv>(cmd: &mut C, cfg: &EnvConfig) {
         cmd.set_env("PATH", &format!("{}{}", path_prefix, cur_path));
     }
 }
+
+// ================================================================
+// 注册表 PATH 合并（修复安装器启动时 PATH 不完整问题）
+// ================================================================
+
+/// 从 Windows 注册表读取系统级和用户级 PATH，合并到当前进程环境变量。
+///
+/// **背景**：NSIS/MSI 安装器勾选"同时打开"启动应用时，子进程可能不继承用户级 PATH
+/// （特别是 scoop、用户手动添加的 JDK/Maven 路径），导致 `which_java`/`which_mvn`/
+/// `resolve_git` 全部失败。从注册表读取完整 PATH 并合并后，所有后续检测恢复正常。
+///
+/// 仅 Windows 调用，在 app setup 最早期执行。
+#[cfg(windows)]
+pub fn merge_registry_path() {
+    use std::os::windows::ffi::OsStringExt;
+
+    // 读取注册表字符串（REG_EXPAND_SZ / REG_SZ）
+    fn read_reg(
+        hive: u32,
+        subkey: &str,
+        value: &str,
+    ) -> Option<String> {
+        // 延迟绑定 winapi，避免在非 windows 平台编译失败
+        extern "system" {
+            fn RegOpenKeyExW(
+                hkey: u32,
+                lpsubkey: *const u16,
+                uloptions: u32,
+                samdesired: u32,
+                phkresult: *mut u32,
+            ) -> i32;
+            fn RegQueryValueExW(
+                hkey: u32,
+                lpvaluename: *const u16,
+                lpreserved: *const u32,
+                lptype: *mut u32,
+                lpdata: *mut u8,
+                lpcbdata: *mut u32,
+            ) -> i32;
+            fn RegCloseKey(hkey: u32) -> i32;
+        }
+
+        const HKEY_LOCAL_MACHINE: u32 = 0x80000002;
+        const HKEY_CURRENT_USER: u32 = 0x80000001;
+        const KEY_READ: u32 = 0x20019;
+
+        let _ = (HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER); // 抑制未使用警告
+
+        let subkey_w: Vec<u16> = subkey.encode_utf16().chain(std::iter::once(0)).collect();
+        let value_w: Vec<u16> = value.encode_utf16().chain(std::iter::once(0)).collect();
+
+        let mut hkey: u32 = 0;
+        let rc = unsafe {
+            RegOpenKeyExW(hive, subkey_w.as_ptr(), 0, KEY_READ, &mut hkey)
+        };
+        if rc != 0 {
+            return None;
+        }
+
+        // 先查长度
+        let mut len: u32 = 0;
+        let mut typ: u32 = 0;
+        let rc = unsafe {
+            RegQueryValueExW(hkey, value_w.as_ptr(), std::ptr::null(), &mut typ, std::ptr::null_mut(), &mut len)
+        };
+        if rc != 0 || len == 0 {
+            unsafe { RegCloseKey(hkey); }
+            return None;
+        }
+
+        let mut buf = vec![0u8; len as usize];
+        let rc = unsafe {
+            RegQueryValueExW(hkey, value_w.as_ptr(), std::ptr::null(), &mut typ, buf.as_mut_ptr(), &mut len)
+        };
+        unsafe { RegCloseKey(hkey); }
+        if rc != 0 {
+            return None;
+        }
+
+        // REG_SZ(1) / REG_EXPAND_SZ(2) 都是 UTF-16LE，末尾含 null
+        let nchars = (len as usize) / 2;
+        let wchars: Vec<u16> = (0..nchars)
+            .map(|i| (buf[i * 2] as u16) | ((buf[i * 2 + 1] as u16) << 8))
+            .collect();
+        let trimmed: Vec<u16> = wchars.into_iter().take_while(|&c| c != 0).collect();
+        let s = std::ffi::OsString::from_wide(&trimmed)
+            .to_string_lossy()
+            .into_owned();
+        Some(s)
+    }
+
+    const HKEY_LOCAL_MACHINE: u32 = 0x80000002;
+    const HKEY_CURRENT_USER: u32 = 0x80000001;
+
+    let sys_path = read_reg(
+        HKEY_LOCAL_MACHINE,
+        r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        "Path",
+    );
+    let user_path = read_reg(
+        HKEY_CURRENT_USER,
+        r"Environment",
+        "Path",
+    );
+
+    let cur_path = std::env::var("PATH").unwrap_or_default();
+
+    // 合并：当前进程 PATH + 注册表系统 PATH + 注册表用户 PATH，去重
+    let mut all_dirs: Vec<std::path::PathBuf> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for source in [&cur_path, &sys_path.unwrap_or_default(), &user_path.unwrap_or_default()] {
+        for dir in std::env::split_paths(source) {
+            let key = dir.to_string_lossy().to_lowercase();
+            if !key.is_empty() && seen.insert(key) {
+                all_dirs.push(dir);
+            }
+        }
+    }
+
+    let merged = std::env::join_paths(all_dirs).unwrap_or_else(|_| cur_path.clone().into());
+    let merged_str = merged.to_string_lossy().to_string();
+
+    if merged_str != cur_path {
+        log::info!("注册表 PATH 合并：{} -> {} chars", cur_path.len(), merged_str.len());
+        std::env::set_var("PATH", merged_str);
+    }
+
+    // 同时补齐 JAVA_HOME / MAVEN_HOME（如果注册表 Environment 里有但当前进程没有）
+    if std::env::var("JAVA_HOME").ok().filter(|s| !s.is_empty()).is_none() {
+        if let Some(jh) = read_reg(HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment", "JAVA_HOME")
+            .or_else(|| read_reg(HKEY_CURRENT_USER, r"Environment", "JAVA_HOME"))
+        {
+            if !jh.is_empty() {
+                log::info!("从注册表补设 JAVA_HOME = {}", jh);
+                std::env::set_var("JAVA_HOME", jh);
+            }
+        }
+    }
+    if std::env::var("MAVEN_HOME").ok().filter(|s| !s.is_empty()).is_none() {
+        if let Some(mh) = read_reg(HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment", "MAVEN_HOME")
+            .or_else(|| read_reg(HKEY_CURRENT_USER, r"Environment", "MAVEN_HOME"))
+        {
+            if !mh.is_empty() {
+                log::info!("从注册表补设 MAVEN_HOME = {}", mh);
+                std::env::set_var("MAVEN_HOME", mh);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn merge_registry_path() {}
