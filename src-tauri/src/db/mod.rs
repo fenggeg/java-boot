@@ -257,48 +257,50 @@ pub fn update_service(
     override_properties: Option<Option<&str>>,
 ) -> AppResult<()> {
     with_conn(|conn| {
+        let mut sets: Vec<String> = vec![];
+        // 用 rusqlite::types::Value 统一参数类型，避免 Box<dyn ToSql> 的 trait 对象问题
+        let mut values: Vec<rusqlite::types::Value> = vec![];
+
         if let Some(n) = name {
-            conn.execute(
-                "UPDATE services SET name = ?1 WHERE id = ?2",
-                rusqlite::params![n, id],
-            )?;
+            sets.push("name = ?".to_string());
+            values.push(n.to_string().into());
         }
         if let Some(ar) = auto_restart {
-            conn.execute(
-                "UPDATE services SET auto_restart = ?1 WHERE id = ?2",
-                rusqlite::params![ar as i32, id],
-            )?;
+            sets.push("auto_restart = ?".to_string());
+            values.push((ar as i32).into());
         }
         if let Some(mo) = maven_opts {
-            conn.execute(
-                "UPDATE services SET maven_opts = ?1 WHERE id = ?2",
-                rusqlite::params![mo, id],
-            )?;
+            sets.push("maven_opts = ?".to_string());
+            values.push(mo.map(|s| s.to_string()).into());
         }
         if let Some(pf) = profiles {
-            conn.execute(
-                "UPDATE services SET profiles = ?1 WHERE id = ?2",
-                rusqlite::params![pf, id],
-            )?;
+            sets.push("profiles = ?".to_string());
+            values.push(pf.map(|s| s.to_string()).into());
         }
         if let Some(dm) = dev_mode {
-            conn.execute(
-                "UPDATE services SET dev_mode = ?1 WHERE id = ?2",
-                rusqlite::params![dm as i32, id],
-            )?;
+            sets.push("dev_mode = ?".to_string());
+            values.push((dm as i32).into());
         }
         if let Some(mc) = main_class {
-            conn.execute(
-                "UPDATE services SET main_class = ?1 WHERE id = ?2",
-                rusqlite::params![mc, id],
-            )?;
+            sets.push("main_class = ?".to_string());
+            values.push(mc.map(|s| s.to_string()).into());
         }
         if let Some(op) = override_properties {
-            conn.execute(
-                "UPDATE services SET override_properties = ?1 WHERE id = ?2",
-                rusqlite::params![op, id],
-            )?;
+            sets.push("override_properties = ?".to_string());
+            values.push(op.map(|s| s.to_string()).into());
         }
+
+        if sets.is_empty() {
+            return Ok(());
+        }
+
+        values.push(id.to_string().into());
+        let sql = format!(
+            "UPDATE services SET {} WHERE id = ?",
+            sets.join(", ")
+        );
+        let params: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+        conn.execute(&sql, params.as_slice())?;
         Ok(())
     })
 }

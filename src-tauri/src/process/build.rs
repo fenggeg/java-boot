@@ -73,12 +73,13 @@ pub fn run_mvn_capture(
     inject_env(&mut cmd, env_cfg);
 
     let mut child = cmd.spawn()?;
-    *compile_pid.lock() = Some(child.id());
+    let child_pid = child.id();
+    *compile_pid.lock() = Some(child_pid);
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
-    // 起两个后台线程分别读取 stdout / stderr，主线程等 wait
+    // 起两个后台线程分别读取 stdout / stderr
     let app_out = app.clone();
     let sid_out = service_id.clone();
     let t_out = std::thread::spawn(move || {
@@ -100,11 +101,40 @@ pub fn run_mvn_capture(
         }
     });
 
-    let status = child.wait()?;
+    // 给 wait 加 10 分钟超时，防止 Maven 卡死导致 spawn_blocking 线程池耗尽
+    let status = wait_with_timeout(&mut child, child_pid)?;
     let _ = t_out.join();
     let _ = t_err.join();
     *compile_pid.lock() = None;
     Ok(status)
+}
+
+/// 带超时的 child.wait()，超时则强杀进程防止线程泄漏
+fn wait_with_timeout(child: &mut std::process::Child, pid: u32) -> std::io::Result<std::process::ExitStatus> {
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + Duration::from_secs(600);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    // 超时：强杀进程树，返回错误
+                    let _ = kill_child(pid);
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!("Maven 进程 {} 超时（600 秒），已强杀", pid),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// 强杀进程树（委托 manager 的实现）
+fn kill_child(pid: u32) {
+    super::manager::kill_process_tree_by_pid(pid);
 }
 
 /// mvn 通用参数：并行 + 静默进度条 + 跳过 spring-boot repackage
@@ -148,13 +178,11 @@ pub fn detect_main_class(service: &Service, working_dir: &Path) -> AppResult<Str
             }
         }
     }
-    // 2. 扫 src/main/java 找 @SpringBootApplication（只读文件头 4KB，够看注解和类名）
-    let src_java = working_dir.join("src").join("main").join("java");
-    if src_java.exists() {
-        if let Some(mc) = scan_spring_application(&src_java, &src_java) {
-            let _ = db::set_service_main_class(&service.id, &mc);
-            return Ok(mc);
-        }
+    // 2. 扫 src/main/java 找 @SpringBootApplication（只读文件头 16KB，够看注解和类名）
+    //    注意：上面步骤 1 已解析过 pom.xml，这里只扫源码，避免重复读取
+    if let Some(mc) = crate::pom::scan::scan_source_for_main_class(working_dir) {
+        let _ = db::set_service_main_class(&service.id, &mc);
+        return Ok(mc);
     }
     Err(AppError::Process(format!(
         "未找到主类（mainClass）：{}\n请在服务配置或 pom.xml 的 spring-boot-maven-plugin 中指定 mainClass。",
@@ -253,54 +281,6 @@ fn resolve_pom_placeholders(input: &str, pom_content: &str, depth: u32) -> Strin
         i += ch.len_utf8();
     }
     out
-}
-
-/// 递归扫描 java 文件找 `@SpringBootApplication`（只读文件头 4KB，命中率 99%）
-///
-/// **同级优先**：先扫当前目录下的 .java，再递归子目录。主类多数位于包根目录，
-/// 这样在重型项目上能尽早命中，避免陷入业务包里扫几百个文件。
-fn scan_spring_application(root: &Path, dir: &Path) -> Option<String> {
-    let entries = std::fs::read_dir(dir).ok()?;
-    let mut files: Vec<std::path::PathBuf> = vec![];
-    let mut dirs: Vec<std::path::PathBuf> = vec![];
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            dirs.push(path);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("java") {
-            files.push(path);
-        }
-    }
-    for path in &files {
-        if let Ok(head) = read_head(path, 4096) {
-            if head.contains("@SpringBootApplication") {
-                if let Ok(rel) = path.strip_prefix(root) {
-                    let class_path = rel
-                        .to_string_lossy()
-                        .replace('\\', "/")
-                        .replace('/', ".");
-                    let fqcn = class_path.trim_end_matches(".java").to_string();
-                    return Some(fqcn);
-                }
-            }
-        }
-    }
-    for d in &dirs {
-        if let Some(mc) = scan_spring_application(root, d) {
-            return Some(mc);
-        }
-    }
-    None
-}
-
-/// 读取文件前 N 字节（不足则读整份）；用于扫注解，比 read_to_string 快得多
-fn read_head(path: &Path, n: usize) -> std::io::Result<String> {
-    use std::io::Read;
-    let mut f = std::fs::File::open(path)?;
-    let mut buf = vec![0u8; n];
-    let read = f.read(&mut buf)?;
-    buf.truncate(read);
-    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 // ================================================================

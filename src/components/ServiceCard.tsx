@@ -11,6 +11,14 @@ interface Props {
   onConfig: (service: Service) => void;
 }
 
+// 已知噪声端口（JMX/DevTools/H2 等），展示时过滤掉
+const NOISE_PORTS = new Set([
+  35729, // Spring DevTools restart
+  1099,  // JMX/RMI registry
+  9092,  // H2 DB TCP
+  4848,  // JMXMP
+]);
+
 export default function ServiceCard({ service, active, onConfig }: Props) {
   const runtime = useStore((s) => s.runtimes[service.id]);
   const selectService = useStore((s) => s.selectService);
@@ -28,7 +36,7 @@ export default function ServiceCard({ service, active, onConfig }: Props) {
   const handleStart = async () => {
     try {
       await api.startService(service.id);
-      message.success(`正在启动 ${service.name}`);
+      // 启动是异步的，真实结果通过 service://status 事件通知
     } catch (e: any) {
       message.error(`启动失败: ${e}`);
     }
@@ -45,7 +53,7 @@ export default function ServiceCard({ service, active, onConfig }: Props) {
   const handleRestart = async () => {
     try {
       await api.restartService(service.id);
-      message.success(`正在重启 ${service.name}`);
+      // 重启是异步的，真实结果通过事件通知
     } catch (e: any) {
       message.error(`重启失败: ${e}`);
     }
@@ -54,7 +62,7 @@ export default function ServiceCard({ service, active, onConfig }: Props) {
   const handleCompile = async () => {
     try {
       await api.compileAndStart(service.id);
-      message.success(`正在编译并启动 ${service.name}`);
+      // 编译并启动是异步的
     } catch (e: any) {
       message.error(`编译失败: ${e}`);
     }
@@ -149,12 +157,6 @@ export default function ServiceCard({ service, active, onConfig }: Props) {
           {(() => {
             // 优先展示从启动日志解析出的 HTTP 服务端口
             // 为空时回退到所有 LISTENING 端口，但过滤掉已知噪声端口（JMX/DevTools/H2 等）
-            const NOISE_PORTS = new Set([
-              35729, // Spring DevTools restart
-              1099,  // JMX/RMI registry
-              9092,  // H2 DB TCP
-              4848,  // JMXMP
-            ]);
             const raw =
               runtime?.service_ports && runtime.service_ports.length > 0
                 ? runtime.service_ports

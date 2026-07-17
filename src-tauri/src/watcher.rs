@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,14 +11,19 @@ use tauri::AppHandle;
 use crate::db::models::Service;
 use crate::process;
 
-const IGNORE_DIRS: &[&str] = &["target", ".idea", "node_modules", ".git", ".vscode"];
+const IGNORE_DIRS: &[&str] = &[
+    "target", ".idea", "node_modules", ".git", ".vscode",
+    "dist", "build", "out",
+];
 const IGNORE_EXTS: &[&str] = &["class"];
 
 /// 每个服务的防抖 worker：单线程消费事件，避免每次事件都 spawn 新线程
 struct WatchState {
     _watcher: RecommendedWatcher,
-    /// drop 时关闭 channel，worker 线程随之退出
-    _disarm: Arc<Mutex<()>>,
+    /// 显式取消信号：unwatch 时置 true，worker 线程轮询检测后退出
+    _cancel: Arc<AtomicBool>,
+    /// worker 线程 handle，unwatch 时 join 确保线程退出
+    _worker: Option<std::thread::JoinHandle<()>>,
 }
 
 pub struct WatchManager {
@@ -35,7 +41,7 @@ impl WatchManager {
     pub fn watch(&self, app: AppHandle, service: Service) -> crate::error::AppResult<()> {
         let sid = service.id.clone();
         let sid_for_map = sid.clone();
-        // 已存在则先移除（会 drop 旧 watcher 与 disarm，旧 worker 线程退出）
+        // 已存在则先移除（会 drop 旧 watcher + signal cancel + join worker）
         self.unwatch(&sid);
 
         let cfg = crate::db::load_config().unwrap_or_default();
@@ -48,33 +54,46 @@ impl WatchManager {
             )));
         }
 
-        // 每服务一个 (oneshot 风格的) 信号 channel：事件只做 try_send，worker 做防抖
+        // 每服务一个信号 channel：事件只做 try_send，worker 做防抖
         let (tx, rx) = std::sync::mpsc::channel::<()>();
-        let disarm = Arc::new(Mutex::new(()));
+        let cancel = Arc::new(AtomicBool::new(false));
 
-        // 启动防抖 worker（单线程）
-        {
+        // 启动防抖 worker（单线程），通过 cancel 信号显式控制生命周期
+        let worker = {
             let sid_worker = sid.clone();
             let app_worker = app.clone();
-            let disarm_worker = disarm.clone();
+            let cancel_worker = cancel.clone();
             std::thread::spawn(move || {
-                // 持有 disarm 的引用，确保 unwatch 时通过 drop watcher 关闭 channel
-                let _guard = disarm_worker;
-                let debounce_dur = Duration::from_secs(debounce);
-                // 阻塞等待首个事件
-                while rx.recv().is_ok() {
-                    // 收到事件后进入防抖循环：直到 debounce 时间内无新事件才触发
-                    loop {
-                        match rx.recv_timeout(debounce_dur) {
-                            Ok(_) => continue, // 又有新事件，重置计时
-                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                // 用 catch_unwind 兜底，防止 panic 拖垮整个进程
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let debounce_dur = Duration::from_secs(debounce);
+                    // 阻塞等待首个事件
+                    while !cancel_worker.load(Ordering::Relaxed) {
+                        match rx.recv_timeout(Duration::from_millis(500)) {
+                            Ok(()) => {
+                                // 收到事件后进入防抖循环：直到 debounce 时间内无新事件才触发
+                                loop {
+                                    if cancel_worker.load(Ordering::Relaxed) {
+                                        return;
+                                    }
+                                    match rx.recv_timeout(debounce_dur) {
+                                        Ok(_) => continue,
+                                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                                    }
+                                }
+                                trigger_restart(&app_worker, &sid_worker);
+                            }
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
                             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
                         }
                     }
-                    trigger_restart(&app_worker, &sid_worker);
+                }));
+                if let Err(e) = result {
+                    log::error!("watch worker 异常退出 ({}): {:?}", sid_worker, e);
                 }
-            });
-        }
+            })
+        };
 
         let tx_for_cb = tx.clone();
         let mut watcher = RecommendedWatcher::new(
@@ -95,24 +114,31 @@ impl WatchManager {
             .watch(&src_main, RecursiveMode::Recursive)
             .map_err(|e| crate::error::AppError::Other(format!("监听失败: {}", e)))?;
 
-        // 保留 tx 以保活 channel（worker 才不会因 recv 返回 Disconnected 提前退出）
         self.watchers.lock().insert(
             sid_for_map,
             WatchState {
                 _watcher: watcher,
-                _disarm: disarm,
+                _cancel: cancel,
+                _worker: Some(worker),
             },
         );
-        // 注意：tx 在此函数末尾 drop，但 worker 仍持有 rx；
-        // 我们需要让 channel 在 watcher 存活期间保持 open。
-        // watcher 回调里持有 tx_for_cb（tx 的克隆），所以 channel 保持 open，
-        // 直到 watcher 被 drop（unwatch 时）。worker 在 channel 关闭后退出。
+        // tx 在此 drop，但 watcher 回调持有 tx_for_cb（克隆），channel 保持 open。
+        // unwatch 时 drop WatchState → drop watcher → channel 关闭 + cancel 置 true → worker 退出。
         let _ = tx;
         Ok(())
     }
 
     pub fn unwatch(&self, service_id: &str) {
-        self.watchers.lock().remove(service_id);
+        let state = self.watchers.lock().remove(service_id);
+        if let Some(mut s) = state {
+            // 先 signal cancel，让 worker 尽快退出
+            s._cancel.store(true, Ordering::Relaxed);
+            // drop watcher 关闭 channel（worker 的 recv 会返回 Disconnected）
+            // join worker 确保线程退出，避免泄漏
+            if let Some(handle) = s._worker.take() {
+                let _ = handle.join();
+            }
+        }
     }
 
     /// 根据 db 中 auto_restart 字段，启动所有需要监听的服务

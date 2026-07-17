@@ -1,10 +1,12 @@
 use std::path::PathBuf;
 
 use tauri::AppHandle;
+use tauri_plugin_opener::OpenerExt;
 
 use crate::db;
 use crate::db::models::{AppConfig, Project, ScannedModule, Service, ServiceRuntime};
 use crate::error::AppResult;
+use crate::util::CandidateCollector;
 use crate::git;
 use crate::pom;
 use crate::process;
@@ -82,7 +84,7 @@ pub fn add_project(path: String, selected_modules: Vec<ScannedModule>) -> AppRes
 
 /// 重新扫描项目并补充添加新 module
 #[tauri::command]
-pub fn rescan_project(project_id: String, _app: AppHandle) -> AppResult<Vec<ScannedModule>> {
+pub fn rescan_project(project_id: String) -> AppResult<Vec<ScannedModule>> {
     let project = db::get_project(&project_id)?;
     let root_pom = PathBuf::from(&project.root_path).join("pom.xml");
     if !root_pom.exists() {
@@ -96,10 +98,14 @@ pub fn rescan_project(project_id: String, _app: AppHandle) -> AppResult<Vec<Scan
 
 #[tauri::command]
 pub async fn delete_project(project_id: String, app: AppHandle) -> AppResult<()> {
-    // 先停止该项目下所有运行中的服务
+    // 先停止该项目下所有运行中/拉取中的服务
     let services = db::list_services_by_project(&project_id)?;
     for s in &services {
-        if process::get_manager().is_running(&s.id) {
+        let rt = process::get_manager().get_runtime(&s.id);
+        // 覆盖 Running/Starting/Recompiling/Pulling/Stopping 等所有活跃状态
+        if process::get_manager().is_running(&s.id)
+            || matches!(rt.status, crate::db::models::ServiceStatus::Pulling)
+        {
             process::get_manager()
                 .stop(app.clone(), &s.id)
                 .await?;
@@ -138,18 +144,22 @@ pub fn add_service(pom_path: String, name: Option<String>) -> AppResult<Service>
         .map(|d| d.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    // 确定项目归属
-    let project_id = if let Some(git_root) = pom::find_git_root(p.parent().unwrap_or(std::path::Path::new(""))) {
-        match db::find_project_by_path(&git_root.to_string_lossy())? {
-            Some(proj) => Some(proj.id),
-            None => {
-                let pname = git_root
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "未命名项目".to_string());
-                let proj = db::insert_project(&pname, &git_root.to_string_lossy(), true)?;
-                Some(proj.id)
+    // 确定项目归属（parent 为 None 时跳过 git 归属，避免误归属到无关仓库）
+    let project_id = if let Some(parent) = p.parent() {
+        if let Some(git_root) = pom::find_git_root(parent) {
+            match db::find_project_by_path(&git_root.to_string_lossy())? {
+                Some(proj) => Some(proj.id),
+                None => {
+                    let pname = git_root
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "未命名项目".to_string());
+                    let proj = db::insert_project(&pname, &git_root.to_string_lossy(), true)?;
+                    Some(proj.id)
+                }
             }
+        } else {
+            None
         }
     } else {
         None
@@ -297,29 +307,55 @@ pub fn save_config(config: AppConfig) -> AppResult<()> {
 
 /// 在浏览器打开端口
 #[tauri::command]
-pub fn open_in_browser(port: u16) -> AppResult<()> {
+pub fn open_in_browser(port: u16, app: AppHandle) -> AppResult<()> {
+    if port == 0 {
+        return Err(crate::error::AppError::Other("无效的端口号".into()));
+    }
     let url = format!("http://localhost:{}", port);
-    open::that(&url).map_err(|e| crate::error::AppError::Other(format!("打开浏览器失败: {}", e)))?;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| crate::error::AppError::Other(format!("打开浏览器失败: {}", e)))?;
     Ok(())
+}
+
+/// 并行探测候选路径，返回探测成功的列表
+async fn detect_tools<T, F>(candidates: Vec<String>, probe: F) -> Vec<T>
+where
+    T: Send + 'static,
+    F: Fn(&str) -> Option<T> + Send + Sync + 'static,
+{
+    let probe = std::sync::Arc::new(probe);
+    let mut set = tokio::task::JoinSet::new();
+    for c in candidates {
+        let probe = probe.clone();
+        set.spawn_blocking(move || probe(&c));
+    }
+    let mut found = vec![];
+    while let Some(res) = set.join_next().await {
+        if let Ok(Some(info)) = res {
+            found.push(info);
+        }
+    }
+    found
 }
 
 /// 探测系统已安装的 JDK 列表（扫描常见安装位置）
 #[tauri::command]
 pub async fn detect_jdks() -> Vec<JdkInfo> {
-    use std::collections::HashSet;
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut candidates: Vec<String> = vec![];
+    // 候选路径收集涉及大量同步 fs IO，移入 spawn_blocking 避免阻塞 tokio runtime
+    let candidates = tokio::task::spawn_blocking(collect_jdk_candidates)
+        .await
+        .unwrap_or_default();
+    detect_tools(candidates, probe_jdk).await
+}
 
-    let norm = |p: &str| p.to_lowercase().replace('\\', "/");
-    let push = |candidates: &mut Vec<String>, seen: &mut HashSet<String>, p: String| {
-        if seen.insert(norm(&p)) {
-            candidates.push(p);
-        }
-    };
+/// 收集 JDK 候选路径（同步阻塞 IO，须在 spawn_blocking 中调用）
+fn collect_jdk_candidates() -> Vec<String> {
+    let mut cc = CandidateCollector::new();
 
     // 1. JAVA_HOME 环境变量
     if let Ok(jh) = std::env::var("JAVA_HOME") {
-        push(&mut candidates, &mut seen, jh);
+        cc.push(jh);
     }
 
     // 2. PATH 中的 java
@@ -328,7 +364,7 @@ pub async fn detect_jdks() -> Vec<JdkInfo> {
             let java_exe = dir.join("java.exe");
             if java_exe.exists() {
                 if let Some(bin_dir) = dir.parent() {
-                    push(&mut candidates, &mut seen, bin_dir.to_string_lossy().to_string());
+                    cc.push(bin_dir.to_string_lossy().to_string());
                 }
             }
         }
@@ -353,14 +389,14 @@ pub async fn detect_jdks() -> Vec<JdkInfo> {
                     let p = entry.path();
                     if p.is_dir() {
                         if p.join("bin").join("java.exe").exists() {
-                            push(&mut candidates, &mut seen, p.to_string_lossy().to_string());
+                            cc.push(p.to_string_lossy().to_string());
                         }
                         // scoop 下可能再嵌套一层（如 temurin17-jdk/current）
                         if let Ok(sub_entries) = std::fs::read_dir(&p) {
                             for sub in sub_entries.flatten() {
                                 let sp = sub.path();
                                 if sp.join("bin").join("java.exe").exists() {
-                                    push(&mut candidates, &mut seen, sp.to_string_lossy().to_string());
+                                    cc.push(sp.to_string_lossy().to_string());
                                 }
                             }
                         }
@@ -374,25 +410,14 @@ pub async fn detect_jdks() -> Vec<JdkInfo> {
                 for entry in entries.flatten() {
                     let p = entry.path();
                     if p.is_dir() && p.join("bin").join("java.exe").exists() {
-                        push(&mut candidates, &mut seen, p.to_string_lossy().to_string());
+                        cc.push(p.to_string_lossy().to_string());
                     }
                 }
             }
         }
     }
 
-    // 并行探测各候选 JDK（spawn_blocking + JoinSet，避免阻塞 async runtime）
-    let mut set = tokio::task::JoinSet::new();
-    for c in candidates {
-        set.spawn_blocking(move || probe_jdk(&c));
-    }
-    let mut found = vec![];
-    while let Some(res) = set.join_next().await {
-        if let Ok(Some(info)) = res {
-            found.push(info);
-        }
-    }
-    found
+    cc.into_candidates()
 }
 
 #[derive(serde::Serialize)]
@@ -459,21 +484,21 @@ pub struct MavenInfo {
 /// 探测系统已安装的 Maven 列表
 #[tauri::command]
 pub async fn detect_mavens() -> Vec<MavenInfo> {
-    use std::collections::HashSet;
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut candidates: Vec<String> = vec![];
+    // 候选路径收集涉及大量同步 fs IO，移入 spawn_blocking 避免阻塞 tokio runtime
+    let candidates = tokio::task::spawn_blocking(collect_maven_candidates)
+        .await
+        .unwrap_or_default();
+    detect_tools(candidates, probe_maven).await
+}
 
-    let norm = |p: &str| p.to_lowercase().replace('\\', "/");
-    let push = |candidates: &mut Vec<String>, seen: &mut HashSet<String>, p: String| {
-        if seen.insert(norm(&p)) {
-            candidates.push(p);
-        }
-    };
+/// 收集 Maven 候选路径（同步阻塞 IO，须在 spawn_blocking 中调用）
+fn collect_maven_candidates() -> Vec<String> {
+    let mut cc = CandidateCollector::new();
 
     // 1. MAVEN_HOME / M2_HOME 环境变量
     for var in ["MAVEN_HOME", "M2_HOME"] {
         if let Ok(mh) = std::env::var(var) {
-            push(&mut candidates, &mut seen, mh);
+            cc.push(mh);
         }
     }
 
@@ -483,7 +508,7 @@ pub async fn detect_mavens() -> Vec<MavenInfo> {
             let mvn_exe = dir.join("mvn.cmd");
             if mvn_exe.exists() {
                 if let Some(bin_dir) = dir.parent() {
-                    push(&mut candidates, &mut seen, bin_dir.to_string_lossy().to_string());
+                    cc.push(bin_dir.to_string_lossy().to_string());
                 }
             }
         }
@@ -496,13 +521,13 @@ pub async fn detect_mavens() -> Vec<MavenInfo> {
             for entry in entries.flatten() {
                 let p = entry.path();
                 if p.join("bin").join("mvn.cmd").exists() {
-                    push(&mut candidates, &mut seen, p.to_string_lossy().to_string());
+                    cc.push(p.to_string_lossy().to_string());
                 }
             }
         }
         let scoop_current = format!("{}\\scoop\\apps\\maven\\current", home);
         if std::path::Path::new(&scoop_current).join("bin").join("mvn.cmd").exists() {
-            push(&mut candidates, &mut seen, scoop_current);
+            cc.push(scoop_current);
         }
     }
 
@@ -517,24 +542,13 @@ pub async fn detect_mavens() -> Vec<MavenInfo> {
             for entry in entries.flatten() {
                 let p = entry.path();
                 if p.is_dir() && p.join("bin").join("mvn.cmd").exists() {
-                    push(&mut candidates, &mut seen, p.to_string_lossy().to_string());
+                    cc.push(p.to_string_lossy().to_string());
                 }
             }
         }
     }
 
-    // 并行探测各候选 Maven（spawn_blocking + JoinSet）
-    let mut set = tokio::task::JoinSet::new();
-    for c in candidates {
-        set.spawn_blocking(move || probe_maven(&c));
-    }
-    let mut found = vec![];
-    while let Some(res) = set.join_next().await {
-        if let Ok(Some(info)) = res {
-            found.push(info);
-        }
-    }
-    found
+    cc.into_candidates()
 }
 
 /// 探测某 MAVEN_HOME 的版本信息

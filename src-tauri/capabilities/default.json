@@ -1,16 +1,16 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "默认权限：允许所有核心命令调用",
+  "description": "默认权限：仅允许应用实际使用的核心能力",
   "windows": ["main"],
   "permissions": [
-    "core:default",
-    "core:window:default",
     "core:event:default",
     "core:webview:default",
+    "core:window:default",
+    "core:window:allow-scale-factor",
+    "core:window:allow-set-focus",
     "core:app:default",
     "dialog:default",
-    "shell:allow-open",
-    "shell:default"
+    "opener:default"
   ]
 }

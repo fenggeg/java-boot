@@ -25,7 +25,7 @@ interface PortConfig { enabled: boolean; port: number | null }
 interface DebugConfig { enabled: boolean; port: number | null; suspend: boolean }
 
 // 端口正则：--server.port=8080 或 -Dserver.port=8080
-const PORT_RE = /(?:^|\s)(?:--D?server\.port=|-Dserver\.port=)(\d{2,5})(?=\s|$)/;
+const PORT_RE = /(?:^|\s)(?:--server\.port=|-Dserver\.port=)(\d{2,5})(?=\s|$)/;
 // debug 正则：-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005
 const DEBUG_RE = /-agentlib:jdwp=[^\s]+address=(?:\*:)?(\d+)/;
 const DEBUG_SUSPEND_RE = /suspend=y/;

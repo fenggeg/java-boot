@@ -202,12 +202,11 @@ export default function LogViewer({ serviceId }: Props) {
         ) : (
           <div style={{ height: totalHeight, position: "relative" }}>
             <div style={{ transform: `translateY(${offsetY}px)` }}>
-              {renderLines.map((l, i) => {
+              {renderLines.map((l) => {
                 const lv = classifyLine(l.line);
-                const idx = startIdx + i;
                 return (
                   <div
-                    key={idx}
+                    key={`${l.ts}-${l.source}-${l.line.slice(0, 40)}`}
                     className={`log-line ${sourceClass(l.source)} ${lv}`}
                     style={{ height: LINE_HEIGHT, minHeight: LINE_HEIGHT }}
                   >

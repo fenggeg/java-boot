@@ -4,6 +4,22 @@
 //! - [`super::log_pipe`]：日志推送 & 启动/失败检测
 //! - [`super::env`]：环境解析 & 命令定位（含 PATH 探测缓存）
 //! - [`super::build`]：主类探测 / classpath 缓存 / mtime 决策 / mvn 执行器
+//!
+//! # 锁顺序约定
+//!
+//! 本模块涉及三把锁，获取顺序必须严格遵循以下层级，**禁止反向加锁**以防死锁：
+//! 1. `SYS`（全局 `sysinfo::System`）
+//! 2. `handles`（`ProcessManager.handles`）
+//! 3. `runtimes`（`ProcessManager.runtimes`）
+//!
+//! 典型路径：
+//! - `restore_running_services`：SYS → runtimes（之后释放 SYS，再 handles → runtimes）
+//! - `refresh_resource_usage`：runtimes（取快照）→ SYS → runtimes（写回）
+//! - `start`：handles → runtimes（通过 set_status）
+//!
+//! 注意 `refresh_resource_usage` 中先短暂锁 runtimes 取快照再释放，然后锁 SYS，
+//! 最后再锁 runtimes 写回——这是唯一允许的“runtimes 先于 SYS”场景，
+//! 因为两次锁 runtimes 之间不持有 SYS，不构成反向加锁。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -22,7 +38,7 @@ use crate::db::models::{Service, ServiceRuntime, ServiceStatus};
 use crate::error::{AppError, AppResult};
 
 use super::build::{
-    self, collect_sibling_classes, common_mvn_flags, decide_build_strategy, detect_main_class,
+    collect_sibling_classes, common_mvn_flags, decide_build_strategy, detect_main_class,
     run_mvn_capture, strip_verbatim_prefix, BuildStrategy, ClasspathCache, CompilePidSlot,
 };
 use super::env::{
@@ -31,6 +47,12 @@ use super::env::{
 };
 use super::job::JobObject;
 use super::log_pipe::{check_failed, check_started, emit_log_raw, extract_service_ports, LogSource};
+
+/// Java classpath 路径分隔符：Windows 用 `;`，Unix 用 `:`
+#[cfg(windows)]
+const CP_SEP: &str = ";";
+#[cfg(not(windows))]
+const CP_SEP: &str = ":";
 
 // ================================================================
 // ProcessHandle
@@ -62,7 +84,7 @@ impl ProcessHandle {
 }
 
 /// 按 PID 杀掉整个进程树（用于恢复后无 Job Object 的服务）
-fn kill_process_tree_by_pid(pid: u32) {
+pub(crate) fn kill_process_tree_by_pid(pid: u32) {
     #[cfg(windows)]
     {
         let _ = std::process::Command::new("taskkill")
@@ -116,6 +138,9 @@ impl ProcessManager {
     }
 
     /// 应用启动时恢复：检查持久化的 PID 是否还活着
+    ///
+    /// 恢复的服务会尝试重新绑定 Job Object，确保 Launcher 崩溃后再次退出时
+    /// 这些进程能随之清理。若 OpenProcess 失败（权限不足等），回退到无 Job 模式。
     pub fn restore_running_services(&self, app: &AppHandle) {
         let pids = match db::load_all_run_pids() {
             Ok(p) => p,
@@ -145,6 +170,47 @@ impl ProcessManager {
                     log::info!("服务 {} 的进程已不存在，清理", service_id);
                 }
             }
+        }
+
+        // 尝试为恢复的进程创建 Job Object 并绑定
+        let mut handles = self.handles.lock();
+        for (service_id, pid, _) in &pids {
+            if self.runtimes.lock().get(service_id).map(|r| r.pid).flatten() != Some(*pid) {
+                continue;
+            }
+            let mut handle = ProcessHandle::placeholder();
+            handle.pid = *pid;
+            #[cfg(windows)]
+            {
+                match JobObject::new() {
+                    Ok(job) => {
+                        use windows::Win32::System::Threading::OpenProcess;
+                        use windows::Win32::System::Threading::PROCESS_ACCESS_RIGHTS;
+                        use windows::Win32::System::Threading::PROCESS_SET_QUOTA;
+                        use windows::Win32::System::Threading::PROCESS_TERMINATE;
+                        const SYNCHRONIZE: u32 = 0x00100000;
+                        let access = PROCESS_SET_QUOTA | PROCESS_TERMINATE
+                            | PROCESS_ACCESS_RIGHTS(SYNCHRONIZE);
+                        if let Ok(ph) = unsafe { OpenProcess(access, false, *pid) } {
+                            let job_arc = Arc::new(PMutex::new(job));
+                            let assign_ok = job_arc.lock().assign(ph);
+                            unsafe {
+                                let _ = windows::Win32::Foundation::CloseHandle(ph);
+                            }
+                            if let Err(e) = assign_ok {
+                                log::warn!("恢复服务 {} 绑定 Job Object 失败: {}", service_id, e);
+                            } else {
+                                handle.job = Some(job_arc);
+                                log::info!("恢复服务 {} 已绑定 Job Object", service_id);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("恢复服务 {} 创建 Job Object 失败: {}", service_id, e);
+                    }
+                }
+            }
+            handles.insert(service_id.clone(), handle);
         }
 
         for rt in self.all_runtimes() {
@@ -325,19 +391,24 @@ impl ProcessManager {
     /// 设置从 Spring Boot 启动日志解析出的 HTTP 服务端口
     ///
     /// 前端会优先展示 `service_ports`；为空时回退到 `ports`（PID 所有 LISTENING 端口）。
+    /// 仅在端口列表实际发生变化时才 emit 事件，避免启动高峰期大量克隆和事件风暴。
     fn set_service_ports(&self, app: &AppHandle, service_id: &str, ports: Vec<u16>) {
         let mut rt = self.runtimes.lock();
         let entry = rt.entry(service_id.to_string()).or_default();
         entry.service_id = service_id.to_string();
-        // 多次匹配（多 web server 启动）累加去重
+        // 去重：仅当有新端口时才更新并 emit
+        let mut changed = false;
         for p in &ports {
             if !entry.service_ports.contains(p) {
                 entry.service_ports.push(*p);
+                changed = true;
             }
         }
-        let snapshot = entry.clone();
-        drop(rt);
-        let _ = app.emit("service://status", snapshot);
+        if changed {
+            let snapshot = entry.clone();
+            drop(rt);
+            let _ = app.emit("service://status", snapshot);
+        }
     }
 
     // ================================================================
@@ -445,7 +516,7 @@ impl ProcessManager {
         let classpath = if cache_valid {
             match cache.load() {
                 Some(cp) => {
-                    let jars = cp.split(';').filter(|s| !s.is_empty()).count();
+                    let jars = cp.split(CP_SEP).filter(|s| !s.is_empty()).count();
                     Self::emit_log(
                         &app,
                         &service.id,
@@ -520,18 +591,25 @@ impl ProcessManager {
         }
         // 配置覆盖属性：JSON → -Dkey=value，放在 maven_opts 的 -D 之后，
         // 确保用户在 UI 里配置的覆盖值优先级最高（Spring Boot 系统属性优先于 application.yml）
-        if let Some(overrides) = parse_override_properties(&service.override_properties) {
-            if !overrides.is_empty() {
-                for (k, v) in &overrides {
-                    args.push(format!("-D{}={}", k, v));
-                }
-                Self::emit_log(
-                    &app,
-                    &service.id,
-                    LogSource::Mvn,
-                    &format!("[javaboot] 注入 {} 个覆盖属性", overrides.len()),
-                );
+        let (overrides, parse_err) = parse_override_properties(&service.override_properties);
+        if let Some(err_msg) = parse_err {
+            Self::emit_log(
+                &app,
+                &service.id,
+                LogSource::Mvn,
+                &format!("[javaboot] 警告: {}", err_msg),
+            );
+        }
+        if !overrides.is_empty() {
+            for (k, v) in &overrides {
+                args.push(format!("-D{}={}", k, v));
             }
+            Self::emit_log(
+                &app,
+                &service.id,
+                LogSource::Mvn,
+                &format!("[javaboot] 注入 {} 个覆盖属性", overrides.len()),
+            );
         }
         args.push("-cp".into());
         args.push(classpath.clone());
@@ -911,7 +989,7 @@ impl ProcessManager {
         if !dep_cp.is_empty() {
             parts.push(dep_cp.to_string());
         }
-        parts.join(";")
+        parts.join(CP_SEP)
     }
 
     // ================================================================
@@ -980,15 +1058,76 @@ impl ProcessManager {
 
     /// 编译并启动：由 watcher 触发的自动重启流程
     ///
-    /// 直接走 start()：内部会通过 mtime 判定选择合适的编译动作，
-    /// 与手动 mvn compile 语义等价，且共享 classpath 缓存 / dev_mode / 三档策略。
+    /// 根据 `AppConfig.stop_on_compile_fail` 决定编译失败后是否保留旧进程：
+    /// - `false`（默认）：先编译，编译成功再停旧进程并启动；失败则旧进程不受影响
+    /// - `true`：先停旧进程再编译；失败后旧进程已停止（与原行为一致）
     pub async fn compile_and_start(&self, app: AppHandle, service: Service) -> AppResult<()> {
-        self.stop(app.clone(), &service.id).await?;
-        self.set_status(&app, &service.id, ServiceStatus::Recompiling);
-        self.start(app, service).await
+        let cfg = db::load_config().unwrap_or_default();
+        let stop_on_fail = cfg.stop_on_compile_fail;
+
+        if stop_on_fail {
+            // 兼容旧行为：先停再编译，失败后服务保持停止
+            self.stop(app.clone(), &service.id).await?;
+            self.set_status(&app, &service.id, ServiceStatus::Recompiling);
+            self.start(app, service).await
+        } else {
+            // 新行为：先编译，成功后再停旧进程并启动
+            // 复用 start() 的编译逻辑，但不实际启动 java 进程
+            self.set_status(&app, &service.id, ServiceStatus::Recompiling);
+            match self.compile_only(&app, &service).await {
+                Ok(()) => {
+                    // 编译成功，停旧进程并启动
+                    self.stop(app.clone(), &service.id).await?;
+                    self.start(app, service).await
+                }
+                Err(e) => {
+                    // 编译失败：旧进程仍在运行，恢复 Running 状态
+                    let rt = self.get_runtime(&service.id);
+                    let restore = if rt.pid.is_some() {
+                        ServiceStatus::Running
+                    } else {
+                        ServiceStatus::Stopped
+                    };
+                    self.set_status(&app, &service.id, restore);
+                    Err(e)
+                }
+            }
+        }
     }
 
-    /// 停止所有运行中的服务（并发）
+    /// 仅执行编译流程（复用 start() 的编译逻辑，不启动 java 进程）
+    async fn compile_only(&self, app: &AppHandle, service: &Service) -> AppResult<()> {
+        use super::build::{
+            decide_build_strategy, strip_verbatim_prefix, BuildStrategy, ClasspathCache,
+        };
+        use super::env::{preflight_check, resolve_env_config, resolve_maven_cmd};
+
+        let working_dir = strip_verbatim_prefix(&PathBuf::from(&service.working_dir));
+        let env_cfg = resolve_env_config(service)?;
+        let (program, base_args) = resolve_maven_cmd(&working_dir, &env_cfg);
+        preflight_check(&env_cfg, &working_dir, &program)?;
+
+        let cache = ClasspathCache::for_module(&working_dir);
+        let cache_key = ClasspathCache::compute_key(&working_dir, &env_cfg);
+        let cache_valid = cache.is_valid(&cache_key);
+        let strategy = decide_build_strategy(&working_dir, &env_cfg, cache_valid);
+
+        Self::emit_log(
+            app, &service.id, LogSource::Mvn,
+            &format!("[javaboot] 构建策略: {:?}（classpath cache: {}）", strategy, if cache_valid { "hit" } else { "miss" }),
+        );
+
+        if strategy != BuildStrategy::Skip {
+            let compile_pid = Arc::new(PMutex::new(None));
+            self.run_maven_build(
+                app, service, &env_cfg, &working_dir, &program, &base_args,
+                &compile_pid, strategy,
+            ).await?;
+        }
+        Ok(())
+    }
+
+    /// 停止所有运行中的服务（真正并行：每个 stop 独立 spawn 到 tokio runtime）
     pub async fn stop_all(&self, app: AppHandle) -> AppResult<()> {
         let ids: Vec<String> = self.handles.lock().keys().cloned().collect();
         let count = ids.len();
@@ -1000,26 +1139,22 @@ impl ProcessManager {
         for id in &ids {
             Self::emit_log_static(&app, id, "[javaboot]", &msg);
         }
-        let futures: Vec<_> = ids
-            .into_iter()
-            .map(|id| {
-                let app = app.clone();
-                async move { get_manager().stop(app, &id).await }
-            })
-            .collect();
-        for res in futures::future::join_all(futures).await {
-            if let Err(e) = res {
-                log::warn!("stop_all: {}", e);
+        // 用 JoinSet 真正并行 spawn，每个 stop 在独立的 tokio task 上执行，
+        // 避免 join_all 在单 task 内并发 await 导致异步操作（emit 等）串行化。
+        let mut set = tokio::task::JoinSet::new();
+        for id in ids {
+            let app = app.clone();
+            set.spawn(async move { get_manager().stop(app, &id).await });
+        }
+        while let Some(res) = set.join_next().await {
+            match res {
+                Err(join_err) => log::warn!("stop_all task panicked: {}", join_err),
+                Ok(Err(app_err)) => log::warn!("stop_all: {}", app_err),
+                Ok(Ok(())) => {}
             }
         }
         Ok(())
     }
-}
-
-// 防止 build::pom_newer_than 被判死代码
-#[allow(dead_code)]
-fn _keep_build_helpers() {
-    let _ = build::pom_newer_than;
 }
 
 // ================================================================
@@ -1029,11 +1164,18 @@ fn _keep_build_helpers() {
 /// 解析 service.override_properties（JSON）为有序 (key, value) 列表。
 ///
 /// JSON 格式：`[{"key":"spring.cloud.nacos.discovery.ip","value":"192.168.1.100"}]`
-/// 跳过 key 为空或解析失败的条目；解析失败时返回 None（不影响启动）。
-fn parse_override_properties(json: &Option<String>) -> Option<Vec<(String, String)>> {
-    let raw = json.as_ref()?.trim();
+/// 跳过 key 为空的条目。
+///
+/// 返回 `(overrides, parse_error)`：
+/// - 解析成功：`(Vec<...>, None)`
+/// - 解析失败：`(空 Vec, Some(错误消息))`，调用方应将错误推送到前端日志
+fn parse_override_properties(json: &Option<String>) -> (Vec<(String, String)>, Option<String>) {
+    let raw = match json.as_ref() {
+        Some(s) => s.trim(),
+        None => return (vec![], None),
+    };
     if raw.is_empty() {
-        return None;
+        return (vec![], None);
     }
     #[derive(serde::Deserialize)]
     struct Kv {
@@ -1042,16 +1184,17 @@ fn parse_override_properties(json: &Option<String>) -> Option<Vec<(String, Strin
     }
     match serde_json::from_str::<Vec<Kv>>(raw) {
         Ok(list) => {
-            let out: Vec<(String, String)> = list
+            let v: Vec<(String, String)> = list
                 .into_iter()
                 .filter(|kv| !kv.key.trim().is_empty())
                 .map(|kv| (kv.key.trim().to_string(), kv.value))
                 .collect();
-            Some(out)
+            (v, None)
         }
         Err(e) => {
-            log::warn!("override_properties JSON 解析失败: {}", e);
-            None
+            let msg = format!("override_properties JSON 解析失败: {}", e);
+            log::warn!("{}", msg);
+            (vec![], Some(msg))
         }
     }
 }

@@ -69,22 +69,58 @@ pub async fn pull(app: AppHandle, project_id: &str) -> AppResult<PullResult> {
 
     let root_clone = root.to_path_buf();
     let project_id_owned = project_id.to_string();
-    let join_result = tokio::task::spawn_blocking(move || {
-        Command::new("git")
-            .arg("pull")
-            .current_dir(&root_clone)
-            .output()
-    })
-    .await
-    .map_err(|e| AppError::Git(format!("git pull 任务失败: {}", e)))?;
+    let app_clone = app.clone();
+    let services_clone = services.clone();
 
-    let result = join_result.map_err(|e| AppError::Git(format!("git pull 执行失败: {}", e)))?;
+    // git pull 可能因需要认证而永久阻塞 spawn_blocking 线程，
+    // 用 tokio::time::timeout 包裹，60 秒超时
+    let pull_timeout = std::time::Duration::from_secs(60);
+    let join_result = tokio::time::timeout(
+        pull_timeout,
+        tokio::task::spawn_blocking(move || {
+            // 禁止交互式凭据提示，避免私有仓库卡住
+            let mut cmd = Command::new("git");
+            cmd.arg("pull")
+                .arg("--no-progress")
+                .current_dir(&root_clone)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GIT_ASKPASS", "")
+                .env("SSH_ASKPASS", "");
+            cmd.output()
+        }),
+    )
+    .await;
+
+    let result = match join_result {
+        Ok(Ok(output)) => output.map_err(|e| AppError::Git(format!("git pull 执行失败: {}", e)))?,
+        Ok(Err(e)) => return Err(AppError::Git(format!("git pull 任务失败: {}", e))),
+        Err(_) => {
+            // 超时：恢复服务状态并返回错误
+            for s in &services_clone {
+                let rt = process::get_manager().get_runtime(&s.id);
+                let new_status = if rt.pid.is_some() {
+                    db::models::ServiceStatus::Running
+                } else {
+                    db::models::ServiceStatus::Stopped
+                };
+                process::get_manager().set_status(&app_clone, &s.id, new_status);
+            }
+            return Err(AppError::Git(
+                "git pull 超时（60 秒），可能需要认证或网络异常".to_string(),
+            ));
+        }
+    };
 
     let stdout = String::from_utf8_lossy(&result.stdout).to_string();
     let stderr = String::from_utf8_lossy(&result.stderr).to_string();
     let success = result.status.success();
 
-    let up_to_date = stdout.contains("Already up to date") || stdout.contains("Already up-to-date");
+    let up_to_date = stdout.contains("Already up to date")
+        || stdout.contains("Already up-to-date")
+        || stdout.contains("已经是最新")
+        || stdout.contains("已是最新")
+        || stdout.contains("up to date")
+        || stdout.contains("up-to-date");
 
     // 写入项目下所有服务日志
     for s in &services {

@@ -1,3 +1,5 @@
+pub mod scan;
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -36,13 +38,8 @@ pub fn parse_pom(pom_path: &Path) -> AppResult<PomInfo> {
                 path_stack.push(String::from_utf8_lossy(e.name().as_ref()).to_string());
                 text_buf.clear();
             }
-            Ok(Event::Empty(e)) => {
-                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                // <packaging/> 空标签 → 默认 jar 不变
-                if path_stack.last().map(|s| s.as_str()) == Some("properties") {
-                    // ignore
-                }
-                let _ = name;
+            Ok(Event::Empty(_)) => {
+                // 空标签（如 <packaging/>）无需处理，默认值已在初始化时设置
             }
             Ok(Event::End(_)) => {
                 let tag = path_stack.pop();
@@ -97,7 +94,10 @@ pub fn scan_project(root_pom: &Path) -> AppResult<Vec<ScannedModule>> {
     let canonical = root_pom
         .canonicalize()
         .map_err(|e| AppError::PomParse(format!("路径规范化失败: {}", e)))?;
-    scan_recursive(&canonical, &canonical.parent().unwrap_or(Path::new("")), &mut visited, "")
+    let base_dir = canonical.parent().ok_or_else(|| {
+        AppError::PomParse("项目根目录不存在父路径".to_string())
+    })?;
+    scan_recursive(&canonical, base_dir, &mut visited, "")
 }
 
 fn scan_recursive(
@@ -114,9 +114,8 @@ fn scan_recursive(
     let info = parse_pom(pom_path)?;
     let dir = pom_path.parent().unwrap_or(Path::new(""));
     // 判定是否为可启动服务：packaging 必须是 jar/war，且模块内存在带 @SpringBootApplication 的主类
-    // 单纯 jar 且不含 SpringBoot 主类的（工具/公共模块）不算服务，避免污染勾选列表
     let main_class_opt = if matches!(info.packaging.as_str(), "jar" | "war") {
-        find_spring_boot_main_class(dir)
+        scan::find_spring_boot_main_class(dir)
     } else {
         None
     };
@@ -169,77 +168,6 @@ fn scan_recursive(
     // 返回扁平结构（树结构在前端按路径重建，此处平铺便于勾选）
     // 但保留 children 以备层级展示
     Ok(vec![module])
-}
-
-/// 在模块的 `src/main/java` 下查找带 `@SpringBootApplication` 注解的类，命中则返回其全限定名。
-///
-/// - 先从模块 pom.xml 里直接取 mainClass / start-class（支持 ${xxx} 变量解引用）——
-///   BladeX / Spring Boot Parent 项目能直接命中，避免扫数百个 java 文件
-/// - 命中不了才去 `src/main/java` 递归扫 @SpringBootApplication
-/// - 扫描时跳过 target/.git/node_modules/.idea，每个 .java 只读前 4KB
-pub fn find_spring_boot_main_class(module_dir: &Path) -> Option<String> {
-    // 1. pom.xml 直取（最快）
-    let pom_path = module_dir.join("pom.xml");
-    if let Ok(content) = std::fs::read_to_string(&pom_path) {
-        if let Some(mc) = crate::process::build::extract_main_class_from_pom_xml(&content) {
-            return Some(mc);
-        }
-    }
-    // 2. 扫源码兜底
-    let src_java = module_dir.join("src").join("main").join("java");
-    if !src_java.is_dir() {
-        return None;
-    }
-    scan_annotation(&src_java, &src_java)
-}
-
-fn scan_annotation(root: &Path, dir: &Path) -> Option<String> {
-    let entries = std::fs::read_dir(dir).ok()?;
-    // 先累积后排序：先扫同级 .java（主类多数在包根目录），再递归子目录，命中即返
-    let mut files: Vec<PathBuf> = vec![];
-    let mut dirs: Vec<PathBuf> = vec![];
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            if matches!(name, "target" | ".git" | "node_modules" | ".idea") {
-                continue;
-            }
-            dirs.push(path);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("java") {
-            files.push(path);
-        }
-    }
-    for path in &files {
-        if let Ok(head) = read_head(path, 4096) {
-            if head.contains("@SpringBootApplication") {
-                if let Ok(rel) = path.strip_prefix(root) {
-                    let fqcn = rel
-                        .to_string_lossy()
-                        .replace('\\', "/")
-                        .replace('/', ".")
-                        .trim_end_matches(".java")
-                        .to_string();
-                    return Some(fqcn);
-                }
-            }
-        }
-    }
-    for d in &dirs {
-        if let Some(mc) = scan_annotation(root, d) {
-            return Some(mc);
-        }
-    }
-    None
-}
-
-fn read_head(path: &Path, n: usize) -> std::io::Result<String> {
-    use std::io::Read;
-    let mut f = std::fs::File::open(path)?;
-    let mut buf = vec![0u8; n];
-    let read = f.read(&mut buf)?;
-    buf.truncate(read);
-    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 /// 将扫描树展平为可勾选列表

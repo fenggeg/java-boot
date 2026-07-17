@@ -5,6 +5,7 @@ pub mod git;
 pub mod pom;
 pub mod port;
 pub mod process;
+pub mod util;
 pub mod watcher;
 
 use tauri::Manager;
@@ -17,7 +18,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_opener::init())
         .on_window_event(|window, event| {
             // 应用关闭时停止所有服务
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -49,7 +50,8 @@ pub fn run() {
             watcher::get_watch_manager().refresh_all(&handle);
 
             // 后台预热：为历史服务回填 main_class（旧版本添加的服务可能为空，避免启动阶段现扫）
-            // 把 7 秒消耗移到 app 启动后的后台，用户手动启动服务时已 DB 命中
+            // 把 7 秒消耗移到 app 启动后的后台，用户手动启动服务时已 DB 命中。
+            // 直接复用 process::build::detect_main_class，避免逻辑重复。
             tauri::async_runtime::spawn_blocking(|| {
                 let services = match db::list_services() {
                     Ok(v) => v,
@@ -60,18 +62,8 @@ pub fn run() {
                         continue;
                     }
                     let dir = std::path::PathBuf::from(&s.working_dir);
-                    // 1. pom.xml 里的 spring-boot-maven-plugin.mainClass
-                    let pom_path = dir.join("pom.xml");
-                    if let Ok(content) = std::fs::read_to_string(&pom_path) {
-                        if let Some(mc) = process::build::extract_main_class_from_pom_xml(&content) {
-                            let _ = db::set_service_main_class(&s.id, &mc);
-                            continue;
-                        }
-                    }
-                    // 2. 扫源码（同级优先）
-                    if let Some(mc) = pom::find_spring_boot_main_class(&dir) {
-                        let _ = db::set_service_main_class(&s.id, &mc);
-                    }
+                    // detect_main_class 内部会回写 DB，忽略错误（服务可能已删除等）
+                    let _ = process::build::detect_main_class(&s, &dir);
                 }
             });
 

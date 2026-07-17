@@ -5,7 +5,6 @@ import type {
   ServiceRuntime,
   AppConfig,
   LogLine,
-  ServiceStatus,
 } from "./types";
 import * as api from "./api";
 
@@ -40,7 +39,29 @@ interface Store {
   removeService: (serviceId: string) => void;
 }
 
-export const useStore = create<Store>((set, get) => ({
+export const useStore = create<Store>((set, get) => {
+  // 从 localStorage 恢复 openedTabs
+  const loadOpenedTabs = (): string[] => {
+    try {
+      const raw = localStorage.getItem("javaboot:openedTabs");
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) return arr.filter((x: unknown) => typeof x === "string");
+      }
+    } catch {
+      // ignore
+    }
+    return [];
+  };
+  const saveOpenedTabs = (tabs: string[]) => {
+    try {
+      localStorage.setItem("javaboot:openedTabs", JSON.stringify(tabs));
+    } catch {
+      // ignore
+    }
+  };
+
+  return {
   projects: [],
   services: [],
   runtimes: {},
@@ -53,7 +74,7 @@ export const useStore = create<Store>((set, get) => ({
     stop_all_on_exit: true,
   },
   selectedServiceId: null,
-  openedTabs: [],
+  openedTabs: loadOpenedTabs(),
   gitAvailable: false,
   loading: false,
 
@@ -90,6 +111,15 @@ export const useStore = create<Store>((set, get) => ({
       for (const s of services) {
         logMap[s.id] = { lines: [], hasUnread: false };
       }
+      // 恢复持久化的 openedTabs，过滤掉已不存在的服务
+      const serviceIds = new Set(services.map((s) => s.id));
+      const persistedTabs = get().openedTabs.filter((id) => serviceIds.has(id));
+      const openedTabs = persistedTabs.length > 0
+        ? persistedTabs
+        : services[0]
+          ? [services[0].id]
+          : [];
+      saveOpenedTabs(openedTabs);
       set({
         projects,
         services,
@@ -98,8 +128,8 @@ export const useStore = create<Store>((set, get) => ({
         config,
         gitAvailable: gitOk,
         loading: false,
-        selectedServiceId: services[0]?.id ?? null,
-        openedTabs: services[0] ? [services[0].id] : [],
+        selectedServiceId: openedTabs[0] ?? null,
+        openedTabs,
       });
     } catch (e) {
       console.error("init failed", e);
@@ -121,6 +151,7 @@ export const useStore = create<Store>((set, get) => ({
         id && !state.openedTabs.includes(id)
           ? [...state.openedTabs, id]
           : state.openedTabs;
+      saveOpenedTabs(nextOpened);
       return { selectedServiceId: id, openedTabs: nextOpened };
     });
     if (id) get().markRead(id);
@@ -131,6 +162,7 @@ export const useStore = create<Store>((set, get) => ({
       const idx = state.openedTabs.indexOf(id);
       if (idx < 0) return state;
       const nextOpened = state.openedTabs.filter((x) => x !== id);
+      saveOpenedTabs(nextOpened);
       let nextSelected = state.selectedServiceId;
       if (state.selectedServiceId === id) {
         // 关的是当前选中：切到相邻 tab（优先右、否则左）
@@ -210,6 +242,7 @@ export const useStore = create<Store>((set, get) => ({
         if (state.logs[s.id]) remainingLogs[s.id] = state.logs[s.id];
       }
       const nextOpened = state.openedTabs.filter((id) => remainingIds.has(id));
+      saveOpenedTabs(nextOpened);
       return {
         projects: state.projects.filter((p) => p.id !== projectId),
         services: remainingServices,
@@ -232,6 +265,7 @@ export const useStore = create<Store>((set, get) => ({
       const { [serviceId]: _, ...remainingRuntimes } = state.runtimes;
       const { [serviceId]: __, ...remainingLogs } = state.logs;
       const nextOpened = state.openedTabs.filter((id) => id !== serviceId);
+      saveOpenedTabs(nextOpened);
       return {
         services: remainingServices,
         runtimes: remainingRuntimes,
@@ -244,4 +278,5 @@ export const useStore = create<Store>((set, get) => ({
       };
     });
   },
-}));
+  };
+});
