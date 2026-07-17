@@ -60,3 +60,27 @@ impl NoWindow for tokio::process::Command {
         self
     }
 }
+
+/// 检查路径是否存在，跟随 junction / symlink。
+///
+/// `Path::exists()` 在某些情况下（如安装器以 elevated 权限启动时）无法解析
+/// scoop 的 `current` junction，返回 false。此函数用 `std::fs::metadata`
+///（跟随链接）替代，并在失败时尝试 `canonicalize` 解析真实路径。
+pub fn path_exists_follow_junction(path: &std::path::Path) -> bool {
+    // 1. 直接 metadata（跟随 junction/symlink）
+    if std::fs::metadata(path).is_ok() {
+        return true;
+    }
+    // 2. canonicalize 解析完整路径
+    if std::fs::canonicalize(path).is_ok() {
+        return true;
+    }
+    // 3. fallback: Path::exists
+    path.exists()
+}
+
+/// 解析 junction / symlink 到真实路径。
+/// 如果路径不是 junction 或解析失败，返回原路径。
+pub fn resolve_junction(path: &std::path::Path) -> std::path::PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}

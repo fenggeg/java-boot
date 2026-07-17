@@ -315,7 +315,9 @@ pub fn refresh_port_conflicts(app: AppHandle) {
 
 #[tauri::command]
 pub fn git_available() -> bool {
-    git::git_available()
+    let result = git::git_available();
+    log::info!("git_available = {}", result);
+    result
 }
 
 #[tauri::command]
@@ -382,11 +384,18 @@ where
 /// 探测系统已安装的 JDK 列表（扫描常见安装位置）
 #[tauri::command]
 pub async fn detect_jdks() -> Vec<JdkInfo> {
+    {
+        let path = std::env::var("PATH").unwrap_or_default();
+        log::info!("detect_jdks 开始: PATH={}chars", path.len());
+    }
     // 候选路径收集涉及大量同步 fs IO，移入 spawn_blocking 避免阻塞 tokio runtime
     let candidates = tokio::task::spawn_blocking(collect_jdk_candidates)
         .await
         .unwrap_or_default();
-    detect_tools(candidates, probe_jdk).await
+    log::info!("detect_jdks: jdk 候选 {} 个: {:?}", candidates.len(), candidates);
+    let result = detect_tools(candidates, probe_jdk).await;
+    log::info!("detect_jdks: 探测到 {} 个 JDK", result.len());
+    result
 }
 
 /// 收集 JDK 候选路径（同步阻塞 IO，须在 spawn_blocking 中调用）
@@ -402,7 +411,7 @@ fn collect_jdk_candidates() -> Vec<String> {
     if let Ok(path) = std::env::var("PATH") {
         for dir in std::env::split_paths(&path) {
             let java_exe = dir.join("java.exe");
-            if java_exe.exists() {
+            if crate::util::path_exists_follow_junction(&java_exe) {
                 if let Some(bin_dir) = dir.parent() {
                     cc.push(bin_dir.to_string_lossy().to_string());
                 }
@@ -428,14 +437,14 @@ fn collect_jdk_candidates() -> Vec<String> {
                 for entry in entries.flatten() {
                     let p = entry.path();
                     if p.is_dir() {
-                        if p.join("bin").join("java.exe").exists() {
+                        if crate::util::path_exists_follow_junction(&p.join("bin").join("java.exe")) {
                             cc.push(p.to_string_lossy().to_string());
                         }
                         // scoop 下可能再嵌套一层（如 temurin17-jdk/current）
                         if let Ok(sub_entries) = std::fs::read_dir(&p) {
                             for sub in sub_entries.flatten() {
                                 let sp = sub.path();
-                                if sp.join("bin").join("java.exe").exists() {
+                                if crate::util::path_exists_follow_junction(&sp.join("bin").join("java.exe")) {
                                     cc.push(sp.to_string_lossy().to_string());
                                 }
                             }
@@ -449,7 +458,7 @@ fn collect_jdk_candidates() -> Vec<String> {
             if let Ok(entries) = std::fs::read_dir(base) {
                 for entry in entries.flatten() {
                     let p = entry.path();
-                    if p.is_dir() && p.join("bin").join("java.exe").exists() {
+                    if p.is_dir() && crate::util::path_exists_follow_junction(&p.join("bin").join("java.exe")) {
                         cc.push(p.to_string_lossy().to_string());
                     }
                 }
@@ -470,14 +479,37 @@ pub struct JdkInfo {
 /// 探测某 JDK_HOME 的版本信息
 fn probe_jdk(java_home: &str) -> Option<JdkInfo> {
     let java_exe = std::path::PathBuf::from(java_home).join("bin").join("java.exe");
-    if !java_exe.exists() {
-        return None;
+    // 用 metadata 跟随 junction，避免 scoop current 链接在 elevated 进程中无法解析
+    if !crate::util::path_exists_follow_junction(&java_exe) {
+        // 尝试 canonicalize 解析 junction 后再检查
+        let resolved = crate::util::resolve_junction(std::path::Path::new(java_home));
+        let resolved_exe = resolved.join("bin").join("java.exe");
+        if !crate::util::path_exists_follow_junction(&resolved_exe) {
+            log::warn!("probe_jdk: {} 不存在 java.exe (resolved: {})", java_home, resolved.display());
+            return None;
+        }
     }
-    let output = std::process::Command::new(&java_exe)
+    // 用 canonicalize 解析后的路径执行，避免 junction 解析问题
+    let real_exe = std::fs::canonicalize(&java_exe).unwrap_or_else(|_| java_exe.clone());
+    let output = std::process::Command::new(&real_exe)
         .arg("-version")
         .creation_flags_no_window()
-        .output()
-        .ok()?;
+        .output();
+    let output = match output {
+        Ok(o) => o,
+        Err(e) => {
+            log::warn!("probe_jdk: 执行 {} -version 失败: {}", real_exe.display(), e);
+            return None;
+        }
+    };
+    if !output.status.success() {
+        log::warn!(
+            "probe_jdk: {} -version 退出码 {:?}, stderr: {}",
+            java_exe.display(),
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     // java -version 输出到 stderr
     let text = String::from_utf8_lossy(&output.stderr);
     let mut version = String::from("unknown");
@@ -509,8 +541,12 @@ fn probe_jdk(java_home: &str) -> Option<JdkInfo> {
             }
         }
     }
+    // 返回 canonicalize 后的真实路径，避免 current junction 在后续使用中无法解析
+    let real_home = std::fs::canonicalize(java_home)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| java_home.to_string());
     Some(JdkInfo {
-        path: java_home.to_string(),
+        path: real_home,
         version,
         vendor,
     })
@@ -525,18 +561,33 @@ pub struct MavenInfo {
 /// 探测系统已安装的 Maven 列表
 #[tauri::command]
 pub async fn detect_mavens() -> Vec<MavenInfo> {
+    // 诊断：记录 detect_mavens 调用时的环境状态
+    {
+        let path = std::env::var("PATH").unwrap_or_default();
+        let java_home = std::env::var("JAVA_HOME").unwrap_or_default();
+        log::info!(
+            "detect_mavens 开始: PATH={}chars, JAVA_HOME={}",
+            path.len(),
+            if java_home.is_empty() { "(空)" } else { &java_home }
+        );
+    }
     // 候选路径收集涉及大量同步 fs IO，移入 spawn_blocking 避免阻塞 tokio runtime
     let candidates = tokio::task::spawn_blocking(collect_maven_candidates)
         .await
         .unwrap_or_default();
+    log::info!("detect_mavens: maven 候选 {} 个: {:?}", candidates.len(), candidates);
     // 先检测 JDK，把第一个可用 JAVA_HOME 传给 maven 探测
     // （安装器启动时 PATH 不完整，probe_maven 内部 which_java() 可能失败）
     let jdk_candidates = tokio::task::spawn_blocking(collect_jdk_candidates)
         .await
         .unwrap_or_default();
+    log::info!("detect_mavens: jdk 候选 {} 个: {:?}", jdk_candidates.len(), jdk_candidates);
     let jdks = detect_tools(jdk_candidates, probe_jdk).await;
+    log::info!("detect_mavens: 探测到 {} 个 JDK: {:?}", jdks.len(), jdks.iter().map(|j| &j.path).collect::<Vec<_>>());
     let fallback_java_home = jdks.first().map(|j| j.path.clone());
-    detect_tools(candidates, move |m| probe_maven(m, fallback_java_home.as_deref())).await
+    let result = detect_tools(candidates, move |m| probe_maven(m, fallback_java_home.as_deref())).await;
+    log::info!("detect_mavens: 探测到 {} 个 maven: {:?}", result.len(), result.iter().map(|m| (&m.path, &m.version)).collect::<Vec<_>>());
+    result
 }
 
 /// 收集 Maven 候选路径（同步阻塞 IO，须在 spawn_blocking 中调用）
@@ -554,7 +605,7 @@ fn collect_maven_candidates() -> Vec<String> {
     if let Ok(path) = std::env::var("PATH") {
         for dir in std::env::split_paths(&path) {
             let mvn_exe = dir.join("mvn.cmd");
-            if mvn_exe.exists() {
+            if crate::util::path_exists_follow_junction(&mvn_exe) {
                 if let Some(bin_dir) = dir.parent() {
                     cc.push(bin_dir.to_string_lossy().to_string());
                 }
@@ -568,13 +619,14 @@ fn collect_maven_candidates() -> Vec<String> {
         if let Ok(entries) = std::fs::read_dir(&scoop_maven) {
             for entry in entries.flatten() {
                 let p = entry.path();
-                if p.join("bin").join("mvn.cmd").exists() {
+                if crate::util::path_exists_follow_junction(&p.join("bin").join("mvn.cmd")) {
                     cc.push(p.to_string_lossy().to_string());
                 }
             }
         }
         let scoop_current = format!("{}\\scoop\\apps\\maven\\current", home);
-        if std::path::Path::new(&scoop_current).join("bin").join("mvn.cmd").exists() {
+        let scoop_current_mvn = std::path::Path::new(&scoop_current).join("bin").join("mvn.cmd");
+        if crate::util::path_exists_follow_junction(&scoop_current_mvn) {
             cc.push(scoop_current);
         }
     }
@@ -589,7 +641,7 @@ fn collect_maven_candidates() -> Vec<String> {
         if let Ok(entries) = std::fs::read_dir(base) {
             for entry in entries.flatten() {
                 let p = entry.path();
-                if p.is_dir() && p.join("bin").join("mvn.cmd").exists() {
+                if p.is_dir() && crate::util::path_exists_follow_junction(&p.join("bin").join("mvn.cmd")) {
                     cc.push(p.to_string_lossy().to_string());
                 }
             }
@@ -603,9 +655,12 @@ fn collect_maven_candidates() -> Vec<String> {
 /// `fallback_java_home`: 由 detect_mavens 传入的已检测到的 JDK 路径，用于 PATH 不完整时
 fn probe_maven(maven_home: &str, fallback_java_home: Option<&str>) -> Option<MavenInfo> {
     let mvn_cmd = std::path::PathBuf::from(maven_home).join("bin").join("mvn.cmd");
-    if !mvn_cmd.exists() {
+    if !crate::util::path_exists_follow_junction(&mvn_cmd) {
+        log::warn!("probe_maven: {} 不存在 mvn.cmd", maven_home);
         return None;
     }
+    // canonicalize 解析 junction，避免 elevated 进程无法解析 scoop current 链接
+    let mvn_cmd_real = std::fs::canonicalize(&mvn_cmd).unwrap_or_else(|_| mvn_cmd.clone());
     // mvn.cmd 强制要求 JAVA_HOME；优先用系统 JAVA_HOME，否则 fallback 到传入的 JDK 路径，
     // 最后尝试 which_java() 反推（PATH 不完整时可能失败）
     let java_home = std::env::var("JAVA_HOME").ok().filter(|s| !s.is_empty());
@@ -622,15 +677,28 @@ fn probe_maven(maven_home: &str, fallback_java_home: Option<&str>) -> Option<Mav
                 .map(|p| p.to_string_lossy().to_string())
         })
     };
+    // canonicalize JAVA_HOME，避免 junction 解析失败导致 mvn.cmd 找不到 java
+    let java_home = java_home.map(|jh| {
+        std::fs::canonicalize(&jh)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or(jh)
+    });
 
     let mut cmd = std::process::Command::new("cmd");
-    cmd.arg("/c").arg(&mvn_cmd).arg("-v");
+    cmd.arg("/c").arg(&mvn_cmd_real).arg("-v");
     if let Some(jh) = &java_home {
         cmd.env("JAVA_HOME", jh);
         let cur_path = std::env::var("PATH").unwrap_or_default();
         cmd.env("PATH", format!("{}\\bin;{}", jh, cur_path));
     }
-    let output = cmd.creation_flags_no_window().output().ok()?;
+    let output = cmd.creation_flags_no_window().output();
+    let output = match output {
+        Ok(o) => o,
+        Err(e) => {
+            log::warn!("probe_maven: 执行 {} -v 失败: {}", mvn_cmd.display(), e);
+            return None;
+        }
+    };
     // mvn.cmd 失败时错误信息在 stderr，stdout 为空；合并两者避免漏掉
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -643,6 +711,12 @@ fn probe_maven(maven_home: &str, fallback_java_home: Option<&str>) -> Option<Mav
         || version.contains("ERROR")
         || version.contains("Exception")
     {
+        log::warn!(
+            "probe_maven: {} -v 探测失败，stdout={}, stderr={}",
+            mvn_cmd.display(),
+            stdout.trim(),
+            stderr.trim()
+        );
         return None;
     }
     Some(MavenInfo {

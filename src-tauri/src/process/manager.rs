@@ -158,7 +158,12 @@ impl ProcessManager {
             let mut sys = SYS.lock();
             sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&pid_refs), false);
             for (service_id, pid, started_at) in &pids {
-                if sys.process(sysinfo::Pid::from_u32(*pid)).is_some() {
+                let proc = sys.process(sysinfo::Pid::from_u32(*pid));
+                // 验证进程存在且确实是 java 进程（避免 PID 复用导致误判）
+                let is_java = proc.and_then(|p| p.name().to_str()).map_or(false, |n| {
+                    n.eq_ignore_ascii_case("java.exe") || n.eq_ignore_ascii_case("javaw.exe")
+                });
+                if is_java {
                     log::info!("恢复服务 {} (PID {})", service_id, pid);
                     let mut rt = self.runtimes.lock();
                     let entry = rt.entry(service_id.clone()).or_default();
@@ -169,7 +174,15 @@ impl ProcessManager {
                     entry.ports = crate::port::ports_for_pid(*pid).unwrap_or_default();
                 } else {
                     let _ = db::clear_run_pid(service_id);
-                    log::info!("服务 {} 的进程已不存在，清理", service_id);
+                    if proc.is_some() {
+                        log::warn!(
+                            "服务 {} 的 PID {} 已被非 java 进程复用，清理",
+                            service_id,
+                            pid
+                        );
+                    } else {
+                        log::info!("服务 {} 的进程已不存在，清理", service_id);
+                    }
                 }
             }
         }

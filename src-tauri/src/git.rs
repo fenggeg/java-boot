@@ -23,16 +23,25 @@ pub fn git_available() -> bool {
 
 /// 定位 git 可执行文件：PATH 优先，fallback 到 scoop shims
 fn resolve_git() -> Option<String> {
-    // 1. PATH 里的 git
-    if Command::new("git")
-        .arg("--version")
-        .creation_flags_no_window()
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
-        return Some("git".to_string());
+    // 1. 在 PATH 中逐目录查找 git.exe（比 Command::new("git") 更可靠，
+    //    避免 Tauri 进程 PATH 搜索行为差异）
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let git_exe = dir.join("git.exe");
+            if git_exe.exists() {
+                if Command::new(&git_exe)
+                    .arg("--version")
+                    .creation_flags_no_window()
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+                {
+                    return Some(git_exe.to_string_lossy().to_string());
+                }
+            }
+        }
     }
+    log::warn!("resolve_git: PATH 中未找到可用的 git.exe");
     // 2. scoop shims（打包后应用可能不继承用户 PATH）
     if let Ok(home) = std::env::var("USERPROFILE") {
         let scoop_git = format!("{}\\scoop\\shims\\git.exe", home);
@@ -45,6 +54,25 @@ fn resolve_git() -> Option<String> {
                 .unwrap_or(false)
             {
                 return Some(scoop_git);
+            }
+            log::warn!("resolve_git: scoop git 存在但执行失败: {}", scoop_git);
+        }
+        // 3. UGit 自带的 git（用户 PATH 中有 UGit 路径）
+        let ugit_dirs = [
+            format!("{}\\AppData\\Local\\UGit\\app-5.24.1\\resources\\app\\git\\cmd\\git.exe", home),
+            format!("{}\\AppData\\Local\\UGit\\app-5.45.1\\resources\\app\\git\\cmd\\git.exe", home),
+        ];
+        for ugit_git in &ugit_dirs {
+            if std::path::Path::new(ugit_git).exists() {
+                if Command::new(ugit_git)
+                    .arg("--version")
+                    .creation_flags_no_window()
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+                {
+                    return Some(ugit_git.clone());
+                }
             }
         }
     }

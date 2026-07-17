@@ -53,15 +53,18 @@ fn non_empty(s: String) -> Option<String> {
 pub fn resolve_maven_cmd(working_dir: &Path, cfg: &EnvConfig) -> (String, Vec<String>) {
     if let Some(mh) = &cfg.maven_home {
         let mvn_cmd = PathBuf::from(mh).join("bin").join("mvn.cmd");
-        if mvn_cmd.exists() {
+        if crate::util::path_exists_follow_junction(&mvn_cmd) {
+            // canonicalize 解析 junction
+            let real = std::fs::canonicalize(&mvn_cmd).unwrap_or_else(|_| mvn_cmd);
             return (
                 "cmd".to_string(),
-                vec!["/c".to_string(), mvn_cmd.to_string_lossy().to_string()],
+                vec!["/c".to_string(), real.to_string_lossy().to_string()],
             );
         }
         let mvn_bin = PathBuf::from(mh).join("bin").join("mvn");
-        if mvn_bin.exists() {
-            return (mvn_bin.to_string_lossy().to_string(), vec![]);
+        if crate::util::path_exists_follow_junction(&mvn_bin) {
+            let real = std::fs::canonicalize(&mvn_bin).unwrap_or_else(|_| mvn_bin);
+            return (real.to_string_lossy().to_string(), vec![]);
         }
         log::warn!("项目配置的 maven_home 无效: {}", mh);
     }
@@ -85,11 +88,19 @@ pub fn resolve_maven_cmd(working_dir: &Path, cfg: &EnvConfig) -> (String, Vec<St
     }
 }
 
-/// 确定生效的 JAVA_HOME：项目配置优先，否则用系统环境变量
+/// 确定生效的 JAVA_HOME：项目配置优先，否则用系统环境变量。
+/// 返回 canonicalize 后的真实路径，避免 scoop current junction 在 elevated 进程中无法解析。
 pub fn resolve_java_home(cfg: &EnvConfig) -> Option<String> {
-    cfg.java_home
+    let raw = cfg
+        .java_home
         .clone()
-        .or_else(|| std::env::var("JAVA_HOME").ok().filter(|s| !s.is_empty()))
+        .or_else(|| std::env::var("JAVA_HOME").ok().filter(|s| !s.is_empty()))?;
+    // canonicalize 解析 junction，失败时返回原路径
+    Some(
+        std::fs::canonicalize(&raw)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or(raw),
+    )
 }
 
 /// 启动前预检：确认 java / mvn 可用
@@ -105,7 +116,7 @@ pub fn preflight_check(
     } else {
         PathBuf::from("java.exe")
     };
-    let java_ok = java_home.is_some() && java_bin.exists();
+    let java_ok = java_home.is_some() && crate::util::path_exists_follow_junction(&java_bin);
     if !java_ok && which_java().is_none() {
         return Err(crate::error::AppError::Process(format!(
             "未找到可用的 JDK。\n{}请在该服务所属项目的设置里指定 JDK 路径，或确保系统 JAVA_HOME / PATH 配置正确。",
@@ -147,14 +158,14 @@ pub fn which_java() -> Option<String> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join("java.exe");
-        if candidate.exists() {
+        if crate::util::path_exists_follow_junction(&candidate) {
             return Some(candidate.to_string_lossy().to_string());
         }
     }
     // 2. scoop shims（安装器启动时可能不继承用户 PATH）
     if let Ok(home) = std::env::var("USERPROFILE") {
         let shim = format!("{}\\scoop\\shims\\java.exe", home);
-        if std::path::Path::new(&shim).exists() {
+        if crate::util::path_exists_follow_junction(std::path::Path::new(&shim)) {
             return Some(shim);
         }
     }
@@ -167,11 +178,11 @@ pub fn which_mvn() -> Option<String> {
     if let Some(path) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path) {
             let candidate = dir.join("mvn.cmd");
-            if candidate.exists() {
+            if crate::util::path_exists_follow_junction(&candidate) {
                 return Some(candidate.to_string_lossy().to_string());
             }
             let candidate = dir.join("mvn");
-            if candidate.exists() {
+            if crate::util::path_exists_follow_junction(&candidate) {
                 return Some(candidate.to_string_lossy().to_string());
             }
         }
@@ -179,7 +190,7 @@ pub fn which_mvn() -> Option<String> {
     // 2. scoop shims（安装器启动时可能不继承用户 PATH）
     if let Ok(home) = std::env::var("USERPROFILE") {
         let shim = format!("{}\\scoop\\shims\\mvn.exe", home);
-        if std::path::Path::new(&shim).exists() {
+        if crate::util::path_exists_follow_junction(std::path::Path::new(&shim)) {
             return Some(shim);
         }
     }
@@ -352,13 +363,29 @@ pub fn merge_registry_path() {
     }
 
     // 同时补齐 JAVA_HOME / MAVEN_HOME（如果注册表 Environment 里有但当前进程没有）
-    if std::env::var("JAVA_HOME").ok().filter(|s| !s.is_empty()).is_none() {
+    // canonicalize JAVA_HOME（无条件）：如果 JAVA_HOME 指向 scoop current junction，
+    // elevated 进程可能无法解析，canonicalize 为真实路径
+    if let Ok(jh) = std::env::var("JAVA_HOME") {
+        if !jh.is_empty() {
+            if let Ok(real) = std::fs::canonicalize(&jh) {
+                let real_str = real.to_string_lossy().to_string();
+                if real_str != jh {
+                    log::info!("JAVA_HOME canonicalize: {} -> {}", jh, real_str);
+                    std::env::set_var("JAVA_HOME", real_str);
+                }
+            }
+        }
+    } else {
+        // JAVA_HOME 未设置，从注册表补设
         if let Some(jh) = read_reg(HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment", "JAVA_HOME")
             .or_else(|| read_reg(HKEY_CURRENT_USER, r"Environment", "JAVA_HOME"))
         {
             if !jh.is_empty() {
-                log::info!("从注册表补设 JAVA_HOME = {}", jh);
-                std::env::set_var("JAVA_HOME", jh);
+                let real = std::fs::canonicalize(&jh)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or(jh.clone());
+                log::info!("从注册表补设 JAVA_HOME = {} (raw: {})", real, jh);
+                std::env::set_var("JAVA_HOME", real);
             }
         }
     }
