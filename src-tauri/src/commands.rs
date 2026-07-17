@@ -393,8 +393,11 @@ pub async fn detect_jdks() -> Vec<JdkInfo> {
         .await
         .unwrap_or_default();
     log::info!("detect_jdks: jdk 候选 {} 个: {:?}", candidates.len(), candidates);
-    let result = detect_tools(candidates, probe_jdk).await;
-    log::info!("detect_jdks: 探测到 {} 个 JDK", result.len());
+    let mut result = detect_tools(candidates, probe_jdk).await;
+    // 去重：current junction 和真实目录可能产生重复（canonicalize 后路径相同）
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    result.retain(|j| seen.insert(j.path.to_lowercase()));
+    log::info!("detect_jdks: 探测到 {} 个 JDK（去重后）", result.len());
     result
 }
 
@@ -490,7 +493,7 @@ fn probe_jdk(java_home: &str) -> Option<JdkInfo> {
         }
     }
     // 用 canonicalize 解析后的路径执行，避免 junction 解析问题
-    let real_exe = std::fs::canonicalize(&java_exe).unwrap_or_else(|_| java_exe.clone());
+    let real_exe = crate::util::canonicalize_clean(&java_exe).unwrap_or_else(|| java_exe.clone());
     let output = std::process::Command::new(&real_exe)
         .arg("-version")
         .creation_flags_no_window()
@@ -507,11 +510,11 @@ fn probe_jdk(java_home: &str) -> Option<JdkInfo> {
             "probe_jdk: {} -version 退出码 {:?}, stderr: {}",
             java_exe.display(),
             output.status.code(),
-            String::from_utf8_lossy(&output.stderr)
+            crate::util::decode_output(&output.stderr)
         );
     }
     // java -version 输出到 stderr
-    let text = String::from_utf8_lossy(&output.stderr);
+    let text = crate::util::decode_output(&output.stderr);
     let mut version = String::from("unknown");
     let mut vendor = String::from("unknown");
     for line in text.lines() {
@@ -542,9 +545,9 @@ fn probe_jdk(java_home: &str) -> Option<JdkInfo> {
         }
     }
     // 返回 canonicalize 后的真实路径，避免 current junction 在后续使用中无法解析
-    let real_home = std::fs::canonicalize(java_home)
+    let real_home = crate::util::canonicalize_clean(std::path::Path::new(java_home))
         .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| java_home.to_string());
+        .unwrap_or_else(|| java_home.to_string());
     Some(JdkInfo {
         path: real_home,
         version,
@@ -582,11 +585,16 @@ pub async fn detect_mavens() -> Vec<MavenInfo> {
         .await
         .unwrap_or_default();
     log::info!("detect_mavens: jdk 候选 {} 个: {:?}", jdk_candidates.len(), jdk_candidates);
-    let jdks = detect_tools(jdk_candidates, probe_jdk).await;
-    log::info!("detect_mavens: 探测到 {} 个 JDK: {:?}", jdks.len(), jdks.iter().map(|j| &j.path).collect::<Vec<_>>());
+    let mut jdks = detect_tools(jdk_candidates, probe_jdk).await;
+    // 去重：current junction 和真实目录可能产生重复
+    let mut seen_jdk: std::collections::HashSet<String> = std::collections::HashSet::new();
+    jdks.retain(|j| seen_jdk.insert(j.path.to_lowercase()));
+    log::info!("detect_mavens: 探测到 {} 个 JDK（去重后）: {:?}", jdks.len(), jdks.iter().map(|j| &j.path).collect::<Vec<_>>());
     let fallback_java_home = jdks.first().map(|j| j.path.clone());
-    let result = detect_tools(candidates, move |m| probe_maven(m, fallback_java_home.as_deref())).await;
-    log::info!("detect_mavens: 探测到 {} 个 maven: {:?}", result.len(), result.iter().map(|m| (&m.path, &m.version)).collect::<Vec<_>>());
+    let mut result = detect_tools(candidates, move |m| probe_maven(m, fallback_java_home.as_deref())).await;
+    let mut seen_mvn: std::collections::HashSet<String> = std::collections::HashSet::new();
+    result.retain(|m| seen_mvn.insert(m.path.to_lowercase()));
+    log::info!("detect_mavens: 探测到 {} 个 maven（去重后）: {:?}", result.len(), result.iter().map(|m| (&m.path, &m.version)).collect::<Vec<_>>());
     result
 }
 
@@ -660,7 +668,7 @@ fn probe_maven(maven_home: &str, fallback_java_home: Option<&str>) -> Option<Mav
         return None;
     }
     // canonicalize 解析 junction，避免 elevated 进程无法解析 scoop current 链接
-    let mvn_cmd_real = std::fs::canonicalize(&mvn_cmd).unwrap_or_else(|_| mvn_cmd.clone());
+    let mvn_cmd_real = crate::util::canonicalize_clean(&mvn_cmd).unwrap_or_else(|| mvn_cmd.clone());
     // mvn.cmd 强制要求 JAVA_HOME；优先用系统 JAVA_HOME，否则 fallback 到传入的 JDK 路径，
     // 最后尝试 which_java() 反推（PATH 不完整时可能失败）
     let java_home = std::env::var("JAVA_HOME").ok().filter(|s| !s.is_empty());
@@ -679,7 +687,7 @@ fn probe_maven(maven_home: &str, fallback_java_home: Option<&str>) -> Option<Mav
     };
     // canonicalize JAVA_HOME，避免 junction 解析失败导致 mvn.cmd 找不到 java
     let java_home = java_home.map(|jh| {
-        std::fs::canonicalize(&jh)
+        crate::util::canonicalize_clean(std::path::Path::new(&jh))
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or(jh)
     });
@@ -700,8 +708,8 @@ fn probe_maven(maven_home: &str, fallback_java_home: Option<&str>) -> Option<Mav
         }
     };
     // mvn.cmd 失败时错误信息在 stderr，stdout 为空；合并两者避免漏掉
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = crate::util::decode_output(&output.stdout);
+    let stderr = crate::util::decode_output(&output.stderr);
     // 优先取 stdout 第一行（正常 "Apache Maven 3.9.6 ..."），fallback 到 stderr
     let text = if stdout.trim().is_empty() { &stderr } else { &stdout };
     let version = text.lines().next().unwrap_or("unknown").trim().to_string();

@@ -54,8 +54,7 @@ pub fn resolve_maven_cmd(working_dir: &Path, cfg: &EnvConfig) -> (String, Vec<St
     if let Some(mh) = &cfg.maven_home {
         let mvn_cmd = PathBuf::from(mh).join("bin").join("mvn.cmd");
         if crate::util::path_exists_follow_junction(&mvn_cmd) {
-            // canonicalize 解析 junction
-            let real = std::fs::canonicalize(&mvn_cmd).unwrap_or_else(|_| mvn_cmd);
+            let real = crate::util::canonicalize_clean(&mvn_cmd).unwrap_or_else(|| mvn_cmd);
             return (
                 "cmd".to_string(),
                 vec!["/c".to_string(), real.to_string_lossy().to_string()],
@@ -63,7 +62,7 @@ pub fn resolve_maven_cmd(working_dir: &Path, cfg: &EnvConfig) -> (String, Vec<St
         }
         let mvn_bin = PathBuf::from(mh).join("bin").join("mvn");
         if crate::util::path_exists_follow_junction(&mvn_bin) {
-            let real = std::fs::canonicalize(&mvn_bin).unwrap_or_else(|_| mvn_bin);
+            let real = crate::util::canonicalize_clean(&mvn_bin).unwrap_or_else(|| mvn_bin);
             return (real.to_string_lossy().to_string(), vec![]);
         }
         log::warn!("项目配置的 maven_home 无效: {}", mh);
@@ -97,7 +96,7 @@ pub fn resolve_java_home(cfg: &EnvConfig) -> Option<String> {
         .or_else(|| std::env::var("JAVA_HOME").ok().filter(|s| !s.is_empty()))?;
     // canonicalize 解析 junction，失败时返回原路径
     Some(
-        std::fs::canonicalize(&raw)
+        crate::util::canonicalize_clean(std::path::Path::new(&raw))
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or(raw),
     )
@@ -367,7 +366,7 @@ pub fn merge_registry_path() {
     // elevated 进程可能无法解析，canonicalize 为真实路径
     if let Ok(jh) = std::env::var("JAVA_HOME") {
         if !jh.is_empty() {
-            if let Ok(real) = std::fs::canonicalize(&jh) {
+            if let Some(real) = crate::util::canonicalize_clean(std::path::Path::new(&jh)) {
                 let real_str = real.to_string_lossy().to_string();
                 if real_str != jh {
                     log::info!("JAVA_HOME canonicalize: {} -> {}", jh, real_str);
@@ -381,7 +380,7 @@ pub fn merge_registry_path() {
             .or_else(|| read_reg(HKEY_CURRENT_USER, r"Environment", "JAVA_HOME"))
         {
             if !jh.is_empty() {
-                let real = std::fs::canonicalize(&jh)
+                let real = crate::util::canonicalize_clean(std::path::Path::new(&jh))
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or(jh.clone());
                 log::info!("从注册表补设 JAVA_HOME = {} (raw: {})", real, jh);

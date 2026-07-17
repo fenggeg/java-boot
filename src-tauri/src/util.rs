@@ -79,8 +79,38 @@ pub fn path_exists_follow_junction(path: &std::path::Path) -> bool {
     path.exists()
 }
 
-/// 解析 junction / symlink 到真实路径。
+/// 安全的 canonicalize：去掉 Windows 扩展路径前缀 `\\?\`。
+///
+/// `std::fs::canonicalize` 在 Windows 上返回 `\\?\C:\...` 格式，
+/// 该前缀会导致 `Command::new` 和前端显示异常。
+pub fn canonicalize_clean(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    std::fs::canonicalize(path).ok().map(|p| {
+        let s = p.to_string_lossy().to_string();
+        let cleaned = if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            std::path::PathBuf::from(stripped)
+        } else {
+            p
+        };
+        cleaned
+    })
+}
+
+/// 解析 junction / symlink 到真实路径（去掉 `\\?\` 前缀）。
 /// 如果路径不是 junction 或解析失败，返回原路径。
 pub fn resolve_junction(path: &std::path::Path) -> std::path::PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    canonicalize_clean(path).unwrap_or_else(|| path.to_path_buf())
+}
+
+/// 解码子进程输出：优先 UTF-8，失败时 fallback 到 GBK（Windows 中文系统默认编码）。
+///
+/// `mvn -v` / `java -version` 等命令在中文 Windows 上失败时输出 GBK 编码的错误信息，
+/// `String::from_utf8_lossy` 会产生乱码。此函数用 `encoding_rs` 正确解码。
+pub fn decode_output(bytes: &[u8]) -> String {
+    // 先尝试 UTF-8
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return s.to_string();
+    }
+    // fallback: GBK 解码
+    let (s, _, _) = encoding_rs::GBK.decode(bytes);
+    s.into_owned()
 }
