@@ -92,14 +92,18 @@ npm run tauri:build
 │   │   ├── commands.rs        # Tauri 命令入口
 │   │   ├── db/                # SQLite (rusqlite bundled) - schema/models/mod
 │   │   ├── pom/               # Maven pom 解析 + SpringBoot 识别
+│   │   │   ├── mod.rs         # 递归解析 modules、packaging 判定
+│   │   │   └── scan.rs        # @SpringBootApplication 源码扫描（16KB 头读取）
 │   │   ├── process/
-│   │   │   ├── manager.rs     # 进程管理器（薄壳）
+│   │   │   ├── manager.rs     # 进程管理器（start/stop/stop_all 并行、状态机）
 │   │   │   ├── build.rs       # classpath 缓存、mtime 决策、主类探测
 │   │   │   ├── env.rs         # JAVA_HOME / MAVEN_HOME 解析（OnceLock 缓存）
 │   │   │   ├── log_pipe.rs    # 启动/失败模式匹配
 │   │   │   └── job.rs         # Windows Job Object 封装
 │   │   ├── port/              # 端口占用扫描
 │   │   ├── git/               # git pull
+│   │   ├── watcher.rs         # 文件变更监听（notify）
+│   │   ├── util.rs            # 通用工具（CandidateCollector 候选路径收集器）
 │   │   └── config.rs
 │   └── Cargo.toml
 └── package.json
@@ -129,7 +133,7 @@ A：当前只测过 Windows。macOS / Linux 上 Job Object、`taskkill` 路径�
 |---|---|
 | 前端 | React 18 + antd 5 + zustand + Vite 5 + TypeScript |
 | 桥接 | Tauri 2 (IPC / 事件) |
-| 后端 | Rust (tokio, rusqlite bundled, sysinfo, parking_lot, once_cell, quick-xml, futures) |
+| 后端 | Rust (tokio, rusqlite bundled, sysinfo, parking_lot, once_cell, quick-xml) |
 | 存储 | SQLite（用户配置目录），schema 幂等迁移 |
 | 平台 | Windows（Job Object + CREATE_NEW_PROCESS_GROUP） |
 
