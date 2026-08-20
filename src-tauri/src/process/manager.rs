@@ -55,6 +55,60 @@ const CP_SEP: &str = ";";
 #[cfg(not(windows))]
 const CP_SEP: &str = ":";
 
+/// 按系统 ANSI 代码页编码 @argfile 内容。
+///
+/// java launcher 读取 @argfile 时使用系统默认编码（JDK 文档注明 "characters in
+/// system default encoding"）。中文 Windows 的 ANSI 代码页是 936(GBK)，若直接写
+/// UTF-8，classpath 中的中文路径会乱码。这里对 936 转 GBK，65001 保持 UTF-8，
+/// 其余代码页回退 UTF-8（ASCII 兼容，非 ASCII 路径极罕见）。
+fn encode_argfile(content: &str) -> Vec<u8> {
+    #[cfg(windows)]
+    {
+        extern "system" {
+            fn GetACP() -> u32;
+        }
+        let cp = unsafe { GetACP() };
+        if cp == 936 {
+            let (gbk, _, had_errors) = encoding_rs::GBK.encode(content);
+            if !had_errors {
+                return gbk.into_owned();
+            }
+        }
+    }
+    content.as_bytes().to_vec()
+}
+
+/// 按空白切分命令行参数，支持单/双引号包裹的含空格参数（如 `-Dfoo="a b"`）。
+///
+/// maven_opts 是按 mvn 风格书写的一整串参数，`split_whitespace()` 会把引号内
+/// 的空格拆开导致参数被腰斩，这里保留引号语义、剔除引号本身。
+fn split_args(s: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    let mut cur = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    for c in s.chars() {
+        match c {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            c if c.is_whitespace() && !in_single && !in_double => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// 不参与端口冲突判定的"噪声"端口：JMX RMI(1099)、devtools(35729)、H2 控制台(9092)、
+/// JMXMP(4848) 等由框架占用、不代表服务 HTTP 端口，参与判定会产生误报。
+const NOISE_PORTS: &[u16] = &[1099, 35729, 9092, 4848];
+
 // ================================================================
 // ProcessHandle
 // ================================================================
@@ -234,6 +288,9 @@ impl ProcessManager {
     }
 
     /// 刷新所有运行中服务的 CPU/内存占用
+    ///
+    /// 带脏检查：仅当 CPU 变化超过 0.5% 或内存变化超过 1MB 时才更新并 emit，
+    /// 避免每轮定时刷新都向所有前端全量推送事件（服务多时事件风暴）。
     pub fn refresh_resource_usage(&self, app: &AppHandle) {
         let pids: Vec<(String, u32)> = {
             let rt = self.runtimes.lock();
@@ -247,6 +304,7 @@ impl ProcessManager {
         }
         let pid_refs: Vec<sysinfo::Pid> =
             pids.iter().map(|(_, p)| sysinfo::Pid::from_u32(*p)).collect();
+        let mut changed = false;
         {
             let mut sys = SYS.lock();
             sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&pid_refs), true);
@@ -255,13 +313,29 @@ impl ProcessManager {
                 if let Some(proc) = sys.process(sysinfo::Pid::from_u32(*pid)) {
                     let entry = rt.entry(service_id.clone()).or_default();
                     entry.service_id = service_id.clone();
-                    entry.cpu_usage = Some(proc.cpu_usage());
-                    entry.memory_mb = Some(proc.memory() as f64 / 1024.0 / 1024.0);
+                    let cpu = Some(proc.cpu_usage());
+                    let mem = Some(proc.memory() as f64 / 1024.0 / 1024.0);
+                    // 首次采样（旧值为 None）视为变化，后续按阈值过滤
+                    let cpu_changed = match entry.cpu_usage {
+                        Some(old) => (cpu.unwrap_or(0.0) - old).abs() > 0.5,
+                        None => true,
+                    };
+                    let mem_changed = match entry.memory_mb {
+                        Some(old) => (mem.unwrap_or(0.0) - old).abs() > 1.0,
+                        None => true,
+                    };
+                    if cpu_changed || mem_changed {
+                        entry.cpu_usage = cpu;
+                        entry.memory_mb = mem;
+                        changed = true;
+                    }
                 }
             }
         }
-        for rt in self.all_runtimes() {
-            let _ = app.emit("service://status", rt);
+        if changed {
+            for rt in self.all_runtimes() {
+                let _ = app.emit("service://status", rt);
+            }
         }
     }
 
@@ -351,17 +425,20 @@ impl ProcessManager {
     }
 
     /// 标记端口冲突
+    ///
+    /// 仅统计非噪声端口（过滤 JMX/devtools/H2/JMXMP 等），避免误报冲突；
+    /// `ports` 字段仍保留全量端口供前端展示。
     pub fn refresh_port_conflicts(&self, app: &AppHandle) {
         let mut rt = self.runtimes.lock();
         let mut port_owners: HashMap<u16, Vec<String>> = HashMap::new();
         for r in rt.values() {
-            for p in &r.ports {
+            for p in r.ports.iter().filter(|p| !NOISE_PORTS.contains(p)) {
                 port_owners.entry(*p).or_default().push(r.service_id.clone());
             }
         }
         for r in rt.values_mut() {
             let mut conflicts: Vec<String> = vec![];
-            for p in &r.ports {
+            for p in r.ports.iter().filter(|p| !NOISE_PORTS.contains(p)) {
                 if let Some(owners) = port_owners.get(p) {
                     for o in owners {
                         if o != &r.service_id && !conflicts.contains(o) {
@@ -598,9 +675,9 @@ impl ProcessManager {
             }
         }
         if let Some(mo) = &service.maven_opts {
-            for a in mo.split_whitespace() {
+            for a in split_args(mo) {
                 if a.starts_with("-D") || a.starts_with("-X") {
-                    args.push(a.to_string());
+                    args.push(a);
                 }
             }
         }
@@ -630,9 +707,9 @@ impl ProcessManager {
         args.push(classpath.clone());
         args.push(main_class.clone());
         if let Some(mo) = &service.maven_opts {
-            for a in mo.split_whitespace() {
+            for a in split_args(mo) {
                 if !a.starts_with("-D") && !a.starts_with("-X") {
-                    args.push(a.to_string());
+                    args.push(a);
                 }
             }
         }
@@ -662,7 +739,11 @@ impl ProcessManager {
             if let Some(parent) = argfile_path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            if let Err(e) = std::fs::write(&argfile_path, &content) {
+            // java launcher 用系统默认编码读取 @argfile（JDK 文档明确：
+            // "characters in system default encoding"），中文 Windows 默认 GBK，
+            // 直接写 UTF-8 会让 classpath 中的中文路径乱码，故按 ANSI 代码页编码
+            let bytes = encode_argfile(&content);
+            if let Err(e) = std::fs::write(&argfile_path, &bytes) {
                 self.handles.lock().remove(&service.id);
                 self.set_status(&app, &service.id, ServiceStatus::Stopped);
                 return Err(AppError::Process(format!(
@@ -715,8 +796,13 @@ impl ProcessManager {
         let pid = child.id().unwrap_or(0);
 
         let job = JobObject::new().map_err(|e| {
+            // 子进程已 spawn：创建 Job Object 失败时必须主动杀掉它，
+            // 否则 java 会变成无人管理的孤儿进程继续占用端口
+            kill_token.store(true, Ordering::Relaxed);
+            kill_process_tree_by_pid(pid);
             self.handles.lock().remove(&service.id);
             self.set_status(&app, &service.id, ServiceStatus::Stopped);
+            let _ = db::clear_run_pid(&service.id);
             AppError::Process(format!("Job Object 创建失败: {}", e))
         })?;
         #[cfg(windows)]
@@ -1109,7 +1195,15 @@ impl ProcessManager {
     }
 
     pub async fn restart(&self, app: AppHandle, service: Service) -> AppResult<()> {
-        let old_ports = self.get_runtime(&service.id).ports;
+        // 只等真实业务端口释放；JMX/devtools 等噪声端口由框架持有，
+        // 进程退出后可能仍被其它进程占用，等待它们会让重启卡满 10 秒
+        let old_ports: Vec<u16> = self
+            .get_runtime(&service.id)
+            .ports
+            .iter()
+            .copied()
+            .filter(|p| !NOISE_PORTS.contains(p))
+            .collect();
         self.stop(app.clone(), &service.id).await?;
         if !old_ports.is_empty() {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);

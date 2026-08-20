@@ -2,7 +2,7 @@ import {App, Divider, Drawer, Form, InputNumber, Switch, Typography} from "antd"
 import {Settings} from "./Icons";
 import {useStore} from "../store";
 import type {AppConfig} from "../types";
-import {useEffect, useState} from "react";
+import {useEffect, useRef, useState} from "react";
 
 const { Text } = Typography;
 
@@ -17,18 +17,58 @@ export default function SettingsDrawer({ open, onClose }: Props) {
   const { message } = App.useApp();
   const [local, setLocal] = useState<AppConfig>(config);
 
+  // 最近一次渲染的 local，供 save 在连续输入时合并增量，避免闭包陈旧值
+  const localRef = useRef(local);
+  localRef.current = local;
+  // 防抖：InputNumber 每次击键都触发 onChange，改为 500ms 后统一落盘，减少 DB 写
+  const timerRef = useRef<number | null>(null);
+  const pendingRef = useRef<AppConfig | null>(null);
+
   useEffect(() => {
     setLocal(config);
   }, [config]);
 
-  const save = async (patch: Partial<AppConfig>) => {
-    const next = { ...local, ...patch };
+  useEffect(
+    () => () => {
+      if (timerRef.current) window.clearTimeout(timerRef.current);
+    },
+    []
+  );
+
+  const scheduleSave = (next: AppConfig) => {
+    pendingRef.current = next;
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(async () => {
+      timerRef.current = null;
+      pendingRef.current = null;
+      try {
+        await updateConfig(next);
+      } catch (e: any) {
+        message.error(`保存配置失败: ${e}`);
+      }
+    }, 500);
+  };
+
+  const save = (patch: Partial<AppConfig>) => {
+    const next = { ...localRef.current, ...patch };
     setLocal(next);
-    try {
-      await updateConfig(next);
-    } catch (e: any) {
-      message.error(`保存配置失败: ${e}`);
+    scheduleSave(next);
+  };
+
+  const handleClose = () => {
+    // 关闭前落盘防抖窗口内未保存的修改
+    if (timerRef.current) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+      if (pendingRef.current) {
+        const pending = pendingRef.current;
+        pendingRef.current = null;
+        updateConfig(pending).catch((e: any) =>
+          message.error(`保存配置失败: ${e}`)
+        );
+      }
     }
+    onClose();
   };
 
   return (
@@ -40,7 +80,7 @@ export default function SettingsDrawer({ open, onClose }: Props) {
         </span>
       }
       open={open}
-      onClose={onClose}
+      onClose={handleClose}
       width={420}
       destroyOnClose
     >

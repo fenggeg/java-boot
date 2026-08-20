@@ -68,7 +68,7 @@ npm install
 # 2. 开发模式（前端 + Tauri 一起起）
 npm run tauri:dev
 
-# 3. 打包 Windows 安装包（msi + nsis）
+# 3. 打包 Windows 安装包（nsis）
 npm run tauri:build
 ```
 

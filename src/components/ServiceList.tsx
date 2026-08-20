@@ -1,16 +1,29 @@
 import {useState} from "react";
 import {App, Button, Empty, Popconfirm, Tooltip} from "antd";
-import {CaretDown, CaretRight, FolderOpen, GitPull, GitPullRestart, Plus, Settings, Trash,} from "./Icons";
+import {
+    CaretDown,
+    CaretRight,
+    FolderOpen,
+    GitBranch,
+    GitPull,
+    GitPullRestart,
+    Plus,
+    Refresh,
+    Settings,
+    Trash,
+} from "./Icons";
 import {useStore} from "../store";
 import * as api from "../api";
 import ServiceCard from "./ServiceCard";
 import ProjectConfigModal from "./ProjectConfigModal";
+import AddProjectModal from "./AddProjectModal";
 import type {Project, Service} from "../types";
 
 interface Props {
   onAddProject: () => void;
   onAddService: () => void;
   onConfigService: (service: Service) => void;
+  onOpenGit: (project: Project) => void;
 }
 
 // 提取到模块顶层：避免每次 ServiceList 渲染时创建新组件类型导致重挂载（丢失内部状态）
@@ -31,7 +44,7 @@ function ServiceRow({
   );
 }
 
-export default function ServiceList({ onAddProject, onAddService, onConfigService }: Props) {
+export default function ServiceList({ onAddProject, onAddService, onConfigService, onOpenGit }: Props) {
   const projects = useStore((s) => s.projects);
   const services = useStore((s) => s.services);
   const runtimes = useStore((s) => s.runtimes);
@@ -48,6 +61,7 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
     }
   });
   const [configProject, setConfigProject] = useState<Project | null>(null);
+  const [rescanProject, setRescanProject] = useState<Project | null>(null);
 
   const ungroupedServices = services.filter((s) => !s.project_id);
 
@@ -131,6 +145,15 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
             className="project-group-actions"
             onClick={(e) => e.stopPropagation()}
           >
+            <Tooltip title="重新扫描项目（发现新增模块）">
+              <button
+                className="icon-btn sm"
+                onClick={() => setRescanProject(project)}
+                aria-label="重新扫描"
+              >
+                <Refresh size={13} />
+              </button>
+            </Tooltip>
             <Tooltip title="项目环境配置（JDK / Maven）">
               <button
                 className="icon-btn sm"
@@ -142,6 +165,15 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
             </Tooltip>
             {gitAvailable && project.git_available && (
               <>
+                <Tooltip title="Git 工作区 / 提交 / 历史">
+                  <button
+                    className="icon-btn sm accent"
+                    onClick={() => onOpenGit(project)}
+                    aria-label="Git 面板"
+                  >
+                    <GitBranch size={13} />
+                  </button>
+                </Tooltip>
                 <Tooltip title={isBusy ? "有服务正在编译/启动中" : "Git 拉取"}>
                   <button
                     className="icon-btn sm accent"
@@ -189,7 +221,9 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
             <ServiceRow key={s.id} service={s} onConfig={onConfigService} />
           ))}
         {!isCollapsed && groupServices.length === 0 && (
-          <div className="ungrouped-empty">// 无服务（点击项目头部可重新扫描）</div>
+          <div className="ungrouped-empty">
+            暂无服务，点击上方「重新扫描」按钮发现模块
+          </div>
         )}
       </div>
     );
@@ -258,6 +292,12 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
         project={configProject}
         onClose={() => setConfigProject(null)}
         onSaved={refreshServices}
+      />
+      <AddProjectModal
+        open={!!rescanProject}
+        project={rescanProject}
+        onClose={() => setRescanProject(null)}
+        onAdded={refreshServices}
       />
     </div>
   );

@@ -46,12 +46,14 @@ export default function LogViewer({ serviceId }: Props) {
   const allLines = logs?.lines ?? [];
   const filtered = useMemo<LogLine[]>(() => {
     const searchLower = search.toLowerCase();
-    return allLines.filter((l) => {
+    // 依赖 logs 对象而非 lines 数组：appendLog 复用数组引用原地 push，
+    // 依赖数组引用会让新日志不触发重算（切级别才刷新）；对象每次 append 都是新引用
+    return (logs?.lines ?? []).filter((l) => {
       if (!matchLevel(l.line, level)) return false;
       if (search && !l.line.toLowerCase().includes(searchLower)) return false;
       return true;
     });
-  }, [allLines, level, search]);
+  }, [logs, level, search]);
 
   const handleScroll = useCallback(() => {
     const el = containerRef.current;
@@ -202,11 +204,13 @@ export default function LogViewer({ serviceId }: Props) {
         ) : (
           <div style={{ height: totalHeight, position: "relative" }}>
             <div style={{ transform: `translateY(${offsetY}px)` }}>
-              {renderLines.map((l) => {
+              {renderLines.map((l, i) => {
                 const lv = classifyLine(l.line);
                 return (
                   <div
-                    key={`${l.ts}-${l.source}-${l.line.slice(0, 40)}`}
+                    // 虚拟滚动窗口为静态切片、行内容无内部状态，用 index 作 key，
+                    // 避免 ts+source+行首 40 字符在重复行时产生重复 key 警告
+                    key={i}
                     className={`log-line ${sourceClass(l.source)} ${lv}`}
                     style={{ height: LINE_HEIGHT, minHeight: LINE_HEIGHT }}
                   >

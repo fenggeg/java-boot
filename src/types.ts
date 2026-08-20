@@ -85,6 +85,56 @@ export interface PullResult {
   message: string;
 }
 
+// ============================ Git ============================
+
+/** 单个文件改动（git status --porcelain 的 XY 状态） */
+export interface GitChange {
+  path: string;
+  old_path: string | null;
+  /** 暂存区状态码：`M`/`A`/`D`/`R`/`C`/`U`/`?`/` ` */
+  x: string;
+  /** 工作区状态码 */
+  y: string;
+  staged: boolean;
+  tracked: boolean;
+}
+
+/** 项目工作区状态 */
+export interface GitStatus {
+  branch: string | null;
+  ahead: number;
+  behind: number;
+  changes: GitChange[];
+}
+
+/** 提交记录 */
+export interface GitCommitInfo {
+  hash: string;
+  short_hash: string;
+  author: string;
+  date: string;
+  message: string;
+}
+
+export type GitChangeKind =
+  | "added"
+  | "modified"
+  | "deleted"
+  | "renamed"
+  | "untracked"
+  | "conflict";
+
+/** 由 X/Y 状态码归一化为前端展示类型 */
+export function gitChangeKind(c: GitChange): GitChangeKind {
+  const code = c.x === " " ? c.y : c.x;
+  if (code === "?") return "untracked";
+  if (code === "A") return "added";
+  if (code === "D") return "deleted";
+  if (code === "R" || code === "C") return "renamed";
+  if (code === "U") return "conflict";
+  return "modified";
+}
+
 export interface LogLine {
   service_id: string;
   source: string; // [app] [mvn] [git]

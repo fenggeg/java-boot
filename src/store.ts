@@ -1,11 +1,5 @@
-import { create } from "zustand";
-import type {
-  Project,
-  Service,
-  ServiceRuntime,
-  AppConfig,
-  LogLine,
-} from "./types";
+import {create} from "zustand";
+import type {AppConfig, LogLine, Project, Service, ServiceRuntime,} from "./types";
 import * as api from "./api";
 
 interface LogBuffer {
@@ -180,21 +174,25 @@ export const useStore = create<Store>((set, get) => {
 
   appendLog: (log) => {
     set((state) => {
+      // 复用原数组引用做原地 push/splice，避免高频日志下每次 O(n) 拷贝
       const existing = state.logs[log.service_id] ?? {
         lines: [],
         hasUnread: false,
       };
-      const lines = [...existing.lines, log];
+      const lines = existing.lines;
+      lines.push(log);
       // 超限裁剪：使用配置的 log_buffer_lines，配置缺失时回退 10000
       const maxLines = state.config.log_buffer_lines || 10000;
-      const trimmed =
-        lines.length > maxLines ? lines.slice(lines.length - maxLines) : lines;
+      if (lines.length > maxLines) {
+        lines.splice(0, lines.length - maxLines);
+      }
       const isSelected = state.selectedServiceId === log.service_id;
       return {
         logs: {
           ...state.logs,
+          // 返回新 LogBuffer 对象（引用变化触发订阅），lines 数组保持同一引用
           [log.service_id]: {
-            lines: trimmed,
+            lines,
             hasUnread: !isSelected,
           },
         },

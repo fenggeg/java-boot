@@ -245,6 +245,15 @@ export function Search({ size, ...rest }: IconProps) {
   );
 }
 
+export function Refresh({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <path d="M4 12 A8 8 0 1 1 7 18" />
+      <path d="M4 18 L4 13 L9 13" />
+    </Svg>
+  );
+}
+
 export function ArrowDown({ size, ...rest }: IconProps) {
   return (
     <Svg size={size} {...rest}>
@@ -289,5 +298,70 @@ export function StatusDot({ color, live }: { color: string; live?: boolean }) {
       className={`status-node ${live ? "live" : ""}`}
       style={{ background: color, color }}
     />
+  );
+}
+
+export function GitBranch({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <circle cx="6" cy="6" r="2.4" />
+      <circle cx="6" cy="18" r="2.4" />
+      <circle cx="18" cy="8" r="2.4" />
+      <path d="M6 8.5 V15.5" />
+      <path d="M8.3 7.6 C12 9 16 8.5 16 8.5" />
+    </Svg>
+  );
+}
+
+export function History({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <path d="M4 12 A8 8 0 1 1 8 18.5" />
+      <path d="M4 19 L4 14 L9 14" />
+      <path d="M12 7 V12 L15 14" />
+    </Svg>
+  );
+}
+
+export function Edit({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <path d="M4 20 L4 16.5 L16.5 4 L20 7.5 L7.5 20 Z" />
+      <path d="M14.5 6 L18.5 10" />
+    </Svg>
+  );
+}
+
+export function Check({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <path d="M4 12 L10 18 L20 6" />
+    </Svg>
+  );
+}
+
+export function X({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <path d="M6 6 L18 18 M18 6 L6 18" />
+    </Svg>
+  );
+}
+
+export function ChevronLeft({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <path d="M14 5 L7 12 L14 19" />
+    </Svg>
+  );
+}
+
+export function Commit({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none" />
+      <path d="M12 3 V9.5 M12 14.5 V21" />
+      <path d="M4 12 H9.5 M14.5 12 H20" />
+    </Svg>
   );
 }

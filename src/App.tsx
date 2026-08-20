@@ -2,11 +2,12 @@ import {useEffect, useState} from "react";
 import {Badge, Tabs} from "antd";
 import {listen, type UnlistenFn,} from "@tauri-apps/api/event";
 import {useStore} from "./store";
-import type {LogLine, Service, ServiceRuntime} from "./types";
+import type {LogLine, Project, Service, ServiceRuntime} from "./types";
 import {STATUS_META} from "./types";
 import TopBar from "./components/TopBar";
 import ServiceList from "./components/ServiceList";
 import LogViewer from "./components/LogViewer";
+import GitPanel from "./components/GitPanel";
 import AddProjectModal from "./components/AddProjectModal";
 import AddServiceModal from "./components/AddServiceModal";
 import ServiceConfigModal from "./components/ServiceConfigModal";
@@ -19,6 +20,7 @@ export default function App() {
   const setRuntime = useStore((s) => s.setRuntime);
   const appendLog = useStore((s) => s.appendLog);
   const services = useStore((s) => s.services);
+  const projects = useStore((s) => s.projects);
   const runtimes = useStore((s) => s.runtimes);
   const selectedServiceId = useStore((s) => s.selectedServiceId);
   const selectService = useStore((s) => s.selectService);
@@ -30,6 +32,9 @@ export default function App() {
   const [addServiceOpen, setAddServiceOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [configService, setConfigService] = useState<Service | null>(null);
+  // 右侧主视图：日志（默认）或某项目的 Git 面板
+  const [view, setView] = useState<"logs" | "git">("logs");
+  const [gitProjectId, setGitProjectId] = useState<string | null>(null);
 
   // 初始化 + 事件监听
   useEffect(() => {
@@ -60,6 +65,28 @@ export default function App() {
   const handleAdded = async () => {
     await refreshServices();
   };
+
+  // 打开某项目的 Git 面板
+  const handleOpenGit = (project: Project) => {
+    setGitProjectId(project.id);
+    setView("git");
+  };
+
+  // 点击左侧服务（或切换日志 tab）时回到日志视图
+  useEffect(() => {
+    if (selectedServiceId) setView("logs");
+  }, [selectedServiceId]);
+
+  // 项目被删除时关闭对应的 Git 面板
+  useEffect(() => {
+    if (
+      gitProjectId &&
+      !projects.some((p) => p.id === gitProjectId)
+    ) {
+      setGitProjectId(null);
+      setView("logs");
+    }
+  }, [projects, gitProjectId]);
 
   // 只渲染“已打开”的 tab（IDE-like），保持打开顺序
   const serviceMap = new Map(services.map((s) => [s.id, s]));
@@ -103,10 +130,21 @@ export default function App() {
           onAddProject={() => setAddProjectOpen(true)}
           onAddService={() => setAddServiceOpen(true)}
           onConfigService={setConfigService}
+          onOpenGit={handleOpenGit}
         />
 
         <div className="log-panel">
-          {services.length === 0 ? (
+          {view === "git" && gitProjectId ? (
+            (() => {
+              const project = projects.find((p) => p.id === gitProjectId);
+              return project ? (
+                <GitPanel
+                  project={project}
+                  onClose={() => setView("logs")}
+                />
+              ) : null;
+            })()
+          ) : services.length === 0 ? (
             <div className="hero-empty">
               <div className="hero-mark">
                 <HeroLogo size={88} />

@@ -1,10 +1,10 @@
-import {useMemo, useState} from "react";
+import {useEffect, useMemo, useState} from "react";
 import type {TreeDataNode} from "antd";
 import {Alert, App, Button, Checkbox, Input, Modal, Space, Spin, Tree, Typography,} from "antd";
 import {CheckSquare, File, Folder, FolderOpen,} from "./Icons";
 import {open} from "@tauri-apps/plugin-dialog";
 import * as api from "../api";
-import type {ScannedModule} from "../types";
+import type {Project, ScannedModule} from "../types";
 
 const { Text } = Typography;
 
@@ -12,6 +12,8 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onAdded: () => void;
+  /** rescan 模式：传入项目后打开即自动重新扫描，添加新发现的模块 */
+  project?: Project | null;
 }
 
 /** 扁平化扫描树为勾选列表 */
@@ -79,6 +81,7 @@ export default function AddProjectModal({
   open: openProp,
   onClose,
   onAdded,
+  project,
 }: Props) {
   const [path, setPath] = useState("");
   const [scanning, setScanning] = useState(false);
@@ -86,6 +89,42 @@ export default function AddProjectModal({
   const [checkedKeys, setCheckedKeys] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const { message } = App.useApp();
+
+  // rescan 模式：打开时用项目 ID 重新扫描，无需选择目录
+  useEffect(() => {
+    if (openProp && project) {
+      setPath(project.root_path);
+      setError(null);
+      setModules([]);
+      setCheckedKeys([]);
+      doScanFor(project.id, project.root_path);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openProp, project]);
+
+  const doScanFor = async (projectId: string | null, dir: string) => {
+    setScanning(true);
+    setError(null);
+    try {
+      const result = projectId
+        ? await api.rescanProject(projectId)
+        : await api.scanProject(dir);
+      setModules(result);
+      // 默认全选所有可启动且未添加的服务
+      setCheckedKeys(
+        flatten(result)
+          .filter((m) => m.is_service && !m.already_added)
+          .map((m) => m.pom_path)
+      );
+      if (result.length === 0) {
+        setError("未扫描到任何 module");
+      }
+    } catch (e: any) {
+      setError(String(e));
+    } finally {
+      setScanning(false);
+    }
+  };
 
   // 所有可选（可启动且未添加）服务的 pom_path 集合
   const selectableKeys = useMemo(() => {
@@ -117,29 +156,7 @@ export default function AddProjectModal({
       setError(null);
       setModules([]);
       setCheckedKeys([]);
-      await doScan(selected);
-    }
-  };
-
-  const doScan = async (dir: string) => {
-    setScanning(true);
-    setError(null);
-    try {
-      const result = await api.scanProject(dir);
-      setModules(result);
-      // 默认全选所有可启动且未添加的服务
-      setCheckedKeys(
-        flatten(result)
-          .filter((m) => m.is_service && !m.already_added)
-          .map((m) => m.pom_path)
-      );
-      if (result.length === 0) {
-        setError("未扫描到任何 module");
-      }
-    } catch (e: any) {
-      setError(String(e));
-    } finally {
-      setScanning(false);
+      await doScanFor(null, selected);
     }
   };
 
@@ -202,7 +219,7 @@ export default function AddProjectModal({
       title={
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <FolderOpen size={15} style={{ color: "#0071e3" }} />
-          添加项目
+          {project ? `重新扫描项目 — ${project.name}` : "添加项目"}
         </span>
       }
       open={openProp}
@@ -214,22 +231,26 @@ export default function AddProjectModal({
       okButtonProps={{ disabled: checkedServiceCount === 0 }}
       destroyOnClose
     >
-      {/* 目录选择 */}
+      {/* 目录选择（rescan 模式无需选择，直接显示项目路径） */}
       <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
         <Input
           value={path}
           placeholder="选择项目根目录（含 pom.xml）"
           readOnly
-          onClick={handlePickDir}
-          style={{ cursor: "pointer" }}
+          onClick={() => {
+            if (!project) handlePickDir();
+          }}
+          style={{ cursor: project ? "default" : "pointer" }}
         />
-        <Button
-          type="primary"
-          icon={<FolderOpen size={13} />}
-          onClick={handlePickDir}
-        >
-          选择目录
-        </Button>
+        {!project && (
+          <Button
+            type="primary"
+            icon={<FolderOpen size={13} />}
+            onClick={handlePickDir}
+          >
+            选择目录
+          </Button>
+        )}
       </Space.Compact>
 
       {error && (

@@ -1,17 +1,29 @@
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use tauri::AppHandle;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::db;
 use crate::db::models::{AppConfig, Project, ScannedModule, Service, ServiceRuntime};
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::util::CandidateCollector;
 use crate::util::NoWindow;
 use crate::git;
 use crate::pom;
 use crate::process;
 use crate::watcher;
+
+/// JDK/Maven 探测结果缓存：配置弹窗反复打开/切换项目时，避免每次并发启动
+/// 多个 JVM（`java -version` / `mvn -v`）造成数秒卡顿。60 秒内直接复用结果。
+const TOOL_CACHE_TTL: Duration = Duration::from_secs(60);
+
+static JDK_CACHE: Lazy<Mutex<Option<(Instant, Vec<JdkInfo>)>>> =
+    Lazy::new(|| Mutex::new(None));
+static MAVEN_CACHE: Lazy<Mutex<Option<(Instant, Vec<MavenInfo>)>>> =
+    Lazy::new(|| Mutex::new(None));
 
 // ============================ Project ============================
 
@@ -333,6 +345,82 @@ pub async fn git_pull_and_restart(
     git::pull_and_restart(app, &project_id).await
 }
 
+/// 工作区状态（分支 / 改动文件列表）
+#[tauri::command]
+pub async fn git_status(project_id: String) -> AppResult<git::GitStatus> {
+    tokio::task::spawn_blocking(move || git::status(&project_id))
+        .await
+        .map_err(|e| AppError::Other(format!("git status 任务失败: {}", e)))?
+}
+
+/// 单文件 diff（staged=true 为暂存区 vs HEAD，否则为工作区 vs 暂存区）
+#[tauri::command]
+pub async fn git_diff(project_id: String, path: String, staged: bool) -> AppResult<String> {
+    tokio::task::spawn_blocking(move || git::diff(&project_id, &path, staged))
+        .await
+        .map_err(|e| AppError::Other(format!("git diff 任务失败: {}", e)))?
+}
+
+/// 暂存指定文件
+#[tauri::command]
+pub async fn git_stage(project_id: String, paths: Vec<String>) -> AppResult<()> {
+    tokio::task::spawn_blocking(move || git::stage(&project_id, &paths))
+        .await
+        .map_err(|e| AppError::Other(format!("git add 任务失败: {}", e)))?
+}
+
+/// 取消暂存指定文件
+#[tauri::command]
+pub async fn git_unstage(project_id: String, paths: Vec<String>) -> AppResult<()> {
+    tokio::task::spawn_blocking(move || git::unstage(&project_id, &paths))
+        .await
+        .map_err(|e| AppError::Other(format!("git restore 任务失败: {}", e)))?
+}
+
+/// 提交暂存区
+#[tauri::command]
+pub async fn git_commit(project_id: String, message: String) -> AppResult<()> {
+    tokio::task::spawn_blocking(move || git::commit(&project_id, &message))
+        .await
+        .map_err(|e| AppError::Other(format!("git commit 任务失败: {}", e)))?
+}
+
+/// 最近提交记录
+#[tauri::command]
+pub async fn git_log(project_id: String, limit: u32) -> AppResult<Vec<git::GitCommitInfo>> {
+    tokio::task::spawn_blocking(move || git::log(&project_id, limit))
+        .await
+        .map_err(|e| AppError::Other(format!("git log 任务失败: {}", e)))?
+}
+
+/// 查看指定提交的完整 diff
+#[tauri::command]
+pub async fn git_show(project_id: String, hash: String) -> AppResult<String> {
+    tokio::task::spawn_blocking(move || git::show(&project_id, &hash))
+        .await
+        .map_err(|e| AppError::Other(format!("git show 任务失败: {}", e)))?
+}
+
+/// 读取工作区文件（仅 UTF-8 文本，用于编辑改动文件）
+#[tauri::command]
+pub async fn git_read_file(project_id: String, path: String) -> AppResult<String> {
+    tokio::task::spawn_blocking(move || git::read_file(&project_id, &path))
+        .await
+        .map_err(|e| AppError::Other(format!("读取文件任务失败: {}", e)))?
+}
+
+/// 写回工作区文件
+#[tauri::command]
+pub async fn git_write_file(
+    project_id: String,
+    path: String,
+    content: String,
+) -> AppResult<()> {
+    tokio::task::spawn_blocking(move || git::write_file(&project_id, &path, &content))
+        .await
+        .map_err(|e| AppError::Other(format!("写入文件任务失败: {}", e)))?
+}
+
 // ============================ Config ============================
 
 #[tauri::command]
@@ -385,6 +473,14 @@ where
 #[tauri::command]
 pub async fn detect_jdks() -> Vec<JdkInfo> {
     {
+        let cache = JDK_CACHE.lock();
+        if let Some((ts, cached)) = cache.as_ref() {
+            if ts.elapsed() < TOOL_CACHE_TTL {
+                return cached.clone();
+            }
+        }
+    }
+    {
         let path = std::env::var("PATH").unwrap_or_default();
         log::info!("detect_jdks 开始: PATH={}chars", path.len());
     }
@@ -398,6 +494,7 @@ pub async fn detect_jdks() -> Vec<JdkInfo> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     result.retain(|j| seen.insert(j.path.to_lowercase()));
     log::info!("detect_jdks: 探测到 {} 个 JDK（去重后）", result.len());
+    *JDK_CACHE.lock() = Some((Instant::now(), result.clone()));
     result
 }
 
@@ -472,7 +569,7 @@ fn collect_jdk_candidates() -> Vec<String> {
     cc.into_candidates()
 }
 
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 pub struct JdkInfo {
     pub path: String,
     pub version: String,
@@ -555,7 +652,7 @@ fn probe_jdk(java_home: &str) -> Option<JdkInfo> {
     })
 }
 
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 pub struct MavenInfo {
     pub path: String,
     pub version: String,
@@ -564,6 +661,14 @@ pub struct MavenInfo {
 /// 探测系统已安装的 Maven 列表
 #[tauri::command]
 pub async fn detect_mavens() -> Vec<MavenInfo> {
+    {
+        let cache = MAVEN_CACHE.lock();
+        if let Some((ts, cached)) = cache.as_ref() {
+            if ts.elapsed() < TOOL_CACHE_TTL {
+                return cached.clone();
+            }
+        }
+    }
     // 诊断：记录 detect_mavens 调用时的环境状态
     {
         let path = std::env::var("PATH").unwrap_or_default();
@@ -595,6 +700,7 @@ pub async fn detect_mavens() -> Vec<MavenInfo> {
     let mut seen_mvn: std::collections::HashSet<String> = std::collections::HashSet::new();
     result.retain(|m| seen_mvn.insert(m.path.to_lowercase()));
     log::info!("detect_mavens: 探测到 {} 个 maven（去重后）: {:?}", result.len(), result.iter().map(|m| (&m.path, &m.version)).collect::<Vec<_>>());
+    *MAVEN_CACHE.lock() = Some((Instant::now(), result.clone()));
     result
 }
 

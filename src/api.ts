@@ -1,13 +1,15 @@
-import { invoke } from "@tauri-apps/api/core";
+import {invoke} from "@tauri-apps/api/core";
 import type {
-  Project,
-  Service,
-  ServiceRuntime,
-  AppConfig,
-  ScannedModule,
-  PullResult,
-  JdkInfo,
-  MavenInfo,
+    AppConfig,
+    GitCommitInfo,
+    GitStatus,
+    JdkInfo,
+    MavenInfo,
+    Project,
+    PullResult,
+    ScannedModule,
+    Service,
+    ServiceRuntime,
 } from "./types";
 
 // ============================ Project ============================
@@ -88,6 +90,28 @@ export const gitPull = (projectId: string) =>
   invoke<PullResult>("git_pull", { projectId });
 export const gitPullAndRestart = (projectId: string) =>
   invoke<PullResult>("git_pull_and_restart", { projectId });
+export const gitStatus = (projectId: string) =>
+  invoke<GitStatus>("git_status", { projectId });
+export const gitDiff = (projectId: string, path: string, staged: boolean) =>
+  invoke<string>("git_diff", { projectId, path, staged });
+export const gitStage = (projectId: string, paths: string[]) =>
+  invoke<void>("git_stage", { projectId, paths });
+export const gitUnstage = (projectId: string, paths: string[]) =>
+  invoke<void>("git_unstage", { projectId, paths });
+export const gitCommit = (projectId: string, message: string) =>
+  invoke<void>("git_commit", { projectId, message });
+export const gitLog = (projectId: string, limit = 50) =>
+  invoke<GitCommitInfo[]>("git_log", { projectId, limit });
+export const gitShow = (projectId: string, hash: string) =>
+  invoke<string>("git_show", { projectId, hash });
+export const gitReadFile = (projectId: string, path: string) =>
+  invoke<string>("git_read_file", { projectId, path });
+export const gitWriteFile = (
+  projectId: string,
+  path: string,
+  content: string,
+) =>
+  invoke<void>("git_write_file", { projectId, path, content });
 
 // ============================ Config ============================
 

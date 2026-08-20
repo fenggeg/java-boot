@@ -1,5 +1,7 @@
-use std::path::Path;
+use std::io::BufRead;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 
 use tauri::AppHandle;
 
@@ -57,21 +59,35 @@ fn resolve_git() -> Option<String> {
             }
             log::warn!("resolve_git: scoop git 存在但执行失败: {}", scoop_git);
         }
-        // 3. UGit 自带的 git（用户 PATH 中有 UGit 路径）
-        let ugit_dirs = [
-            format!("{}\\AppData\\Local\\UGit\\app-5.24.1\\resources\\app\\git\\cmd\\git.exe", home),
-            format!("{}\\AppData\\Local\\UGit\\app-5.45.1\\resources\\app\\git\\cmd\\git.exe", home),
-        ];
-        for ugit_git in &ugit_dirs {
-            if std::path::Path::new(ugit_git).exists() {
-                if Command::new(ugit_git)
+        // 3. UGit 自带的 git（用户 PATH 中有 UGit 路径）。
+        //    版本目录 app-* 随 UGit 升级变化，不再硬编码版本号，改为扫描目录
+        let ugit_base = format!("{}\\AppData\\Local\\UGit", home);
+        if let Ok(entries) = std::fs::read_dir(&ugit_base) {
+            for entry in entries.flatten() {
+                let dir = entry.path();
+                if !entry.file_name().to_string_lossy().starts_with("app-") {
+                    continue;
+                }
+                if !dir.is_dir() {
+                    continue;
+                }
+                let ugit_git = dir
+                    .join("resources")
+                    .join("app")
+                    .join("git")
+                    .join("cmd")
+                    .join("git.exe");
+                if !ugit_git.exists() {
+                    continue;
+                }
+                if Command::new(&ugit_git)
                     .arg("--version")
                     .creation_flags_no_window()
                     .output()
                     .map(|o| o.status.success())
                     .unwrap_or(false)
                 {
-                    return Some(ugit_git.clone());
+                    return Some(ugit_git.to_string_lossy().to_string());
                 }
             }
         }
@@ -138,7 +154,19 @@ pub async fn pull(app: AppHandle, project_id: &str) -> AppResult<PullResult> {
     };
 
     // git pull 可能因需要认证而永久阻塞 spawn_blocking 线程，
-    // 用 tokio::time::timeout 包裹，60 秒超时
+    // 用 tokio::time::timeout 包裹，60 秒超时。
+    // 共享 stdout/stderr 缓冲与子进程 PID：超时后强杀 git 进程树，
+    // 避免它继续在后台拉取、静默改写工作区。
+    let stdout_shared: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let stderr_shared: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let pid_slot: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
+
+    let stdout_shared_b = stdout_shared.clone();
+    let stderr_shared_b = stderr_shared.clone();
+    let pid_slot_b = pid_slot.clone();
+    let services_b = services.clone();
+    let app_b = app.clone();
+
     let pull_timeout = std::time::Duration::from_secs(60);
     let join_result = tokio::time::timeout(
         pull_timeout,
@@ -151,7 +179,55 @@ pub async fn pull(app: AppHandle, project_id: &str) -> AppResult<PullResult> {
                 .env("GIT_TERMINAL_PROMPT", "0")
                 .env("GIT_ASKPASS", "")
                 .env("SSH_ASKPASS", "");
-            cmd.creation_flags_no_window().output()
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
+            cmd.stdin(std::process::Stdio::null());
+            cmd.creation_flags_no_window();
+            let mut child = cmd.spawn()?;
+            // 立即记录 PID，主流程在超时时能据此杀进程
+            *pid_slot_b.lock().unwrap() = Some(child.id());
+            let out = child.stdout.take();
+            let err = child.stderr.take();
+            // 两个读线程分别消费 stdout/stderr 管道，防止管道缓冲满导致 git 阻塞；
+            // 输出直接推送日志，同时收集到共享缓冲供主流程判断 up-to-date。
+            let t_out = {
+                let stdout_shared = stdout_shared_b.clone();
+                let services = services_b.clone();
+                let app = app_b.clone();
+                std::thread::spawn(move || {
+                    if let Some(o) = out {
+                        let reader = std::io::BufReader::new(o);
+                        for line in reader.lines().flatten() {
+                            stdout_shared.lock().unwrap().push_str(&line);
+                            stdout_shared.lock().unwrap().push('\n');
+                            for s in &services {
+                                process::ProcessManager::emit_log_static(&app, &s.id, "[git]", &line);
+                            }
+                        }
+                    }
+                })
+            };
+            let t_err = {
+                let stderr_shared = stderr_shared_b.clone();
+                let services = services_b.clone();
+                let app = app_b.clone();
+                std::thread::spawn(move || {
+                    if let Some(e) = err {
+                        let reader = std::io::BufReader::new(e);
+                        for line in reader.lines().flatten() {
+                            stderr_shared.lock().unwrap().push_str(&line);
+                            stderr_shared.lock().unwrap().push('\n');
+                            for s in &services {
+                                process::ProcessManager::emit_log_static(&app, &s.id, "[git]", &line);
+                            }
+                        }
+                    }
+                })
+            };
+            let status = child.wait();
+            let _ = t_out.join();
+            let _ = t_err.join();
+            status
         }),
     )
     .await;
@@ -160,7 +236,12 @@ pub async fn pull(app: AppHandle, project_id: &str) -> AppResult<PullResult> {
         Ok(Ok(output)) => output.map_err(|e| AppError::Git(format!("git pull 执行失败: {}", e)))?,
         Ok(Err(e)) => return Err(AppError::Git(format!("git pull 任务失败: {}", e))),
         Err(_) => {
-            // 超时：恢复服务状态并返回错误
+            // 超时：强杀 git 进程树（含子进程），避免继续在后台拉取改写工作区
+            if let Some(pid) = pid_slot.lock().unwrap().take() {
+                crate::process::manager::kill_process_tree_by_pid(pid);
+                log::warn!("git pull 超时，已强杀 git 进程 PID {}", pid);
+            }
+            // 恢复服务状态并返回错误
             for s in &services_clone {
                 let rt = process::get_manager().get_runtime(&s.id);
                 let new_status = if rt.pid.is_some() {
@@ -176,9 +257,9 @@ pub async fn pull(app: AppHandle, project_id: &str) -> AppResult<PullResult> {
         }
     };
 
-    let stdout = String::from_utf8_lossy(&result.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&result.stderr).to_string();
-    let success = result.status.success();
+    let stdout = stdout_shared.lock().unwrap().clone();
+    let stderr = stderr_shared.lock().unwrap().clone();
+    let success = result.success();
 
     let up_to_date = stdout.contains("Already up to date")
         || stdout.contains("Already up-to-date")
@@ -187,25 +268,8 @@ pub async fn pull(app: AppHandle, project_id: &str) -> AppResult<PullResult> {
         || stdout.contains("up to date")
         || stdout.contains("up-to-date");
 
-    // 写入项目下所有服务日志
+    // 日志已在读线程中实时推送，这里只恢复各服务状态
     for s in &services {
-        for line in stdout.lines() {
-            process::ProcessManager::emit_log_static(
-                &app,
-                &s.id,
-                "[git]",
-                line,
-            );
-        }
-        for line in stderr.lines() {
-            process::ProcessManager::emit_log_static(
-                &app,
-                &s.id,
-                "[git]",
-                line,
-            );
-        }
-        // 恢复状态
         let rt = process::get_manager().get_runtime(&s.id);
         let new_status = if rt.pid.is_some() {
             db::models::ServiceStatus::Running
@@ -250,4 +314,312 @@ pub async fn pull_and_restart(app: AppHandle, project_id: &str) -> AppResult<Pul
         }
     }
     Ok(result)
+}
+
+// ================================================================
+// 工作区状态 / 提交 / 历史（按项目隔离）
+//
+// 所有路径参数均为相对 repo root 的 POSIX 风格路径（`git status -z` 输出），
+// 内部统一用 `-C <root>` 执行 git 命令，避免进程工作目录漂移。
+// ================================================================
+
+/// 运行 git 命令，非零退出码时返回 stderr（或 stdout）作为错误信息
+fn run_git(root: &Path, args: &[&str]) -> AppResult<std::process::Output> {
+    let git = resolve_git().ok_or_else(|| AppError::Git("未找到可用的 git".to_string()))?;
+    let mut cmd = Command::new(&git);
+    // core.quotepath=false：让中文路径以原始 UTF-8 输出，避免 \xxx 转义
+    cmd.arg("-c")
+        .arg("core.quotepath=false")
+        .arg("-C")
+        .arg(root);
+    cmd.args(args);
+    cmd.creation_flags_no_window();
+    cmd.stdin(std::process::Stdio::null());
+    let out = cmd
+        .output()
+        .map_err(|e| AppError::Git(format!("git 执行失败: {}", e)))?;
+    if !out.status.success() {
+        let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let msg = if msg.is_empty() {
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        } else {
+            msg
+        };
+        return Err(AppError::Git(if msg.is_empty() {
+            format!("git {:?} 失败", args.first().copied().unwrap_or(""))
+        } else {
+            msg
+        }));
+    }
+    Ok(out)
+}
+
+/// 项目根 → 真实 repo root（`git rev-parse --show-toplevel`，跟随 worktree/submodule）
+fn repo_root(project_id: &str) -> AppResult<PathBuf> {
+    let project = db::get_project(project_id)?;
+    let root = Path::new(&project.root_path);
+    if !is_git_repo(root) {
+        return Err(AppError::Git(format!("{} 不是 Git 仓库", root.display())));
+    }
+    let out = run_git(root, &["rev-parse", "--show-toplevel"])?;
+    let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if p.is_empty() {
+        return Err(AppError::Git("无法解析 Git 仓库根目录".to_string()));
+    }
+    Ok(PathBuf::from(p))
+}
+
+/// 将相对路径安全解析为 repo root 下的绝对路径，阻止绝对路径 / `..` 穿越
+fn safe_join(root: &Path, rel: &str) -> AppResult<PathBuf> {
+    let p = Path::new(rel);
+    if p.is_absolute() {
+        return Err(AppError::Git("不允许绝对路径".to_string()));
+    }
+    if p.components()
+        .any(|c| matches!(c, Component::ParentDir))
+    {
+        return Err(AppError::Git("不允许路径穿越 (..)".to_string()));
+    }
+    let full = root.join(p);
+    if let (Some(r), Some(f)) = (
+        crate::util::canonicalize_clean(root),
+        crate::util::canonicalize_clean(&full),
+    ) {
+        if !f.starts_with(&r) {
+            return Err(AppError::Git("路径越界".to_string()));
+        }
+    }
+    Ok(full)
+}
+
+/// 单个文件改动（`git status --porcelain=v1` 的 XY 解析结果）
+#[derive(serde::Serialize)]
+pub struct GitChange {
+    pub path: String,
+    pub old_path: Option<String>,
+    /// 暂存区状态码（X）：` `=未改, `M`/`A`/`D`/`R`/`C`/`U`/`?`
+    pub x: String,
+    /// 工作区状态码（Y）
+    pub y: String,
+    pub staged: bool,
+    pub tracked: bool,
+}
+
+/// 项目当前工作区状态
+#[derive(serde::Serialize)]
+pub struct GitStatus {
+    pub branch: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+    pub changes: Vec<GitChange>,
+}
+
+/// 提交记录
+#[derive(serde::Serialize)]
+pub struct GitCommitInfo {
+    pub hash: String,
+    pub short_hash: String,
+    pub author: String,
+    pub date: String,
+    pub message: String,
+}
+
+/// 工作区状态：分支 / 领先落后 / 全部改动文件
+pub fn status(project_id: &str) -> AppResult<GitStatus> {
+    let root = repo_root(project_id)?;
+    let out = run_git(&root, &["status", "--porcelain=v1", "-z", "--branch"])?;
+    let raw = out.stdout;
+    let parts: Vec<&[u8]> = raw.split(|b| *b == 0).filter(|s| !s.is_empty()).collect();
+
+    let mut branch = None;
+    let mut ahead = 0u32;
+    let mut behind = 0u32;
+    let mut changes = vec![];
+    let mut idx = 0usize;
+
+    // 第一个记录可能是 branch 头（`## main...origin/main [ahead 1, behind 2]`）
+    if let Some(first) = parts.first() {
+        if first.starts_with(b"## ") {
+            let line = String::from_utf8_lossy(first).trim().to_string();
+            let rest = &line[3..];
+            let bracket = rest.find('[');
+            let (name_part, meta) = match bracket {
+                Some(i) => (rest[..i].trim(), rest[i..].to_string()),
+                None => (rest.trim(), String::new()),
+            };
+            if !name_part.starts_with("HEAD") {
+                branch = Some(
+                    name_part
+                        .split("...")
+                        .next()
+                        .unwrap_or(name_part)
+                        .trim()
+                        .to_string(),
+                );
+            }
+            for seg in meta.trim_start_matches('[').trim_end_matches(']').split(',') {
+                let seg = seg.trim();
+                if let Some(n) = seg.strip_prefix("ahead ") {
+                    ahead = n.trim().parse().unwrap_or(0);
+                } else if let Some(n) = seg.strip_prefix("behind ") {
+                    behind = n.trim().parse().unwrap_or(0);
+                }
+            }
+            idx = 1;
+        }
+    }
+
+    while idx < parts.len() {
+        let rec = parts[idx];
+        // 记录格式：`XY path`；跳过 malformed（如空段）
+        if rec.len() < 3 {
+            idx += 1;
+            continue;
+        }
+        let x = rec[0] as char;
+        let y = rec[1] as char;
+        let mut path = String::from_utf8_lossy(&rec[3..]).to_string();
+        let mut old_path = None;
+        // rename/copy：`R  old` NUL `new`，下一段为最终路径
+        if x == 'R' || x == 'C' {
+            old_path = Some(path.clone());
+            if idx + 1 < parts.len() {
+                path = String::from_utf8_lossy(parts[idx + 1]).to_string();
+                idx += 1;
+            }
+        }
+        changes.push(GitChange {
+            path,
+            old_path,
+            x: x.to_string(),
+            y: y.to_string(),
+            staged: x != ' ' && x != '?',
+            tracked: !(x == '?' && y == '?'),
+        });
+        idx += 1;
+    }
+
+    Ok(GitStatus {
+        branch,
+        ahead,
+        behind,
+        changes,
+    })
+}
+
+/// 单文件 diff：`staged=true` 取暂存区 vs HEAD，否则取工作区 vs 暂存区
+pub fn diff(project_id: &str, path: &str, staged: bool) -> AppResult<String> {
+    let root = repo_root(project_id)?;
+    safe_join(&root, path)?; // 仅校验路径合法性
+    let args: &[&str] = if staged {
+        &["diff", "--cached", "--no-color", "--unified=3", "--", path]
+    } else {
+        &["diff", "--no-color", "--unified=3", "--", path]
+    };
+    let out = run_git(&root, args)?;
+    Ok(crate::util::decode_output(&out.stdout))
+}
+
+/// 暂存指定文件
+pub fn stage(project_id: &str, paths: &[String]) -> AppResult<()> {
+    let root = repo_root(project_id)?;
+    for p in paths {
+        safe_join(&root, p)?;
+    }
+    let mut args: Vec<&str> = vec!["add", "--"];
+    args.extend(paths.iter().map(|s| s.as_str()));
+    run_git(&root, &args)?;
+    Ok(())
+}
+
+/// 取消暂存指定文件（`git restore --staged`，工作区内容不动）
+pub fn unstage(project_id: &str, paths: &[String]) -> AppResult<()> {
+    let root = repo_root(project_id)?;
+    for p in paths {
+        safe_join(&root, p)?;
+    }
+    let mut args: Vec<&str> = vec!["restore", "--staged", "--"];
+    args.extend(paths.iter().map(|s| s.as_str()));
+    run_git(&root, &args)?;
+    Ok(())
+}
+
+/// 提交暂存区
+pub fn commit(project_id: &str, message: &str) -> AppResult<()> {
+    let msg = message.trim();
+    if msg.is_empty() {
+        return Err(AppError::Git("提交信息不能为空".to_string()));
+    }
+    let root = repo_root(project_id)?;
+    run_git(&root, &["commit", "-m", msg])?;
+    Ok(())
+}
+
+/// 最近提交记录
+pub fn log(project_id: &str, limit: u32) -> AppResult<Vec<GitCommitInfo>> {
+    let root = repo_root(project_id)?;
+    let n = limit.min(200);
+    let n_str = n.to_string();
+    let out = run_git(
+        &root,
+        &[
+            "log",
+            "--no-color",
+            "-n",
+            n_str.as_str(),
+            "--pretty=format:%H%x1f%h%x1f%an%x1f%aI%x1f%s",
+        ],
+    )?;
+    let text = crate::util::decode_output(&out.stdout);
+    let mut commits = vec![];
+    for line in text.lines() {
+        let f: Vec<&str> = line.split('\x1f').collect();
+        if f.len() >= 5 {
+            commits.push(GitCommitInfo {
+                hash: f[0].to_string(),
+                short_hash: f[1].to_string(),
+                author: f[2].to_string(),
+                date: f[3].to_string(),
+                message: f[4..].join("\x1f"),
+            });
+        }
+    }
+    Ok(commits)
+}
+
+/// 查看指定提交的完整 diff
+pub fn show(project_id: &str, hash: &str) -> AppResult<String> {
+    let root = repo_root(project_id)?;
+    if hash.is_empty() || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(AppError::Git("无效的提交哈希".to_string()));
+    }
+    let out = run_git(&root, &["show", "--no-color", "--unified=3", hash])?;
+    Ok(crate::util::decode_output(&out.stdout))
+}
+
+/// 读取工作区文件内容（仅 UTF-8 文本，限制 2MB 防误读大文件/二进制）
+pub fn read_file(project_id: &str, path: &str) -> AppResult<String> {
+    let root = repo_root(project_id)?;
+    let full = safe_join(&root, path)?;
+    if !full.exists() {
+        return Err(AppError::Git(format!("文件不存在: {}", path)));
+    }
+    let bytes = std::fs::read(&full).map_err(|e| AppError::Git(format!("读取失败: {}", e)))?;
+    if bytes.len() > 2 * 1024 * 1024 {
+        return Err(AppError::Git("文件超过 2MB，暂不支持编辑".to_string()));
+    }
+    String::from_utf8(bytes).map_err(|_| {
+        AppError::Git("文件不是 UTF-8 文本，暂不支持编辑".to_string())
+    })
+}
+
+/// 写回工作区文件内容
+pub fn write_file(project_id: &str, path: &str, content: &str) -> AppResult<()> {
+    let root = repo_root(project_id)?;
+    let full = safe_join(&root, path)?;
+    if let Some(parent) = full.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| AppError::Git(format!("创建目录失败: {}", e)))?;
+    }
+    std::fs::write(&full, content).map_err(|e| AppError::Git(format!("写入失败: {}", e)))
 }
