@@ -520,6 +520,39 @@ pub async fn git_write_file(
         .map_err(|e| AppError::Other(format!("写入文件任务失败: {}", e)))?
 }
 
+// ============================ Files（项目文件浏览/编辑） ============================
+
+/// 列出项目根下某目录（单层，惰性加载用）
+#[tauri::command]
+pub async fn list_files(project_id: String, path: String) -> AppResult<Vec<crate::project_fs::FileEntry>> {
+    tokio::task::spawn_blocking(move || crate::project_fs::list_dir(&project_id, &path))
+        .await
+        .map_err(|e| AppError::Other(format!("列目录任务失败: {}", e)))?
+}
+
+/// 读取项目文件（UTF-8/GBK 探测，非 UTF-8 只读）
+#[tauri::command]
+pub async fn read_project_file(
+    project_id: String,
+    path: String,
+) -> AppResult<crate::project_fs::FileContent> {
+    tokio::task::spawn_blocking(move || crate::project_fs::read_file(&project_id, &path))
+        .await
+        .map_err(|e| AppError::Other(format!("读取文件任务失败: {}", e)))?
+}
+
+/// 写回项目文件（UTF-8）
+#[tauri::command]
+pub async fn write_project_file(
+    project_id: String,
+    path: String,
+    content: String,
+) -> AppResult<()> {
+    tokio::task::spawn_blocking(move || crate::project_fs::write_file(&project_id, &path, &content))
+        .await
+        .map_err(|e| AppError::Other(format!("写入文件任务失败: {}", e)))?
+}
+
 // ============================ Config ============================
 
 #[tauri::command]

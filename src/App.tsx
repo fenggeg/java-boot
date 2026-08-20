@@ -8,6 +8,7 @@ import TopBar from "./components/TopBar";
 import ServiceList from "./components/ServiceList";
 import LogViewer from "./components/LogViewer";
 import GitPanel from "./components/GitPanel";
+import FilePanel from "./components/FilePanel";
 import AddProjectModal from "./components/AddProjectModal";
 import AddServiceModal from "./components/AddServiceModal";
 import ServiceConfigModal from "./components/ServiceConfigModal";
@@ -32,9 +33,10 @@ export default function App() {
   const [addServiceOpen, setAddServiceOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [configService, setConfigService] = useState<Service | null>(null);
-  // 右侧主视图：日志（默认）或某项目的 Git 面板
-  const [view, setView] = useState<"logs" | "git">("logs");
+  // 右侧主视图：日志（默认）、Git 面板或文件浏览器
+  const [view, setView] = useState<"logs" | "git" | "files">("logs");
   const [gitProjectId, setGitProjectId] = useState<string | null>(null);
+  const [fileProjectId, setFileProjectId] = useState<string | null>(null);
 
   // 初始化 + 事件监听
   useEffect(() => {
@@ -72,21 +74,28 @@ export default function App() {
     setView("git");
   };
 
+  // 打开某项目的文件浏览器
+  const handleOpenFiles = (project: Project) => {
+    setFileProjectId(project.id);
+    setView("files");
+  };
+
   // 点击左侧服务（或切换日志 tab）时回到日志视图
   useEffect(() => {
     if (selectedServiceId) setView("logs");
   }, [selectedServiceId]);
 
-  // 项目被删除时关闭对应的 Git 面板
+  // 项目被删除时关闭对应的 Git 面板 / 文件浏览器
   useEffect(() => {
-    if (
-      gitProjectId &&
-      !projects.some((p) => p.id === gitProjectId)
-    ) {
+    if (gitProjectId && !projects.some((p) => p.id === gitProjectId)) {
       setGitProjectId(null);
       setView("logs");
     }
-  }, [projects, gitProjectId]);
+    if (fileProjectId && !projects.some((p) => p.id === fileProjectId)) {
+      setFileProjectId(null);
+      setView("logs");
+    }
+  }, [projects, gitProjectId, fileProjectId]);
 
   // 只渲染“已打开”的 tab（IDE-like），保持打开顺序
   const serviceMap = new Map(services.map((s) => [s.id, s]));
@@ -131,6 +140,7 @@ export default function App() {
           onAddService={() => setAddServiceOpen(true)}
           onConfigService={setConfigService}
           onOpenGit={handleOpenGit}
+          onOpenFiles={handleOpenFiles}
         />
 
         <div className="log-panel">
@@ -139,6 +149,16 @@ export default function App() {
               const project = projects.find((p) => p.id === gitProjectId);
               return project ? (
                 <GitPanel
+                  project={project}
+                  onClose={() => setView("logs")}
+                />
+              ) : null;
+            })()
+          ) : view === "files" && fileProjectId ? (
+            (() => {
+              const project = projects.find((p) => p.id === fileProjectId);
+              return project ? (
+                <FilePanel
                   project={project}
                   onClose={() => setView("logs")}
                 />

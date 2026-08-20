@@ -378,3 +378,13 @@ export function Commit({ size, ...rest }: IconProps) {
     </Svg>
   );
 }
+
+export function Save({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <path d="M5 4 H15 L20 9 V20 H5 Z" />
+      <path d="M8 4 V10 H16 V4" />
+      <path d="M8 20 V14 H16 V20" />
+    </Svg>
+  );
+}

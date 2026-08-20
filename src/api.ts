@@ -1,6 +1,8 @@
 import {invoke} from "@tauri-apps/api/core";
 import type {
     AppConfig,
+    FileContent,
+    FileEntry,
     GitCommitInfo,
     GitStatus,
     JdkInfo,
@@ -112,6 +114,19 @@ export const gitWriteFile = (
   content: string,
 ) =>
   invoke<void>("git_write_file", { projectId, path, content });
+
+// ============================ Files（项目文件浏览/编辑） ============================
+
+export const listFiles = (projectId: string, path: string) =>
+  invoke<FileEntry[]>("list_files", { projectId, path });
+export const readProjectFile = (projectId: string, path: string) =>
+  invoke<FileContent>("read_project_file", { projectId, path });
+export const writeProjectFile = (
+  projectId: string,
+  path: string,
+  content: string,
+) =>
+  invoke<void>("write_project_file", { projectId, path, content });
 
 // ============================ Config ============================
 

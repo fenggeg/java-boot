@@ -5,6 +5,7 @@ pub mod git;
 pub mod pom;
 pub mod port;
 pub mod process;
+pub mod project_fs;
 pub mod util;
 pub mod watcher;
 
@@ -156,6 +157,10 @@ pub fn run() {
             commands::git_show,
             commands::git_read_file,
             commands::git_write_file,
+            // files
+            commands::list_files,
+            commands::read_project_file,
+            commands::write_project_file,
             // config
             commands::get_config,
             commands::save_config,

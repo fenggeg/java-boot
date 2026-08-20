@@ -1599,3 +1599,163 @@ body {
   color: var(--text);
   background: var(--surface);
 }
+
+/* ========================================================
+   文件浏览器
+   ======================================================== */
+.file-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.file-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.file-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.file-panel-sub {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-3);
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+}
+
+.file-enc-badge {
+  font-size: 11px;
+  color: var(--text-2);
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  align-self: center;
+}
+
+.file-enc-badge.readonly {
+  color: #ff9500;
+  border-color: rgba(255, 149, 0, 0.35);
+  background: rgba(255, 149, 0, 0.08);
+}
+
+.file-panel-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.file-tree {
+  width: 240px;
+  min-width: 180px;
+  overflow: auto;
+  padding: 8px;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.file-tree .ant-tree {
+  background: transparent;
+  font-size: 12.5px;
+}
+
+.file-tree .ant-tree-node-content-wrapper {
+  min-height: 24px;
+  line-height: 24px;
+}
+
+.file-tree .ant-tree-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-editor {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  background: var(--surface);
+}
+
+.file-editor-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  flex-shrink: 0;
+}
+
+.file-editor-path {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-editor-size {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.file-editor-textarea {
+  flex: 1;
+  width: 100%;
+  border: none;
+  outline: none;
+  resize: none;
+  padding: 12px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--surface);
+  tab-size: 2;
+}
+
+.file-editor-textarea[readonly] {
+  color: var(--text-2);
+}
+
+.file-editor-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.file-saving {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}

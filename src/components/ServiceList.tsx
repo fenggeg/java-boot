@@ -3,6 +3,7 @@ import {App, Button, Empty, Popconfirm, Tooltip} from "antd";
 import {
     CaretDown,
     CaretRight,
+    File,
     FolderOpen,
     GitBranch,
     GitPull,
@@ -24,6 +25,7 @@ interface Props {
   onAddService: () => void;
   onConfigService: (service: Service) => void;
   onOpenGit: (project: Project) => void;
+  onOpenFiles: (project: Project) => void;
 }
 
 // 提取到模块顶层：避免每次 ServiceList 渲染时创建新组件类型导致重挂载（丢失内部状态）
@@ -44,7 +46,7 @@ function ServiceRow({
   );
 }
 
-export default function ServiceList({ onAddProject, onAddService, onConfigService, onOpenGit }: Props) {
+export default function ServiceList({ onAddProject, onAddService, onConfigService, onOpenGit, onOpenFiles }: Props) {
   const projects = useStore((s) => s.projects);
   const services = useStore((s) => s.services);
   const runtimes = useStore((s) => s.runtimes);
@@ -161,6 +163,15 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
                 aria-label="项目配置"
               >
                 <Settings size={13} />
+              </button>
+            </Tooltip>
+            <Tooltip title="文件浏览器（预览 / 编辑）">
+              <button
+                className="icon-btn sm accent"
+                onClick={() => onOpenFiles(project)}
+                aria-label="文件"
+              >
+                <File size={13} />
               </button>
             </Tooltip>
             {gitAvailable && project.git_available && (

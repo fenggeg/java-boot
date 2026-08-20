@@ -87,6 +87,27 @@ export interface PullResult {
   message: string;
 }
 
+// ============================ Files（项目文件浏览/编辑） ============================
+
+/** 项目根目录下的单层目录条目 */
+export interface FileEntry {
+  name: string;
+  /** 相对项目根的路径（/ 分隔，空串为根目录） */
+  path: string;
+  is_dir: boolean;
+  size: number;
+}
+
+/** 项目文件内容 + 可编辑性 */
+export interface FileContent {
+  content: string;
+  /** "utf-8" | "gbk" | "unknown" */
+  encoding: string;
+  /** 非 UTF-8 或超大文件时为 true（只读预览，防止写坏编码） */
+  readonly: boolean;
+  size: number;
+}
+
 // ============================ Git ============================
 
 /** 单个文件改动（git status --porcelain 的 XY 状态） */
