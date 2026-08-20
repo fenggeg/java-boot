@@ -12,6 +12,24 @@ pub struct PomInfo {
     pub artifact_id: String,
     pub packaging: String,        // jar/war/pom
     pub modules: Vec<String>,      // 相对路径
+    /// 声明的 Java 版本需求（归一化主版本号，如 "8"/"17"）：
+    /// 取 maven.compiler.release > target > source > java.version
+    pub java_version: Option<String>,
+}
+
+/// 归一化 Java 版本字符串为 JDK 主版本号："1.8"→8、"17.0.2"→17、"1.8.0_412"→8
+fn normalize_java_version(v: &str) -> Option<String> {
+    let t = v.trim().trim_matches('"').trim();
+    if t.is_empty() || t.starts_with('$') {
+        return None; // 跳过 `${...}` 占位符
+    }
+    let major = if let Some(rest) = t.strip_prefix("1.") {
+        // Java 8 及以前："1.8" / "1.8.0_412"
+        rest.split(['.', '_', '-', ' ']).next()?.parse::<u32>().ok()?
+    } else {
+        t.split(['.', '_', '-', ' ']).next()?.parse::<u32>().ok()?
+    };
+    Some(major.to_string())
 }
 
 /// 解析单个 pom.xml
@@ -23,6 +41,12 @@ pub fn parse_pom(pom_path: &Path) -> AppResult<PomInfo> {
         packaging: "jar".to_string(), // Maven 默认 jar
         ..Default::default()
     };
+
+    // Java 版本声明收集：properties 内 + project 顶层，按 release > target > source > java.version 优先级
+    let mut java_version: Option<String> = None;
+    let mut maven_source: Option<String> = None;
+    let mut maven_target: Option<String> = None;
+    let mut maven_release: Option<String> = None;
 
     let mut reader = quick_xml::Reader::from_str(&content);
     reader.config_mut().trim_text(true);
@@ -63,6 +87,27 @@ pub fn parse_pom(pom_path: &Path) -> AppResult<PomInfo> {
                             info.modules.push(m);
                         }
                     }
+                    Some("java.version") if cur == Some("properties") => {
+                        java_version = normalize_java_version(&text_buf);
+                    }
+                    Some("maven.compiler.source") if cur == Some("properties") => {
+                        maven_source = normalize_java_version(&text_buf);
+                    }
+                    Some("maven.compiler.target") if cur == Some("properties") => {
+                        maven_target = normalize_java_version(&text_buf);
+                    }
+                    Some("maven.compiler.release") if cur == Some("properties") => {
+                        maven_release = normalize_java_version(&text_buf);
+                    }
+                    Some("maven.compiler.source") if cur == Some("project") => {
+                        maven_source = normalize_java_version(&text_buf);
+                    }
+                    Some("maven.compiler.target") if cur == Some("project") => {
+                        maven_target = normalize_java_version(&text_buf);
+                    }
+                    Some("maven.compiler.release") if cur == Some("project") => {
+                        maven_release = normalize_java_version(&text_buf);
+                    }
                     _ => {}
                 }
                 text_buf.clear();
@@ -85,6 +130,8 @@ pub fn parse_pom(pom_path: &Path) -> AppResult<PomInfo> {
         }
     }
 
+    info.java_version = maven_release.or(maven_target).or(maven_source).or(java_version);
+
     Ok(info)
 }
 
@@ -97,7 +144,7 @@ pub fn scan_project(root_pom: &Path) -> AppResult<Vec<ScannedModule>> {
     let base_dir = canonical.parent().ok_or_else(|| {
         AppError::PomParse("项目根目录不存在父路径".to_string())
     })?;
-    scan_recursive(&canonical, base_dir, &mut visited, "")
+    scan_recursive(&canonical, base_dir, &mut visited, "", None)
 }
 
 fn scan_recursive(
@@ -105,6 +152,7 @@ fn scan_recursive(
     base_dir: &Path,
     visited: &mut HashSet<PathBuf>,
     rel_prefix: &str,
+    inherited_java_version: Option<String>,
 ) -> AppResult<Vec<ScannedModule>> {
     if visited.contains(pom_path) {
         return Ok(vec![]);
@@ -112,6 +160,8 @@ fn scan_recursive(
     visited.insert(pom_path.to_path_buf());
 
     let info = parse_pom(pom_path)?;
+    // 子模块未声明 Java 版本时继承父级
+    let java_version = info.java_version.clone().or(inherited_java_version);
     let dir = pom_path.parent().unwrap_or(Path::new(""));
     // 判定是否为可启动服务：packaging 必须是 jar/war，且模块内存在带 @SpringBootApplication 的主类
     let main_class_opt = if matches!(info.packaging.as_str(), "jar" | "war") {
@@ -142,7 +192,7 @@ fn scan_recursive(
             } else {
                 format!("{}/{}", relative, module_rel)
             };
-            let mut sub = scan_recursive(&module_pom, base_dir, visited, &child_rel)?;
+            let mut sub = scan_recursive(&module_pom, base_dir, visited, &child_rel, java_version.clone())?;
             children.append(&mut sub);
         }
     }
@@ -162,6 +212,7 @@ fn scan_recursive(
         is_service,
         already_added,
         main_class: main_class_opt,
+        java_version,
         children,
     };
 

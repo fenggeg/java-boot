@@ -2,8 +2,10 @@
  * JavaBoot Launcher — icon set
  * Clean SF-Symbol-style line glyphs with round caps/joins.
  * All icons inherit `currentColor`; 24×24 viewBox unless noted.
+ * App icon: blue-gradient squircle + white play glyph + spring wave (Spring Boot).
  */
 import type {ReactNode, SVGProps} from "react";
+import {useId} from "react";
 
 type IconProps = SVGProps<SVGSVGElement> & { size?: number };
 
@@ -26,11 +28,13 @@ function Svg({ size = 16, children, ...rest }: IconProps & { children: ReactNode
   );
 }
 
-/* ── Brand mark: iOS-style squircle app icon ─────────────────
-   Rounded squircle with blue gradient + white play glyph,
-   echoing the macOS/iOS app icon idiom. */
+/* ── Brand mark: blue-gradient squircle app icon ────────────
+   Matches the packaged app icon (src-tauri/icons).
+   White rounded play glyph = launcher; green spring wave = Spring Boot. */
 export function Logo({ size = 24, ...rest }: IconProps) {
-  const uid = "jblogo";
+  const uid = useId();
+  const bg = `jb-bg-${uid}`;
+  const gl = `jb-gl-${uid}`;
   return (
     <svg
       width={size}
@@ -41,37 +45,46 @@ export function Logo({ size = 24, ...rest }: IconProps) {
       {...rest}
     >
       <defs>
-        <linearGradient id={uid} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#0a84ff" />
-          <stop offset="100%" stopColor="#0051d5" />
+        <linearGradient id={bg} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#1a8cff" />
+          <stop offset="55%" stopColor="#0a6ef0" />
+          <stop offset="100%" stopColor="#0045b8" />
+        </linearGradient>
+        <linearGradient id={gl} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#ffffff" />
+          <stop offset="100%" stopColor="#cfe4ff" />
         </linearGradient>
       </defs>
       {/* squircle (approximated via rounded rect) */}
       <rect
-        x="1"
-        y="1"
-        width="30"
-        height="30"
-        rx="8"
-        fill={`url(#${uid})`}
+        x="1.25"
+        y="1.25"
+        width="29.5"
+        height="29.5"
+        rx="6.75"
+        fill={`url(#${bg})`}
       />
       {/* glossy top highlight */}
-      <rect
-        x="1"
-        y="1"
-        width="30"
-        height="15"
-        rx="8"
+      <path
+        d="M1.25 8.44 L1.25 8 A6.75 6.75 0 0 1 8 1.25 L24 1.25 A6.75 6.75 0 0 1 30.75 8 L30.75 8.44 Z"
         fill="white"
-        opacity="0.12"
+        opacity="0.10"
       />
       {/* white play glyph */}
       <path
-        d="M12.5 10 L22 16 L12.5 22 Z"
-        fill="#ffffff"
-        stroke="#ffffff"
-        strokeWidth={1.4}
+        d="M11.25 9.375 L20.75 16 L11.25 22.625 Z"
+        fill={`url(#${gl})`}
+        stroke={`url(#${gl})`}
+        strokeWidth={2.25}
         strokeLinejoin="round"
+      />
+      {/* spring wave — Spring Boot */}
+      <path
+        d="M7.8 25 Q 10.3 24 12.8 25 T 17.8 25 T 22.8 25"
+        stroke="#30d158"
+        strokeWidth={1.75}
+        fill="none"
+        strokeLinecap="round"
       />
     </svg>
   );

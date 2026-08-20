@@ -75,6 +75,8 @@ export interface ScannedModule {
   already_added: boolean;
   /** 扫描期识别到的 @SpringBootApplication 主类全限定名 */
   main_class?: string | null;
+  /** 声明/继承的 Java 版本需求（归一化主版本，如 "8"/"17"），用于添加时自动匹配 JDK */
+  java_version?: string | null;
   children: ScannedModule[];
 }
 

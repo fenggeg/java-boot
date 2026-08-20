@@ -52,15 +52,16 @@ pub fn scan_project(path: String) -> AppResult<Vec<ScannedModule>> {
 }
 
 /// 添加项目：根据扫描结果勾选的 module 列表批量添加服务
+/// 若项目尚未配置 JDK / Maven，自动从 pom 声明的 Java 版本匹配已安装的 JDK，并选取 Maven 写入项目配置
 #[tauri::command]
-pub fn add_project(path: String, selected_modules: Vec<ScannedModule>) -> AppResult<Project> {
+pub async fn add_project(path: String, selected_modules: Vec<ScannedModule>) -> AppResult<Project> {
     let root = PathBuf::from(&path);
     let git_root = pom::find_git_root(&root);
     let project_root = git_root.clone().unwrap_or_else(|| root.clone());
     let git_available = git_root.is_some();
 
     // 复用已存在的项目（同 root_path）
-    let project = match db::find_project_by_path(&project_root.to_string_lossy())? {
+    let mut project = match db::find_project_by_path(&project_root.to_string_lossy())? {
         Some(p) => p,
         None => {
             let name = project_root
@@ -92,7 +93,105 @@ pub fn add_project(path: String, selected_modules: Vec<ScannedModule>) -> AppRes
         )?;
     }
 
+    // ===== 自动配置 JDK / Maven（仅当项目尚未配置时）=====
+    let mut jdk_home: Option<String> = None;
+    let mut maven_home: Option<String> = None;
+
+    if project.java_home.is_none() {
+        // 取选中的服务里第一个声明的 Java 版本（同项目通常统一）
+        let required = selected_modules
+            .iter()
+            .filter(|m| m.is_service)
+            .find_map(|m| m.java_version.clone());
+        let jdks = detect_jdks().await;
+        if let Some(sel) = pick_jdk(required.as_deref(), &jdks) {
+            if crate::util::path_exists_follow_junction(
+                &PathBuf::from(&sel.path).join("bin").join("java.exe"),
+            ) {
+                jdk_home = Some(sel.path.clone());
+            }
+        }
+    }
+
+    if project.maven_home.is_none() {
+        // 项目自带 mvnw 时跳过：运行时优先使用 mvnw，无需写死系统 Maven
+        let has_mvnw = ["mvnw.cmd", "mvnw.bat", "mvnw"]
+            .iter()
+            .any(|f| project_root.join(f).exists());
+        if !has_mvnw {
+            let mavens = detect_mavens().await;
+            if let Some(m) = mavens.first() {
+                if crate::util::path_exists_follow_junction(
+                    &PathBuf::from(&m.path).join("bin").join("mvn.cmd"),
+                ) {
+                    maven_home = Some(m.path.clone());
+                }
+            }
+        }
+    }
+
+    if jdk_home.is_some() || maven_home.is_some() {
+        db::update_project_env(
+            &project.id,
+            jdk_home.as_deref().map(Some),
+            maven_home.as_deref().map(Some),
+        )?;
+        if let Some(j) = jdk_home {
+            project.java_home = Some(j);
+        }
+        if let Some(m) = maven_home {
+            project.maven_home = Some(m);
+        }
+    }
+
     Ok(project)
+}
+
+/// 解析 JDK 版本字符串为主版本号："1.8.0_412"→8、"17.0.12"→17、"17"→17
+fn jdk_major(version: &str) -> Option<u32> {
+    let v = version.trim();
+    if v.is_empty() {
+        return None;
+    }
+    let major = v.split(['.', '_', '-', ' ']).next()?.parse::<u32>().ok()?;
+    if major == 1 {
+        // Java 8 及以前："1.8.x" → 8
+        v.split('.').nth(1)?.parse::<u32>().ok()
+    } else {
+        Some(major)
+    }
+}
+
+/// 根据项目要求的 Java 版本，从已探测的 JDK 列表中选择最合适的：
+/// 精确匹配主版本优先；否则取主版本差值最小（并列取较高版本）；未声明版本取第一个
+fn pick_jdk(required: Option<&str>, jdks: &[JdkInfo]) -> Option<JdkInfo> {
+    if jdks.is_empty() {
+        return None;
+    }
+    let target = required.and_then(jdk_major);
+    match target {
+        None => Some(jdks[0].clone()),
+        Some(t) => {
+            if let Some(hit) = jdks.iter().find(|j| jdk_major(&j.version) == Some(t)) {
+                return Some(hit.clone());
+            }
+            let mut best: Option<(&JdkInfo, i64, u32)> = None;
+            for j in jdks {
+                let Some(m) = jdk_major(&j.version) else {
+                    continue;
+                };
+                let diff = (m as i64 - t as i64).abs();
+                let better = match best {
+                    None => true,
+                    Some((_, bd, bm)) => diff < bd || (diff == bd && m > bm),
+                };
+                if better {
+                    best = Some((j, diff, m));
+                }
+            }
+            best.map(|(j, _, _)| j.clone())
+        }
+    }
 }
 
 /// 重新扫描项目并补充添加新 module

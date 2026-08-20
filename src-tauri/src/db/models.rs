@@ -134,5 +134,7 @@ pub struct ScannedModule {
     /// 扫描期识别到的主类全限定名（有 @SpringBootApplication 才写入），用于服务落库时直填 DB，
     /// 避免启动阶段再次扫源码（大项目串行读文件头累计可达数秒）
     pub main_class: Option<String>,
+    /// 声明/继承的 Java 版本需求（归一化主版本，如 "8"/"17"），用于添加时自动匹配 JDK
+    pub java_version: Option<String>,
     pub children: Vec<ScannedModule>,
 }
