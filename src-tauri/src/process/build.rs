@@ -146,6 +146,10 @@ fn kill_child(pid: u32) {
 /// - `-Dspring-boot.repackage.skip=true` 跳过 spring-boot-maven-plugin 的 repackage
 ///   （原来 `mvn install` 会顺带跑 repackage，几十秒到几分钟纯浪费）
 /// - `-Dmaven.test.skip=true` 完全跳过 test-compile 与 test 阶段
+/// - `-Dproject.build.sourceEncoding=UTF-8` / `-Dresource.encoding=UTF-8`
+///   统一资源过滤编码为 UTF-8，避免中文 Windows 默认 GBK 编码下处理含
+///   UTF-8 字符的资源文件时抛 MalformedInputException（如 Nacos 控制台
+///   前端资源、含中文的 application.yml 等）
 pub fn common_mvn_flags() -> Vec<String> {
     vec![
         "-T".into(),
@@ -154,6 +158,8 @@ pub fn common_mvn_flags() -> Vec<String> {
         "-Dspring-boot.repackage.skip=true".into(),
         "-Dmaven.test.skip=true".into(),
         "-DskipTests".into(),
+        "-Dproject.build.sourceEncoding=UTF-8".into(),
+        "-Dresource.encoding=UTF-8".into(),
     ]
 }
 
