@@ -1661,28 +1661,93 @@ body {
 }
 
 .file-tree {
-  width: 240px;
-  min-width: 180px;
+  min-width: 160px;
   overflow: auto;
-  padding: 8px;
+  padding: 6px 6px;
   border-right: 1px solid var(--border);
   background: var(--surface);
 }
 
-.file-tree .ant-tree {
-  background: transparent;
+/* 自定义文件树行：复用项目列表的紧凑交互风格 */
+.file-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
   font-size: 12.5px;
-}
-
-.file-tree .ant-tree-node-content-wrapper {
-  min-height: 24px;
-  line-height: 24px;
-}
-
-.file-tree .ant-tree-title {
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none;
+  border-radius: var(--r-md);
+  transition: background 0.15s var(--ease);
   white-space: nowrap;
+}
+
+.file-tree-row:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.file-tree-row.active {
+  background: rgba(0, 113, 227, 0.1);
+  color: var(--text);
+}
+
+.file-tree-caret {
+  color: var(--text-3);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  flex-shrink: 0;
+  transition: transform 0.2s var(--ease);
+}
+
+.file-tree-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.file-tree-icon.folder {
+  color: var(--orange);
+}
+
+.file-tree-icon.file {
+  color: var(--text-3);
+}
+
+.file-tree-row.active .file-tree-icon.file {
+  color: var(--text-2);
+}
+
+.file-tree-name {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.file-tree-empty-hint {
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--text-4);
+  font-style: italic;
+}
+
+/* 可拖拽分隔条 */
+.file-tree-resizer {
+  width: 4px;
+  cursor: col-resize;
+  flex-shrink: 0;
+  background: transparent;
+  transition: background 0.15s var(--ease);
+  position: relative;
+  z-index: 2;
+}
+
+.file-tree-resizer:hover,
+.file-tree-resizer:active {
+  background: rgba(0, 113, 227, 0.3);
 }
 
 .file-editor {

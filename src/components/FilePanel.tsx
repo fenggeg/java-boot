@@ -1,55 +1,169 @@
-import {useMemo, useState} from "react";
-import type {TreeDataNode} from "antd";
-import {App, Spin, Tooltip, Tree} from "antd";
-import type {DataNode, EventDataNode} from "antd/es/tree";
-import {ChevronLeft, File, Folder, Save} from "./Icons";
+import {useMemo, useRef, useState, useCallback, useEffect} from "react";
+import {App, Spin, Tooltip} from "antd";
+import {CaretDown, CaretRight, ChevronLeft, File, Folder, Save} from "./Icons";
 import * as api from "../api";
-import type {FileContent, Project} from "../types";
+import type {FileContent, FileEntry, Project} from "../types";
 
 interface Props {
   project: Project;
   onClose: () => void;
 }
 
-/** 单层目录 → antd Tree 节点（懒加载，目录 isLeaf=false） */
-function toTreeNode(entries: Awaited<ReturnType<typeof api.listFiles>>): TreeDataNode[] {
-  return entries.map((e) => ({
-    title: e.name,
-    key: e.path,
-    isLeaf: !e.is_dir,
-    icon: e.is_dir ? (
-      <Folder size={14} style={{ color: "#ff9500" }} />
-    ) : (
-      <File size={14} />
-    ),
+// ================================================================
+// 自定义文件树节点数据（独立于 antd Tree）
+// ================================================================
+interface FileTreeNode {
+  name: string;
+  path: string;
+  isDir: boolean;
+  children?: FileTreeNode[];
+  loaded?: boolean; // 目录是否已懒加载子节点
+  loading?: boolean;
+  expanded?: boolean; // 目录是否展开
+}
+
+/** FileEntry → FileTreeNode（目录标记 loaded=false，文件无 children） */
+function toNodes(entries: FileEntry[]): FileTreeNode[] {
+  // 目录在前，文件在后；同类按名称排序
+  const sorted = [...entries].sort((a, b) => {
+    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+  return sorted.map((e) => ({
+    name: e.name,
+    path: e.path,
+    isDir: e.is_dir,
+    loaded: !e.is_dir,
   }));
 }
 
-/** 不可变更新树：把 key 对应节点的 children 替换为加载结果（antd loadData 官方推荐模式） */
-function updateTreeData(
-  list: TreeDataNode[],
+/** 不可变更新：把 key 对应目录节点的 children 替换为加载结果 */
+function setChildren(
+  nodes: FileTreeNode[],
   key: string,
-  children: TreeDataNode[]
-): TreeDataNode[] {
-  return list.map((node) => {
-    if (node.key === key) {
-      return { ...node, children };
+  children: FileTreeNode[]
+): FileTreeNode[] {
+  return nodes.map((n) => {
+    if (n.path === key) {
+      return { ...n, children, loaded: true, loading: false };
     }
-    if (node.children) {
-      return { ...node, children: updateTreeData(node.children, key, children) };
+    if (n.children) {
+      return { ...n, children: setChildren(n.children, key, children) };
     }
-    return node;
+    return n;
   });
 }
 
+/** 不可变更新：切换 key 对应目录的展开/折叠状态 */
+function toggleExpand(
+  nodes: FileTreeNode[],
+  key: string
+): FileTreeNode[] {
+  return nodes.map((n) => {
+    if (n.path === key) {
+      return { ...n, expanded: !n.expanded };
+    }
+    if (n.children) {
+      return { ...n, children: toggleExpand(n.children, key) };
+    }
+    return n;
+  });
+}
+
+// ================================================================
+// 单个树行（递归组件）
+// ================================================================
+function TreeRow({
+  node,
+  depth,
+  selectedPath,
+  onSelect,
+  onToggle,
+}: {
+  node: FileTreeNode;
+  depth: number;
+  selectedPath: string | null;
+  onSelect: (path: string) => void;
+  onToggle: (path: string) => void;
+}) {
+  const isSelected = selectedPath === node.path;
+  const isExpanded = !!node.expanded;
+
+  if (node.isDir) {
+    return (
+      <>
+        <div
+          className={`file-tree-row ${isSelected ? "active" : ""}`}
+          style={{ paddingLeft: 8 + depth * 14 }}
+          onClick={() => onToggle(node.path)}
+        >
+          <span className="file-tree-caret">
+            {node.loading ? (
+              <Spin size="small" style={{ transform: "scale(0.6)" }} />
+            ) : isExpanded ? (
+              <CaretDown size={10} />
+            ) : (
+              <CaretRight size={10} />
+            )}
+          </span>
+          <span className="file-tree-icon folder">
+            <Folder size={14} />
+          </span>
+          <span className="file-tree-name">{node.name}</span>
+        </div>
+        {isExpanded && node.children && node.children.length > 0 && (
+          <div className="file-tree-children">
+            {node.children.map((child) => (
+              <TreeRow
+                key={child.path}
+                node={child}
+                depth={depth + 1}
+                selectedPath={selectedPath}
+                onSelect={onSelect}
+                onToggle={onToggle}
+              />
+            ))}
+          </div>
+        )}
+        {isExpanded && node.children && node.children.length === 0 && (
+          <div
+            className="file-tree-empty-hint"
+            style={{ paddingLeft: 8 + (depth + 1) * 14 }}
+          >
+            空目录
+          </div>
+        )}
+      </>
+    );
+  }
+
+  return (
+    <div
+      className={`file-tree-row file ${isSelected ? "active" : ""}`}
+      style={{ paddingLeft: 8 + depth * 14 }}
+      onClick={() => onSelect(node.path)}
+    >
+      <span className="file-tree-caret" />
+      <span className="file-tree-icon file">
+        <File size={14} />
+      </span>
+      <span className="file-tree-name">{node.name}</span>
+    </div>
+  );
+}
+
+// ================================================================
+// 主组件
+// ================================================================
 export default function FilePanel({ project, onClose }: Props) {
   const { message, modal } = App.useApp();
-  const [treeData, setTreeData] = useState<TreeDataNode[]>(() => [
+  const [treeData, setTreeData] = useState<FileTreeNode[]>(() => [
     {
-      title: project.name,
-      key: "",
-      isLeaf: false,
-      icon: <Folder size={14} style={{ color: "#0071e3" }} />,
+      name: project.name,
+      path: "",
+      isDir: true,
+      loaded: false,
+      expanded: true,
     },
   ]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -61,23 +175,79 @@ export default function FilePanel({ project, onClose }: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // 可拖拽宽度：文件树宽度持久化到 localStorage
+  const [treeWidth, setTreeWidth] = useState<number>(() => {
+    const saved = localStorage.getItem("jb_file_tree_width");
+    return saved ? parseInt(saved, 10) || 240 : 240;
+  });
+  const draggingRef = useRef(false);
+  const panelBodyRef = useRef<HTMLDivElement>(null);
+
   const dirty = useMemo(
     () => doc !== null && content !== doc.meta.content,
     [doc, content]
   );
 
-  // 懒加载目录（不可变更新，避免闭包/引用问题）
-  const loadData = async (node: EventDataNode<DataNode>) => {
+  // 懒加载目录子节点
+  const loadChildren = useCallback(async (path: string) => {
+    // 标记目标节点 loading
+    setTreeData((prev) => markLoading(prev, path));
     try {
-      const entries = await api.listFiles(project.id, String(node.key));
-      setTreeData((prev) => updateTreeData(prev, String(node.key), toTreeNode(entries)));
+      const entries = await api.listFiles(project.id, path);
+      setTreeData((prev) => setChildren(prev, path, toNodes(entries)));
     } catch (e: any) {
       message.error(`加载目录失败: ${e}`);
+      setTreeData((prev) => setChildren(prev, path, []));
     }
-  };
+  }, [project.id, message]);
+
+  // 递归标记某节点 loading
+  function markLoading(nodes: FileTreeNode[], key: string): FileTreeNode[] {
+    return nodes.map((n) => {
+      if (n.path === key) {
+        return { ...n, loading: true };
+      }
+      if (n.children) {
+        return { ...n, children: markLoading(n.children, key) };
+      }
+      return n;
+    });
+  }
+
+  // 展开/折叠目录
+  const handleToggle = useCallback((path: string) => {
+    setTreeData((prev) => {
+      // 如果目录还没加载，先加载再展开
+      const target = findNode(prev, path);
+      if (target && !target.loaded) {
+        // 异步加载，加载完后展开
+        loadChildren(path).then(() => {
+          setTreeData((p) => toggleExpand(p, path));
+        });
+        return prev;
+      }
+      return toggleExpand(prev, path);
+    });
+  }, [loadChildren]);
+
+  // 查找节点
+  function findNode(nodes: FileTreeNode[], key: string): FileTreeNode | undefined {
+    for (const n of nodes) {
+      if (n.path === key) return n;
+      if (n.children) {
+        const found = findNode(n.children, key);
+        if (found) return found;
+      }
+    }
+    return undefined;
+  }
+
+  // 初始加载根目录
+  useEffect(() => {
+    loadChildren("");
+  }, [loadChildren]);
 
   const openFile = async (path: string) => {
-    // 有未保存修改时先确认
     if (dirty) {
       const ok = await new Promise<boolean>((resolve) => {
         modal.confirm({
@@ -124,6 +294,40 @@ export default function FilePanel({ project, onClose }: Props) {
     }
   };
 
+  // ---- 可拖拽分隔条 ----
+  const startDrag = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    draggingRef.current = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }, []);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!draggingRef.current || !panelBodyRef.current) return;
+      const rect = panelBodyRef.current.getBoundingClientRect();
+      const newWidth = Math.max(160, Math.min(600, e.clientX - rect.left));
+      setTreeWidth(newWidth);
+    };
+    const onUp = () => {
+      if (draggingRef.current) {
+        draggingRef.current = false;
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        setTreeWidth((w) => {
+          localStorage.setItem("jb_file_tree_width", String(w));
+          return w;
+        });
+      }
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+
   return (
     <div className="file-panel">
       <div className="file-panel-header">
@@ -163,23 +367,26 @@ export default function FilePanel({ project, onClose }: Props) {
         </div>
       </div>
 
-      <div className="file-panel-body">
-        {/* 左侧文件树 */}
-        <div className="file-tree">
-          <Tree
-            treeData={treeData}
-            loadData={loadData}
-            defaultExpandedKeys={[""]}
-            selectedKeys={selectedPath ? [selectedPath] : []}
-            onSelect={(_, info) => {
-              const node = info.node as TreeDataNode;
-              if (node.isLeaf) openFile(String(node.key));
-            }}
-            selectable
-            showIcon
-            blockNode
-          />
+      <div className="file-panel-body" ref={panelBodyRef}>
+        {/* 左侧文件树（自定义，点击整行展开/折叠） */}
+        <div className="file-tree" style={{ width: treeWidth, flexShrink: 0 }}>
+          {treeData.map((node) => (
+            <TreeRow
+              key={node.path}
+              node={node}
+              depth={0}
+              selectedPath={selectedPath}
+              onSelect={openFile}
+              onToggle={handleToggle}
+            />
+          ))}
         </div>
+
+        {/* 可拖拽分隔条 */}
+        <div
+          className="file-tree-resizer"
+          onMouseDown={startDrag}
+        />
 
         {/* 右侧编辑器 */}
         <div className="file-editor">
