@@ -243,10 +243,12 @@ impl ProcessManager {
 
         // 尝试为恢复的进程创建 Job Object 并绑定
         let mut handles = self.handles.lock();
+        let mut restored_ids: Vec<String> = vec![];
         for (service_id, pid, _) in &pids {
             if self.runtimes.lock().get(service_id).map(|r| r.pid).flatten() != Some(*pid) {
                 continue;
             }
+            restored_ids.push(service_id.clone());
             let mut handle = ProcessHandle::placeholder();
             handle.pid = *pid;
             #[cfg(windows)]
@@ -284,6 +286,25 @@ impl ProcessManager {
 
         for rt in self.all_runtimes() {
             let _ = app.emit("service://status", rt);
+        }
+
+        // 恢复的服务其 stdout/stderr 管道在应用重启时已断开，无法重新接管。
+        // 延迟推送提示日志：setup 阶段前端 WebView 可能还没加载完、
+        // listen("service://log") 尚未注册，立即 emit 会丢失。
+        if !restored_ids.is_empty() {
+            let app_clone = app.clone();
+            let ids = restored_ids.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                for sid in &ids {
+                    Self::emit_log_static(
+                        &app_clone,
+                        sid,
+                        "[javaboot]",
+                        "[javaboot] 应用重启后已恢复对该服务的托管，但日志输出管道已断开。如需查看实时日志，请重启该服务。",
+                    );
+                }
+            });
         }
     }
 

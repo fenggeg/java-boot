@@ -388,3 +388,20 @@ export function Save({ size, ...rest }: IconProps) {
     </Svg>
   );
 }
+
+export function Pause({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <rect x="6" y="5" width="4" height="14" fill="currentColor" stroke="none" />
+      <rect x="14" y="5" width="4" height="14" fill="currentColor" stroke="none" />
+    </Svg>
+  );
+}
+
+export function Play2({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <path d="M7 5 L19 12 L7 19 Z" fill="currentColor" stroke="none" />
+    </Svg>
+  );
+}

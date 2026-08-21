@@ -12,6 +12,10 @@ interface Store {
   services: Service[];
   runtimes: Record<string, ServiceRuntime>;
   logs: Record<string, LogBuffer>;
+  /** 按服务记录是否暂停日志显示（暂停期间日志仍缓存，但不触发 UI 更新） */
+  paused: Record<string, boolean>;
+  /** 日志批量 flush 的版本号，暂停恢复时递增以强制刷新订阅 */
+  logFlushTick: number;
   config: AppConfig;
   selectedServiceId: string | null;
   /** 已打开的日志 Tab (IDE-like)，按打开顺序；只有在这里的 service 才会在日志区顶部显示 Tab */
@@ -28,10 +32,23 @@ interface Store {
   appendLog: (log: LogLine) => void;
   clearLog: (serviceId: string) => void;
   markRead: (serviceId: string) => void;
+  togglePause: (serviceId: string) => void;
   updateConfig: (cfg: AppConfig) => Promise<void>;
   removeProject: (projectId: string) => void;
   removeService: (serviceId: string) => void;
 }
+
+// ================================================================
+// 日志批量节流：高频日志先累积到 pending 队列，定时合并刷入 store，
+// 避免每条日志都触发 setState 重渲染导致白屏。
+// ================================================================
+
+/** 按 serviceId 分组的待刷入日志队列 */
+const pendingLogs: Record<string, LogLine[]> = {};
+/** 节流定时器句柄 */
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+/** 节流间隔（ms）：在窗口内到达的所有日志合并为一次 store 更新 */
+const FLUSH_INTERVAL = 50;
 
 export const useStore = create<Store>((set, get) => {
   // 从 localStorage 恢复 openedTabs
@@ -55,11 +72,48 @@ export const useStore = create<Store>((set, get) => {
     }
   };
 
+  // 批量 flush：把 pending 队列里的日志合并写入 store
+  const flushLogs = () => {
+    flushTimer = null;
+    const pendingIds = Object.keys(pendingLogs);
+    if (pendingIds.length === 0) return;
+    const state = get();
+    const maxLines = state.config.log_buffer_lines || 10000;
+    const nextLogs = { ...state.logs };
+    for (const sid of pendingIds) {
+      const batch = pendingLogs[sid];
+      if (!batch || batch.length === 0) continue;
+      delete pendingLogs[sid];
+      const existing = nextLogs[sid] ?? { lines: [], hasUnread: false };
+      const lines = existing.lines;
+      for (const l of batch) lines.push(l);
+      if (lines.length > maxLines) {
+        lines.splice(0, lines.length - maxLines);
+      }
+      const isSelected = state.selectedServiceId === sid;
+      const isPaused = state.paused[sid];
+      // 暂停的服务：日志已写入 lines 数组（缓存），但不生成新 LogBuffer 引用，
+      // 避免触发订阅重渲染；恢复时会手动递增 logFlushTick 强制刷新。
+      if (!isPaused) {
+        nextLogs[sid] = { lines, hasUnread: !isSelected };
+      }
+    }
+    set({ logs: nextLogs });
+  };
+
+  // 调度一次 flush（若已有定时器则复用，实现窗口内合并）
+  const scheduleFlush = () => {
+    if (flushTimer !== null) return;
+    flushTimer = setTimeout(flushLogs, FLUSH_INTERVAL);
+  };
+
   return {
   projects: [],
   services: [],
   runtimes: {},
   logs: {},
+  paused: {},
+  logFlushTick: 0,
   config: {
     port_refresh_interval_secs: 2,
     stop_on_compile_fail: false,
@@ -173,34 +227,20 @@ export const useStore = create<Store>((set, get) => {
   },
 
   appendLog: (log) => {
-    set((state) => {
-      // 复用原数组引用做原地 push/splice，避免高频日志下每次 O(n) 拷贝
-      const existing = state.logs[log.service_id] ?? {
-        lines: [],
-        hasUnread: false,
-      };
-      const lines = existing.lines;
-      lines.push(log);
-      // 超限裁剪：使用配置的 log_buffer_lines，配置缺失时回退 10000
-      const maxLines = state.config.log_buffer_lines || 10000;
-      if (lines.length > maxLines) {
-        lines.splice(0, lines.length - maxLines);
-      }
-      const isSelected = state.selectedServiceId === log.service_id;
-      return {
-        logs: {
-          ...state.logs,
-          // 返回新 LogBuffer 对象（引用变化触发订阅），lines 数组保持同一引用
-          [log.service_id]: {
-            lines,
-            hasUnread: !isSelected,
-          },
-        },
-      };
-    });
+    // 不直接 set，而是推入 pending 队列，由节流定时器批量 flush。
+    // 这样高频日志下 setState 频率从"每条一次"降到"每 FLUSH_INTERVAL 一次"。
+    const queue = pendingLogs[log.service_id];
+    if (queue) {
+      queue.push(log);
+    } else {
+      pendingLogs[log.service_id] = [log];
+    }
+    scheduleFlush();
   },
 
   clearLog: (serviceId) => {
+    // 清空 pending 队列中该服务的待刷入日志，避免清空后又被 flush 重新写入
+    delete pendingLogs[serviceId];
     set((state) => ({
       logs: {
         ...state.logs,
@@ -219,6 +259,29 @@ export const useStore = create<Store>((set, get) => {
           [serviceId]: { ...buf, hasUnread: false },
         },
       };
+    });
+  },
+
+  togglePause: (serviceId) => {
+    set((state) => {
+      const nextPaused = !state.paused[serviceId];
+      // 恢复显示时：递增 logFlushTick 并为该服务生成新 LogBuffer 引用，
+      // 强制订阅该服务的组件重新渲染，展示暂停期间缓存的日志。
+      if (!nextPaused) {
+        const buf = state.logs[serviceId];
+        const isSelected = state.selectedServiceId === serviceId;
+        return {
+          paused: { ...state.paused, [serviceId]: false },
+          logFlushTick: state.logFlushTick + 1,
+          logs: buf
+            ? {
+                ...state.logs,
+                [serviceId]: { lines: buf.lines, hasUnread: !isSelected },
+              }
+            : state.logs,
+        };
+      }
+      return { paused: { ...state.paused, [serviceId]: true } };
     });
   },
 
@@ -256,18 +319,22 @@ export const useStore = create<Store>((set, get) => {
   },
 
   removeService: (serviceId) => {
+    // 清理 pending 队列
+    delete pendingLogs[serviceId];
     set((state) => {
       const remainingServices = state.services.filter(
         (s) => s.id !== serviceId
       );
       const { [serviceId]: _, ...remainingRuntimes } = state.runtimes;
       const { [serviceId]: __, ...remainingLogs } = state.logs;
+      const { [serviceId]: ___, ...remainingPaused } = state.paused;
       const nextOpened = state.openedTabs.filter((id) => id !== serviceId);
       saveOpenedTabs(nextOpened);
       return {
         services: remainingServices,
         runtimes: remainingRuntimes,
         logs: remainingLogs,
+        paused: remainingPaused,
         openedTabs: nextOpened,
         selectedServiceId:
           state.selectedServiceId === serviceId

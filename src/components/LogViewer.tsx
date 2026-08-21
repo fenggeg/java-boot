@@ -1,6 +1,6 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {Input, Segmented, Tooltip} from "antd";
-import {ArrowDown, Clear, Search, Terminal} from "./Icons";
+import {ArrowDown, Clear, Pause, Play2, Search, Terminal} from "./Icons";
 import {useStore} from "../store";
 import type {LogLine} from "../types";
 
@@ -34,6 +34,10 @@ const OVERSCAN = 30;
 export default function LogViewer({ serviceId }: Props) {
   const logs = useStore((s) => (serviceId ? s.logs[serviceId] : undefined));
   const clearLog = useStore((s) => s.clearLog);
+  const isPaused = useStore((s) => (serviceId ? !!s.paused[serviceId] : false));
+  const togglePause = useStore((s) => s.togglePause);
+  // 订阅 logFlushTick：暂停恢复时 store 递增此值，强制 filtered 重算 + 组件刷新
+  const logFlushTick = useStore((s) => s.logFlushTick);
   const [autoScroll, setAutoScroll] = useState(true);
   const [search, setSearch] = useState("");
   const [level, setLevel] = useState<LogLevel>("all");
@@ -48,12 +52,14 @@ export default function LogViewer({ serviceId }: Props) {
     const searchLower = search.toLowerCase();
     // 依赖 logs 对象而非 lines 数组：appendLog 复用数组引用原地 push，
     // 依赖数组引用会让新日志不触发重算（切级别才刷新）；对象每次 append 都是新引用
+    // logFlushTick 用于暂停恢复时强制刷新
+    void logFlushTick;
     return (logs?.lines ?? []).filter((l) => {
       if (!matchLevel(l.line, level)) return false;
       if (search && !l.line.toLowerCase().includes(searchLower)) return false;
       return true;
     });
-  }, [logs, level, search]);
+  }, [logs, level, search, logFlushTick]);
 
   const handleScroll = useCallback(() => {
     const el = containerRef.current;
@@ -154,7 +160,7 @@ export default function LogViewer({ serviceId }: Props) {
           {filtered.length} / {allLines.length} 行
         </span>
         <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
-          {!autoScroll && (
+          {!autoScroll && !isPaused && (
             <Tooltip title="滚动到底部">
               <button
                 className="icon-btn sm accent"
@@ -170,6 +176,15 @@ export default function LogViewer({ serviceId }: Props) {
               </button>
             </Tooltip>
           )}
+          <Tooltip title={isPaused ? "继续打印" : "暂停打印"}>
+            <button
+              className={`icon-btn sm ${isPaused ? "accent" : ""}`}
+              onClick={() => togglePause(serviceId)}
+              aria-label={isPaused ? "继续打印" : "暂停打印"}
+            >
+              {isPaused ? <Play2 size={13} /> : <Pause size={13} />}
+            </button>
+          </Tooltip>
           <Tooltip title="清空日志">
             <button
               className="icon-btn sm"
@@ -187,6 +202,27 @@ export default function LogViewer({ serviceId }: Props) {
         onScroll={handleScroll}
         style={{ position: "relative" }}
       >
+        {isPaused && (
+          <div
+            style={{
+              position: "absolute",
+              top: 8,
+              left: "50%",
+              transform: "translateX(-50%)",
+              zIndex: 10,
+              background: "rgba(255, 159, 0, 0.15)",
+              border: "1px solid rgba(255, 159, 0, 0.5)",
+              color: "#ff9500",
+              fontSize: 12,
+              padding: "3px 12px",
+              borderRadius: 12,
+              pointerEvents: "none",
+              fontFamily: "var(--font-sans)",
+            }}
+          >
+            日志已暂停，继续打印后将显示暂停期间缓存的日志
+          </div>
+        )}
         {renderLines.length === 0 ? (
           <div
             style={{
