@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import {defineConfig} from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
 
@@ -24,5 +24,17 @@ export default defineConfig({
     target: "chrome105",
     minify: "esbuild",
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // antd 体积大但变化少，独立 chunk 利用浏览器缓存
+          antd: ["antd"],
+          // React 运行时
+          react: ["react", "react-dom"],
+          // Tauri API 层
+          tauri: ["@tauri-apps/api", "@tauri-apps/plugin-dialog", "@tauri-apps/plugin-opener"],
+        },
+      },
+    },
   },
 });

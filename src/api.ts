@@ -1,6 +1,7 @@
 import {invoke} from "@tauri-apps/api/core";
 import type {
     AppConfig,
+    BatchStartResult,
     FileContent,
     FileEntry,
     GitCommitInfo,
@@ -78,7 +79,24 @@ export const compileAndStart = (id: string) =>
   invoke<void>("compile_and_start", { id });
 export const recompileAndStart = (id: string) =>
   invoke<void>("recompile_and_start", { id });
+export const cleanService = (id: string) =>
+  invoke<void>("clean_service", { id });
 export const stopAll = () => invoke<void>("stop_all");
+
+// 带依赖启动
+export const startServiceWithDependencies = (id: string) =>
+  invoke<void>("start_service_with_dependencies", { id });
+
+// 批量启动（一键启动项目下所有服务）
+export const startServicesBatch = (ids: string[]) =>
+  invoke<BatchStartResult>("start_services_batch", { ids });
+
+// 服务依赖编排
+export const getServiceDependencies = (id: string) =>
+  invoke<string[]>("get_service_dependencies", { id });
+
+export const setServiceDependencies = (id: string, dependsOnIds: string[]) =>
+  invoke<void>("set_service_dependencies", { id, dependsOnIds });
 export const getRuntime = (id: string) =>
   invoke<ServiceRuntime>("get_runtime", { id });
 export const getAllRuntimes = () =>
@@ -127,6 +145,9 @@ export const writeProjectFile = (
   content: string,
 ) =>
   invoke<void>("write_project_file", { projectId, path, content });
+
+export const getFileAbsPath = (projectId: string, path: string) =>
+  invoke<string>("get_file_abs_path", { projectId, path });
 
 // ============================ Config ============================
 

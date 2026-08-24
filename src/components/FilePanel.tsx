@@ -1,12 +1,63 @@
-import {useMemo, useRef, useState, useCallback, useEffect} from "react";
-import {App, Spin, Tooltip} from "antd";
-import {CaretDown, CaretRight, ChevronLeft, File, Folder, Save} from "./Icons";
+import {useCallback, useEffect, useMemo, useRef, useState} from "react";
+import {App, Segmented, Spin, Tooltip} from "antd";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import {convertFileSrc} from "@tauri-apps/api/core";
+import {Binary, CaretDown, CaretRight, ChevronLeft, File, Folder, Image as ImageIcon, Save,} from "./Icons";
+import {Prism} from "../prism-langs";
+import {getPrismLang, isMarkdown} from "../languages";
 import * as api from "../api";
-import type {FileContent, FileEntry, Project} from "../types";
+import type {FileContent, Project} from "../types";
 
 interface Props {
   project: Project;
   onClose: () => void;
+}
+
+// ================================================================
+// 文件类型分类
+// ================================================================
+
+const IMAGE_EXTS = new Set([
+  "png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico", "avif",
+]);
+
+const BINARY_EXTS = new Set([
+  "jar", "class", "war", "ear", "zip", "tar", "gz", "7z", "rar",
+  "exe", "dll", "lib", "so", "dylib", "o", "obj",
+  "bin", "dat", "db", "sqlite", "wasm",
+  "mp3", "mp4", "avi", "mov", "mkv", "flv", "wav", "flac",
+  "ttf", "otf", "woff", "woff2", "eot",
+]);
+
+type FileType = "image" | "binary" | "text";
+
+function getFileType(filename: string): FileType {
+  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+  if (IMAGE_EXTS.has(ext)) return "image";
+  if (BINARY_EXTS.has(ext)) return "binary";
+  return "text";
+}
+
+/** 语法高亮：返回 HTML 字符串（无匹配语言时返回转义后的纯文本） */
+function highlightCode(code: string, lang: string | null): string {
+  if (!lang) return escapeHtml(code);
+  const grammar = Prism.languages[lang];
+  if (!grammar) return escapeHtml(code);
+  try {
+    return Prism.highlight(code, grammar, lang);
+  } catch {
+    return escapeHtml(code);
+  }
+}
+
+/** HTML 转义，防止代码内容被当作标签解析 */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 // ================================================================
@@ -22,19 +73,53 @@ interface FileTreeNode {
   expanded?: boolean; // 目录是否展开
 }
 
-/** FileEntry → FileTreeNode（目录标记 loaded=false，文件无 children） */
-function toNodes(entries: FileEntry[]): FileTreeNode[] {
-  // 目录在前，文件在后；同类按名称排序
-  const sorted = [...entries].sort((a, b) => {
-    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
-    return a.name.localeCompare(b.name);
-  });
-  return sorted.map((e) => ({
-    name: e.name,
-    path: e.path,
-    isDir: e.is_dir,
-    loaded: !e.is_dir,
-  }));
+/** 紧凑路径最大合并层数（防止极端深目录导致请求风暴） */
+const MAX_COMPACT_DEPTH = 10;
+
+/**
+ * 加载目录并做「紧凑路径」合并：当目录下只有唯一子目录且无其他文件时，
+ * 向下穿透并把路径段合并展示（如 src → main → java 显示为 src/main/java）。
+ * 返回的节点 name 为合并路径，path 为最终目录的完整路径，children 已加载。
+ */
+async function loadMergedNodes(
+  projectId: string,
+  path: string
+): Promise<FileTreeNode[]> {
+  const mergedNames: string[] = [];
+  let cur = path;
+  let entries = await api.listFiles(projectId, cur);
+  // 连续单目录链：逐层向下钻取
+  for (
+    let i = 0;
+    i < MAX_COMPACT_DEPTH && entries.length === 1 && entries[0]?.is_dir;
+    i++
+  ) {
+    mergedNames.push(entries[0].name);
+    cur = entries[0].path;
+    entries = await api.listFiles(projectId, cur);
+  }
+  const nodes: FileTreeNode[] = [...entries]
+    .sort((a, b) => {
+      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    })
+    .map((e) => ({
+      name: e.name,
+      path: e.path,
+      isDir: e.is_dir,
+      loaded: !e.is_dir,
+    }));
+  if (mergedNames.length === 0) return nodes;
+  // 合并为一个目录节点：name 展示合并路径，children 为最终层内容
+  return [
+    {
+      name: mergedNames.join("/"),
+      path: cur,
+      isDir: true,
+      children: nodes,
+      loaded: true,
+    },
+  ];
 }
 
 /** 不可变更新：把 key 对应目录节点的 children 替换为加载结果 */
@@ -71,7 +156,7 @@ function toggleExpand(
 }
 
 // ================================================================
-// 单个树行（递归组件）
+// 单个树行（递归组件）— 根据文件类型显示不同图标
 // ================================================================
 function TreeRow({
   node,
@@ -137,6 +222,8 @@ function TreeRow({
     );
   }
 
+  const fileType = getFileType(node.name);
+
   return (
     <div
       className={`file-tree-row file ${isSelected ? "active" : ""}`}
@@ -144,8 +231,16 @@ function TreeRow({
       onClick={() => onSelect(node.path)}
     >
       <span className="file-tree-caret" />
-      <span className="file-tree-icon file">
-        <File size={14} />
+      <span
+        className={`file-tree-icon file ${fileType === "image" ? "file-type-image" : fileType === "binary" ? "file-type-binary" : ""}`}
+      >
+        {fileType === "image" ? (
+          <ImageIcon size={14} />
+        ) : fileType === "binary" ? (
+          <Binary size={14} />
+        ) : (
+          <File size={14} />
+        )}
       </span>
       <span className="file-tree-name">{node.name}</span>
     </div>
@@ -174,6 +269,12 @@ export default function FilePanel({ project, onClose }: Props) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 图片预览 URL
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  // 当前文件的类型（已打开后）
+  const [currentFileType, setCurrentFileType] = useState<FileType | null>(null);
+  // 文本/标记文件的查看模式：view=高亮/预览，edit=编辑
+  const [viewMode, setViewMode] = useState<"view" | "edit">("view");
 
   // 可拖拽宽度：文件树宽度持久化到 localStorage
   const [treeWidth, setTreeWidth] = useState<number>(() => {
@@ -188,13 +289,13 @@ export default function FilePanel({ project, onClose }: Props) {
     [doc, content]
   );
 
-  // 懒加载目录子节点
+  // 懒加载目录子节点（含紧凑路径合并）
   const loadChildren = useCallback(async (path: string) => {
     // 标记目标节点 loading
     setTreeData((prev) => markLoading(prev, path));
     try {
-      const entries = await api.listFiles(project.id, path);
-      setTreeData((prev) => setChildren(prev, path, toNodes(entries)));
+      const nodes = await loadMergedNodes(project.id, path);
+      setTreeData((prev) => setChildren(prev, path, nodes));
     } catch (e: any) {
       message.error(`加载目录失败: ${e}`);
       setTreeData((prev) => setChildren(prev, path, []));
@@ -247,6 +348,28 @@ export default function FilePanel({ project, onClose }: Props) {
     loadChildren("");
   }, [loadChildren]);
 
+  // 切换项目时重置文件树、选中文件和编辑器
+  useEffect(() => {
+    setTreeData([
+      {
+        name: project.name,
+        path: "",
+        isDir: true,
+        loaded: false,
+        expanded: true,
+      },
+    ]);
+    setSelectedPath(null);
+    setDoc(null);
+    setContent("");
+    setError(null);
+    setImageUrl(null);
+    setCurrentFileType(null);
+    setViewMode("view");
+    loadChildren("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id]);
+
   const openFile = async (path: string) => {
     if (dirty) {
       const ok = await new Promise<boolean>((resolve) => {
@@ -264,10 +387,39 @@ export default function FilePanel({ project, onClose }: Props) {
     setLoading(true);
     setError(null);
     setSelectedPath(path);
+    setImageUrl(null);
+    setDoc(null);
+    setCurrentFileType(null);
+    setViewMode("view");
+
+    const filename = path.split("/").pop() ?? path;
+    const fileType = getFileType(filename);
+    setCurrentFileType(fileType);
+
     try {
-      const meta = await api.readProjectFile(project.id, path);
-      setDoc({ path, meta });
-      setContent(meta.content);
+      if (fileType === "image") {
+        // 图片：获取绝对路径后通过 Tauri asset 协议展示
+        const absPath = await api.getFileAbsPath(project.id, path);
+        const url = convertFileSrc(absPath);
+        setImageUrl(url);
+      } else if (fileType === "binary") {
+        // 二进制文件：不读取内容，直接显示提示
+        const absPath = await api.getFileAbsPath(project.id, path);
+        setImageUrl(convertFileSrc(absPath)); // 复用变量名但不会用于显示图片
+        // 获取文件大小
+        try {
+          const meta = await api.readProjectFile(project.id, path);
+          setDoc({ path, meta });
+        } catch {
+          // 二进制文件可能无法读取为文本，这是正常的
+          setDoc({ path, meta: { content: "", encoding: "binary", readonly: true, size: 0 } });
+        }
+      } else {
+        // 文本文件：走原有的读取流程
+        const meta = await api.readProjectFile(project.id, path);
+        setDoc({ path, meta });
+        setContent(meta.content);
+      }
     } catch (e: any) {
       setError(String(e));
       setDoc(null);
@@ -337,7 +489,7 @@ export default function FilePanel({ project, onClose }: Props) {
           <span className="file-panel-sub">文件</span>
         </span>
         <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
-          {doc && (
+          {doc && currentFileType === "text" && (
             <>
               <span className="file-enc-badge">{doc.meta.encoding}</span>
               {doc.meta.readonly && (
@@ -388,38 +540,149 @@ export default function FilePanel({ project, onClose }: Props) {
           onMouseDown={startDrag}
         />
 
-        {/* 右侧编辑器 */}
+        {/* 右侧编辑器/预览区 */}
         <div className="file-editor">
           {loading ? (
             <div style={{ padding: 40, textAlign: "center" }}>
               <Spin />
             </div>
+          ) : currentFileType === "image" && imageUrl ? (
+            <>
+              <div className="file-editor-toolbar">
+                <span className="file-editor-path">{selectedPath}</span>
+                <span className="file-type-badge image">图片</span>
+              </div>
+              <div className="file-image-preview">
+                <img
+                  src={imageUrl}
+                  alt={selectedPath ?? ""}
+                  style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }}
+                  onError={() => {
+                    setError("图片加载失败");
+                    setImageUrl(null);
+                  }}
+                />
+              </div>
+            </>
+          ) : currentFileType === "binary" ? (
+            <>
+              <div className="file-editor-toolbar">
+                <span className="file-editor-path">{selectedPath}</span>
+                <span className="file-type-badge binary">二进制</span>
+              </div>
+              <div className="file-binary-hint">
+                <Binary size={40} />
+                <div>这是一个二进制文件，不支持在线预览</div>
+                <div style={{ fontSize: 11, color: "var(--text-4)" }}>
+                  {doc?.meta.size.toLocaleString() ?? ""} B
+                </div>
+              </div>
+            </>
           ) : doc ? (
             <>
               <div className="file-editor-toolbar">
                 <span className="file-editor-path">{doc.path}</span>
-                <span className="file-editor-size">
-                  {doc.meta.size.toLocaleString()} B
-                </span>
+                <div
+                  style={{
+                    marginLeft: "auto",
+                    display: "flex",
+                    gap: 10,
+                    alignItems: "center",
+                  }}
+                >
+                  {currentFileType === "text" && (
+                    <Segmented
+                      size="small"
+                      value={viewMode}
+                      onChange={(v) => setViewMode(v as "view" | "edit")}
+                      options={
+                        doc.meta.readonly
+                          ? [
+                              {
+                                label: isMarkdown(doc.path) ? "预览" : "查看",
+                                value: "view",
+                              },
+                            ]
+                          : isMarkdown(doc.path)
+                            ? [
+                                { label: "预览", value: "view" },
+                                { label: "编辑", value: "edit" },
+                              ]
+                            : [
+                                { label: "查看", value: "view" },
+                                { label: "编辑", value: "edit" },
+                              ]
+                      }
+                    />
+                  )}
+                  <span className="file-editor-size">
+                    {doc.meta.size.toLocaleString()} B
+                  </span>
+                </div>
               </div>
-              <textarea
-                className="file-editor-textarea"
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
-                readOnly={doc.meta.readonly}
-                spellCheck={false}
-                onKeyDown={(e) => {
-                  if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-                    e.preventDefault();
-                    handleSave();
-                  }
-                }}
-                placeholder={
-                  doc.meta.readonly
-                    ? "该文件为只读（非 UTF-8 编码或文件过大）"
-                    : undefined
-                }
-              />
+              {doc.meta.readonly || viewMode === "view" ? (
+                isMarkdown(doc.path) ? (
+                  <div className="file-preview-scroll">
+                    <div className="file-preview-markdown">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={{
+                          code({className, children, ...props}) {
+                            const match = /language-(\w+)/.exec(className ?? "");
+                            if (match) {
+                              const lang = match[1] ?? "";
+                              const grammar = Prism.languages[lang];
+                              const raw = Array.isArray(children)
+                                ? children.join("")
+                                : String(children ?? "");
+                              const html = grammar
+                                ? Prism.highlight(raw, grammar, lang)
+                                : escapeHtml(raw);
+                              return (
+                                <code
+                                  className={`${className ?? ""} file-md-code`}
+                                  dangerouslySetInnerHTML={{ __html: html }}
+                                  {...props}
+                                />
+                              );
+                            }
+                            return (
+                              <code className={className} {...props}>
+                                {children}
+                              </code>
+                            );
+                          },
+                        }}
+                      >
+                        {content}
+                      </ReactMarkdown>
+                    </div>
+                  </div>
+                ) : (
+                  <pre
+                    className="file-code-view"
+                    dangerouslySetInnerHTML={{
+                      __html: highlightCode(
+                        content,
+                        getPrismLang(doc.path)
+                      ),
+                    }}
+                  />
+                )
+              ) : (
+                <textarea
+                  className="file-editor-textarea"
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  spellCheck={false}
+                  onKeyDown={(e) => {
+                    if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+                      e.preventDefault();
+                      handleSave();
+                    }
+                  }}
+                />
+              )}
             </>
           ) : error ? (
             <div style={{ padding: 40, textAlign: "center", color: "#ff3b30" }}>

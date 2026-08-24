@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
-use parking_lot::Mutex;
+use tokio::sync::Mutex;
 use tauri::AppHandle;
 use tauri_plugin_opener::OpenerExt;
 
@@ -402,9 +402,44 @@ pub async fn recompile_and_start(id: String, app: AppHandle) -> AppResult<()> {
     process::get_manager().recompile_and_start(app, service).await
 }
 
+/// 清理服务编译产物（mvn clean），不重新启动
+#[tauri::command]
+pub async fn clean_service(id: String, app: AppHandle) -> AppResult<()> {
+    let service = db::get_service(&id)?;
+    process::get_manager().clean_service(app, service).await
+}
+
 #[tauri::command]
 pub async fn stop_all(app: AppHandle) -> AppResult<()> {
     process::get_manager().stop_all(app).await
+}
+
+/// 带依赖启动：按拓扑序先启动依赖，再启动目标服务
+#[tauri::command]
+pub async fn start_service_with_dependencies(id: String, app: AppHandle) -> AppResult<()> {
+    let service = db::get_service(&id)?;
+    process::get_manager().start_with_dependencies(app, service).await
+}
+
+/// 批量启动多个服务（一键启动项目下所有服务，含依赖编排）
+#[tauri::command]
+pub async fn start_services_batch(
+    ids: Vec<String>,
+    app: AppHandle,
+) -> AppResult<process::manager::BatchStartResult> {
+    process::get_manager().start_services_batch(app, &ids).await
+}
+
+/// 查询服务的直接依赖列表
+#[tauri::command]
+pub fn get_service_dependencies(id: String) -> AppResult<Vec<String>> {
+    db::list_dependencies(&id)
+}
+
+/// 设置服务的依赖列表（全量替换）
+#[tauri::command]
+pub fn set_service_dependencies(id: String, depends_on_ids: Vec<String>) -> AppResult<()> {
+    db::set_dependencies(&id, &depends_on_ids)
 }
 
 #[tauri::command]
@@ -553,6 +588,17 @@ pub async fn write_project_file(
         .map_err(|e| AppError::Other(format!("写入文件任务失败: {}", e)))?
 }
 
+/// 获取文件绝对路径（前端图片预览用）
+#[tauri::command]
+pub async fn get_file_abs_path(
+    project_id: String,
+    path: String,
+) -> AppResult<String> {
+    tokio::task::spawn_blocking(move || crate::project_fs::get_file_abs_path(&project_id, &path))
+        .await
+        .map_err(|e| AppError::Other(format!("获取路径失败: {}", e)))?
+}
+
 // ============================ Config ============================
 
 #[tauri::command]
@@ -604,12 +650,12 @@ where
 /// 探测系统已安装的 JDK 列表（扫描常见安装位置）
 #[tauri::command]
 pub async fn detect_jdks() -> Vec<JdkInfo> {
-    {
-        let cache = JDK_CACHE.lock();
-        if let Some((ts, cached)) = cache.as_ref() {
-            if ts.elapsed() < TOOL_CACHE_TTL {
-                return cached.clone();
-            }
+    // 持锁检查缓存：命中则直接返回，未命中则持锁执行探测，
+    // 确保并发调用不会重复启动 JVM 探测进程
+    let mut _guard = JDK_CACHE.lock().await;
+    if let Some((ts, cached)) = _guard.as_ref() {
+        if ts.elapsed() < TOOL_CACHE_TTL {
+            return cached.clone();
         }
     }
     {
@@ -626,7 +672,8 @@ pub async fn detect_jdks() -> Vec<JdkInfo> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     result.retain(|j| seen.insert(j.path.to_lowercase()));
     log::info!("detect_jdks: 探测到 {} 个 JDK（去重后）", result.len());
-    *JDK_CACHE.lock() = Some((Instant::now(), result.clone()));
+    let cloned = result.clone();
+    *_guard = Some((Instant::now(), cloned));
     result
 }
 
@@ -793,12 +840,12 @@ pub struct MavenInfo {
 /// 探测系统已安装的 Maven 列表
 #[tauri::command]
 pub async fn detect_mavens() -> Vec<MavenInfo> {
-    {
-        let cache = MAVEN_CACHE.lock();
-        if let Some((ts, cached)) = cache.as_ref() {
-            if ts.elapsed() < TOOL_CACHE_TTL {
-                return cached.clone();
-            }
+    // 持锁检查缓存：命中则直接返回，未命中则持锁执行探测，
+    // 确保并发调用不会重复启动 Maven 探测进程
+    let mut _guard = MAVEN_CACHE.lock().await;
+    if let Some((ts, cached)) = _guard.as_ref() {
+        if ts.elapsed() < TOOL_CACHE_TTL {
+            return cached.clone();
         }
     }
     // 诊断：记录 detect_mavens 调用时的环境状态
@@ -832,7 +879,8 @@ pub async fn detect_mavens() -> Vec<MavenInfo> {
     let mut seen_mvn: std::collections::HashSet<String> = std::collections::HashSet::new();
     result.retain(|m| seen_mvn.insert(m.path.to_lowercase()));
     log::info!("detect_mavens: 探测到 {} 个 maven（去重后）: {:?}", result.len(), result.iter().map(|m| (&m.path, &m.version)).collect::<Vec<_>>());
-    *MAVEN_CACHE.lock() = Some((Instant::now(), result.clone()));
+    let cloned = result.clone();
+    *_guard = Some((Instant::now(), cloned));
     result
 }
 

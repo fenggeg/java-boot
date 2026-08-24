@@ -1,7 +1,7 @@
 import {useCallback, useEffect, useMemo, useState} from "react";
 import {App, Button, Empty, Input, Segmented, Spin, Tooltip} from "antd";
 import dayjs from "dayjs";
-import {Check, ChevronLeft, Commit, GitBranch, GitPull, History, Plus, Refresh,} from "./Icons";
+import {Check, ChevronLeft, Commit, GitBranch, GitPull, Plus, Refresh,} from "./Icons";
 import * as api from "../api";
 import type {GitChange, GitCommitInfo, GitStatus, Project} from "../types";
 import {gitChangeKind} from "../types";
@@ -34,6 +34,7 @@ export default function GitPanel({ project, onClose }: Props) {
   const [diffTarget, setDiffTarget] = useState<GitChange | null>(null);
   const [expandedHash, setExpandedHash] = useState<string | null>(null);
   const [showDiff, setShowDiff] = useState<string>("");
+  const [diffError, setDiffError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -135,24 +136,31 @@ export default function GitPanel({ project, onClose }: Props) {
     if (expandedHash === hash) {
       setExpandedHash(null);
       setShowDiff("");
+      setDiffError(null);
       return;
     }
     setExpandedHash(hash);
     setShowDiff("");
+    setDiffError(null);
     try {
       const d = await api.gitShow(project.id, hash);
       setShowDiff(d);
-    } catch (e: any) {
-      setShowDiff(`加载 diff 失败: ${e}`);
+    } catch (e: unknown) {
+      setDiffError(e instanceof Error ? e.message : String(e));
     }
   };
 
   const renderChangeRow = (c: GitChange) => {
     const kind = gitChangeKind(c);
-    const meta = KIND_META[kind];
+    const meta = KIND_META[kind] ?? { label: "?", color: "#86868b", bg: "rgba(134,134,139,0.12)" };
     const name = c.old_path ? `${c.old_path} → ${c.path}` : c.path;
     return (
-      <div key={c.path} className="git-change-item">
+      <div
+        key={c.path}
+        className="git-change-item"
+        onClick={() => setDiffTarget(c)}
+        title="点击查看差异"
+      >
         <span
           className="git-change-badge"
           style={{ color: meta.color, background: meta.bg }}
@@ -162,7 +170,10 @@ export default function GitPanel({ project, onClose }: Props) {
         <span className="git-change-path" title={name}>
           {name}
         </span>
-        <span style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+        <span
+          style={{ marginLeft: "auto", display: "flex", gap: 4 }}
+          onClick={(e) => e.stopPropagation()}
+        >
           {c.staged ? (
             <Tooltip title="取消暂存">
               <button
@@ -184,15 +195,6 @@ export default function GitPanel({ project, onClose }: Props) {
               </button>
             </Tooltip>
           )}
-          <Tooltip title="查看差异">
-            <button
-              className="icon-btn sm"
-              onClick={() => setDiffTarget(c)}
-              aria-label="查看差异"
-            >
-              <History size={12} />
-            </button>
-          </Tooltip>
         </span>
       </div>
     );
@@ -222,10 +224,10 @@ export default function GitPanel({ project, onClose }: Props) {
     <div className="git-panel">
       <div className="git-toolbar">
         <div className="git-toolbar-title">
-          <span className="group-icon" style={{ color: "#0071e3" }}>
+          <span className="group-icon" style={{ color: "#0071e3", flexShrink: 0 }}>
             <GitBranch size={14} />
           </span>
-          <span className="group-name">{project.name}</span>
+          <span className="group-name" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{project.name}</span>
           {status?.branch && (
             <span className="git-branch" title="当前分支">
               {status.branch}
@@ -388,7 +390,11 @@ export default function GitPanel({ project, onClose }: Props) {
                 </div>
                 {expandedHash === c.hash && (
                   <div className="git-history-diff">
-                    {showDiff ? (
+                    {diffError ? (
+                      <div style={{ padding: 16, color: "#ff3b30", fontSize: 12 }}>
+                        加载 diff 失败: {diffError}
+                      </div>
+                    ) : showDiff ? (
                       <pre className="git-history-diff-pre">{showDiff}</pre>
                     ) : (
                       <Spin size="small" />

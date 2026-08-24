@@ -1,8 +1,10 @@
+import {useMemo, useState} from "react";
 import {App, Button, Popconfirm, Tooltip} from "antd";
-import {GitPull, Logo, Settings, Stop} from "./Icons";
+import {GitPull, Logo, Moon, Settings, Stop, Sun} from "./Icons";
 import {useStore} from "../store";
 import * as api from "../api";
 import {STATUS_META} from "../types";
+import {useThemeStore} from "../theme";
 
 interface Props {
   onOpenSettings: () => void;
@@ -14,14 +16,21 @@ export default function TopBar({ onOpenSettings }: Props) {
   const gitAvailable = useStore((s) => s.gitAvailable);
   const refreshServices = useStore((s) => s.refreshServices);
   const { message } = App.useApp();
+  const themeMode = useThemeStore((s) => s.mode);
+  const toggleTheme = useThemeStore((s) => s.toggle);
+  const [hoverTheme, setHoverTheme] = useState(false);
 
   const total = services.length;
-  const running = services.filter(
-    (s) => runtimes[s.id]?.status === "running"
-  ).length;
-  const errorCount = services.filter(
-    (s) => runtimes[s.id]?.status === "error"
-  ).length;
+  const { running, errorCount } = useMemo(() => {
+    let r = 0;
+    let e = 0;
+    for (const s of services) {
+      const st = runtimes[s.id]?.status;
+      if (st === "running") r++;
+      else if (st === "error") e++;
+    }
+    return { running: r, errorCount: e };
+  }, [services, runtimes]);
 
   const handleStopAll = async () => {
     try {
@@ -74,6 +83,9 @@ export default function TopBar({ onOpenSettings }: Props) {
                 display: "inline-flex",
                 alignItems: "center",
                 gap: 5,
+                marginLeft: 4,
+                paddingLeft: 14,
+                borderLeft: "1px solid var(--border)",
                 color: "#ff9500",
                 fontSize: 12,
                 fontWeight: 500,
@@ -100,6 +112,22 @@ export default function TopBar({ onOpenSettings }: Props) {
             </Button>
           </Popconfirm>
         )}
+
+        <Tooltip title={themeMode === "light" ? "切换到暗色模式" : "切换到亮色模式"}>
+          <button
+            className="icon-btn"
+            onClick={toggleTheme}
+            onMouseEnter={() => setHoverTheme(true)}
+            onMouseLeave={() => setHoverTheme(false)}
+            aria-label="切换主题"
+          >
+            {themeMode === "light" ? (
+              <Moon size={15} style={{ color: hoverTheme ? "#0071e3" : undefined }} />
+            ) : (
+              <Sun size={15} style={{ color: hoverTheme ? "#ffd60a" : undefined }} />
+            )}
+          </button>
+        </Tooltip>
 
         <Tooltip title="设置">
           <button className="icon-btn" onClick={onOpenSettings} aria-label="设置">

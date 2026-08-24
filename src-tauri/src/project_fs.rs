@@ -59,7 +59,8 @@ const DIR_BLACKLIST: &[&str] = &[
 /// 可编辑文件大小上限（超过则只读预览）
 const MAX_EDIT_SIZE: usize = 2 * 1024 * 1024;
 
-/// 项目根目录下安全拼接相对路径：拒绝 `..` / 绝对路径 / 盘符前缀
+/// 项目根目录下安全拼接相对路径：拒绝 `..` / 绝对路径 / 盘符前缀，
+/// 并对结果做 canonicalize 校验，防止 symlink 越出项目根
 fn safe_join(root: &Path, rel: &str) -> AppResult<PathBuf> {
     let trimmed = rel.trim_start_matches(['/', '\\']);
     let p = Path::new(trimmed);
@@ -73,7 +74,27 @@ fn safe_join(root: &Path, rel: &str) -> AppResult<PathBuf> {
             _ => {}
         }
     }
-    Ok(root.join(p))
+    let joined = root.join(p);
+    // canonicalize 校验：解析 symlink 后确认最终路径仍在项目根内
+    // 对于还不存在的文件（write_file 场景），canonicalize 会失败，
+    // 改为对 parent 目录校验
+    let canonical_root = root.canonicalize().map_err(|e| {
+        AppError::Other(format!("项目根目录无法解析: {}", e))
+    })?;
+    // 尝试 canonicalize 目标路径；若不存在则 canonicalize parent 后拼接文件名
+    let canonical_target = match joined.canonicalize() {
+        Ok(c) => c,
+        Err(_) => {
+            // 文件可能还不存在（写入场景），对父目录做 canonicalize
+            let parent = joined.parent().unwrap_or(&canonical_root);
+            let canonical_parent = parent.canonicalize().unwrap_or_else(|_| canonical_root.clone());
+            canonical_parent.join(joined.file_name().unwrap_or_default())
+        }
+    };
+    if !canonical_target.starts_with(&canonical_root) {
+        return Err(AppError::Other(format!("路径越界: {}", rel)));
+    }
+    Ok(joined)
 }
 
 fn join_rel(rel: &str, name: &str) -> String {
@@ -190,4 +211,14 @@ pub fn write_file(project_id: &str, path: &str, content: &str) -> AppResult<()> 
     std::fs::write(&full, content.as_bytes())
         .map_err(|e| AppError::Other(format!("写入失败: {}", e)))?;
     Ok(())
+}
+
+/// 获取文件的绝对路径（前端用于图片预览等）
+pub fn get_file_abs_path(project_id: &str, path: &str) -> AppResult<String> {
+    let project = db::get_project(project_id)?;
+    let full = safe_join(Path::new(&project.root_path), path)?;
+    if !full.exists() {
+        return Err(AppError::NotFound(format!("文件不存在: {}", path)));
+    }
+    Ok(full.to_string_lossy().to_string())
 }

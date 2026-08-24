@@ -1,8 +1,9 @@
 import {useEffect, useMemo, useState} from "react";
-import {App, Button, Divider, Form, Input, InputNumber, Modal, Segmented, Switch, Tooltip} from "antd";
+import {App, Button, Divider, Form, Input, InputNumber, Modal, Segmented, Select, Switch, Tooltip} from "antd";
 import {Plus, Settings, Trash} from "./Icons";
 import * as api from "../api";
-import type {OverrideProperty, Service} from "../types";
+import {useStore} from "../store";
+import type {Service} from "../types";
 
 interface Props {
   service: Service | null;
@@ -48,7 +49,7 @@ function parseAll(raw: string | null | undefined) {
   let port: PortConfig = { enabled: false, port: null };
   const portMatch = opts.match(PORT_RE);
   if (portMatch) {
-    port = { enabled: true, port: parseInt(portMatch[1]) };
+    port = { enabled: true, port: parseInt(portMatch[1]!) };
   }
 
   // 提取 debug
@@ -57,7 +58,7 @@ function parseAll(raw: string | null | undefined) {
   if (debugMatch) {
     debug = {
       enabled: true,
-      port: parseInt(debugMatch[1]),
+      port: parseInt(debugMatch[1]!),
       suspend: DEBUG_SUSPEND_RE.test(opts),
     };
   }
@@ -71,8 +72,8 @@ function parseAll(raw: string | null | undefined) {
     if (!tok) continue;
     const m = tok.match(/^-Xms(\d+)([kmgKMG]?)$/);
     const x = tok.match(/^-Xmx(\d+)([kmgKMG]?)$/);
-    if (m) { xms = toMb(parseInt(m[1]), m[2]); continue; }
-    if (x) { xmx = toMb(parseInt(x[1]), x[2]); continue; }
+    if (m) { xms = toMb(parseInt(m[1]!), m[2]!); continue; }
+    if (x) { xmx = toMb(parseInt(x[1]!), x[2]!); continue; }
     // 端口 / debug token 不进 rest
     if (PORT_RE.test(tok) || tok.startsWith("-agentlib:jdwp")) continue;
     restTokens.push(tok);
@@ -95,7 +96,8 @@ function mbToArg(mb: number, kind: "ms" | "mx"): string {
 
 function matchPreset(xms: number | null, xmx: number | null): number {
   for (let i = 0; i < MEM_PRESETS.length; i++) {
-    if (MEM_PRESETS[i].xms === xms && MEM_PRESETS[i].xmx === xmx) return i;
+    const preset = MEM_PRESETS[i]!;
+    if (preset.xms === xms && preset.xmx === xmx) return i;
   }
   return -1;
 }
@@ -124,21 +126,41 @@ function buildMavenOpts(
 }
 
 // ── 覆盖属性 解析 / 序列化 ──────────────────────────────────
-function parseOverrideProperties(json: string | null | undefined): OverrideProperty[] {
+
+/** 带唯一 id 的覆盖属性（id 仅前端使用，不序列化） */
+interface OverrideEntry {
+  id: string;
+  key: string;
+  value: string;
+}
+
+let overrideIdCounter = 0;
+function newOverrideId(): string {
+  overrideIdCounter += 1;
+  return `ovr-${overrideIdCounter}`;
+}
+
+function parseOverrideProperties(json: string | null | undefined): OverrideEntry[] {
   if (!json || !json.trim()) return [];
   try {
-    const arr = JSON.parse(json);
+    const arr = JSON.parse(json) as unknown;
     if (!Array.isArray(arr)) return [];
     return arr
-      .filter((x: any) => x && typeof x.key === "string" && x.key.trim())
-      .map((x: any) => ({ key: x.key, value: String(x.value ?? "") }));
+      .filter((x): x is Record<string, unknown> => !!x && typeof x === "object" && typeof x.key === "string" && (x.key as string).trim().length > 0)
+      .map((x) => ({
+        id: newOverrideId(),
+        key: (x.key as string).trim(),
+        value: String(x.value ?? ""),
+      }));
   } catch {
     return [];
   }
 }
 
-function serializeOverrideProperties(list: OverrideProperty[]): string | null {
-  const cleaned = list.filter((x) => x.key.trim());
+function serializeOverrideProperties(list: OverrideEntry[]): string | null {
+  const cleaned = list
+    .filter((x) => x.key.trim())
+    .map(({ key, value }) => ({ key, value }));
   if (cleaned.length === 0) return null;
   return JSON.stringify(cleaned);
 }
@@ -156,7 +178,11 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
   const [debugCfg, setDebugCfg] = useState<DebugConfig>({ enabled: false, port: 5005, suspend: false });
   const [restOpts, setRestOpts] = useState<string>("");
   const [devMode, setDevMode] = useState<boolean>(false);
-  const [overrides, setOverrides] = useState<OverrideProperty[]>([]);
+  const [overrides, setOverrides] = useState<OverrideEntry[]>([]);
+  const [dependencies, setDependencies] = useState<string[]>([]);
+
+  // 获取同项目的其他服务列表（用于依赖编排下拉选项）
+  const allServices = useStore((s) => s.services);
 
   useEffect(() => {
     if (service) {
@@ -171,6 +197,11 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
       setDevMode(!!service.dev_mode);
       setOverrides(parseOverrideProperties(service.override_properties));
 
+      // 加载依赖列表
+      api.getServiceDependencies(service.id)
+        .then((deps) => setDependencies(deps))
+        .catch(() => setDependencies([]));
+
       const hit = matchPreset(p.xms, p.xmx);
       if (hit >= 0) {
         setMemMode(hit);
@@ -179,13 +210,13 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
       } else {
         setMemMode(DEFAULT_PRESET_IDX);
       }
-      setCustomXms(p.xms ?? MEM_PRESETS[DEFAULT_PRESET_IDX].xms);
-      setCustomXmx(p.xmx ?? MEM_PRESETS[DEFAULT_PRESET_IDX].xmx);
+      setCustomXms(p.xms ?? MEM_PRESETS[DEFAULT_PRESET_IDX]!.xms);
+      setCustomXmx(p.xmx ?? MEM_PRESETS[DEFAULT_PRESET_IDX]!.xmx);
     }
   }, [service, form]);
 
   const effectiveMem = useMemo(() => {
-    if (memMode >= 0) return { xms: MEM_PRESETS[memMode].xms, xmx: MEM_PRESETS[memMode].xmx };
+    if (memMode >= 0) return { xms: MEM_PRESETS[memMode]!.xms, xmx: MEM_PRESETS[memMode]!.xmx };
     return { xms: customXms, xmx: customXmx };
   }, [memMode, customXms, customXmx]);
 
@@ -209,6 +240,8 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
         undefined,
         serializeOverrideProperties(overrides),
       );
+      // 保存依赖配置
+      await api.setServiceDependencies(service.id, dependencies);
       message.success("配置已保存");
       onSaved();
       onClose();
@@ -256,7 +289,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
             options={[
               ...MEM_PRESETS.map((p, i) => ({
                 label: (
-                  <span style={{ display: "inline-flex", flexDirection: "column", lineHeight: 1.1 }}>
+                  <span style={{ display: "inline-flex", flexDirection: "column", lineHeight: 1.1, minWidth: 56, alignItems: "center" }}>
                     <span>{p.label}</span>
                     <span style={{ fontSize: 10, opacity: 0.6 }}>{p.xms}/{p.xmx}m</span>
                   </span>
@@ -265,7 +298,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
               })),
               {
                 label: (
-                  <span style={{ display: "inline-flex", flexDirection: "column", lineHeight: 1.1 }}>
+                  <span style={{ display: "inline-flex", flexDirection: "column", lineHeight: 1.1, minWidth: 56, alignItems: "center" }}>
                     <span>自定义</span>
                     <span style={{ fontSize: 10, opacity: 0.6 }}>手动</span>
                   </span>
@@ -276,7 +309,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
           />
           <div style={{ marginTop: 6, fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-3)", letterSpacing: "0.04em" }}>
             {memMode >= 0
-              ? `${MEM_PRESETS[memMode].desc} · -Xms${MEM_PRESETS[memMode].xms}m -Xmx${MEM_PRESETS[memMode].xmx}m`
+              ? `${MEM_PRESETS[memMode]!.desc} · -Xms${MEM_PRESETS[memMode]!.xms}m -Xmx${MEM_PRESETS[memMode]!.xmx}m`
               : "手动指定初始 / 最大堆内存"}
           </div>
         </Form.Item>
@@ -399,7 +432,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
             value={debugCfg.port ?? undefined}
             disabled={!debugCfg.enabled}
             onChange={(v) => setDebugCfg((c) => ({ ...c, port: v as number | null }))}
-            style={{ width: 100 }}
+            style={{ width: 80 }}
             placeholder="5005"
           />
           <Tooltip title={debugCfg.suspend ? "当前：启动时挂起等待调试器" : "当前：不等待，立即启动"}>
@@ -433,6 +466,30 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
           />
         </Form.Item>
 
+        <Divider style={{ marginTop: 16, marginBottom: 12 }}>依赖服务编排</Divider>
+
+        <div style={{ marginBottom: 8, fontSize: 11, color: "var(--text-3)", lineHeight: 1.6 }}>
+          配置当前服务启动前需要先启动的依赖服务。启动时会按拓扑排序自动按序拉起依赖链，已运行的依赖会被跳过。
+          <Tooltip title="循环依赖会被后端检测并拒绝。只可选择同项目下的服务。">
+            <span style={{ marginLeft: 6, color: "var(--text-3)", cursor: "help", fontSize: 11 }}>?</span>
+          </Tooltip>
+        </div>
+
+        <Form.Item style={{ marginBottom: 0 }}>
+          <Select
+            mode="multiple"
+            allowClear
+            placeholder="选择需要先启动的服务（可选）"
+            value={dependencies}
+            onChange={setDependencies}
+            style={{ width: "100%" }}
+            options={allServices
+              .filter((s) => s.id !== service?.id && s.project_id === service?.project_id)
+              .map((s) => ({ label: s.name, value: s.id }))}
+            optionFilterProp="label"
+          />
+        </Form.Item>
+
         <Divider style={{ marginTop: 16, marginBottom: 12 }}>配置覆盖属性</Divider>
 
         <div style={{ marginBottom: 8, fontSize: 11, color: "var(--text-3)", lineHeight: 1.6 }}>
@@ -442,15 +499,15 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
 
         {/* 覆盖属性 key-value 编辑器 */}
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {overrides.map((item, idx) => (
-            <div key={idx} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          {overrides.map((item) => (
+            <div key={item.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <Input
                 placeholder="key，如 spring.cloud.nacos.discovery.ip"
                 value={item.key}
                 onChange={(e) => {
                   const v = e.target.value;
                   setOverrides((list) =>
-                    list.map((x, i) => (i === idx ? { ...x, key: v } : x))
+                    list.map((x) => (x.id === item.id ? { ...x, key: v } : x))
                   );
                 }}
                 style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 12 }}
@@ -462,7 +519,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
                 onChange={(e) => {
                   const v = e.target.value;
                   setOverrides((list) =>
-                    list.map((x, i) => (i === idx ? { ...x, value: v } : x))
+                    list.map((x) => (x.id === item.id ? { ...x, value: v } : x))
                   );
                 }}
                 style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 12 }}
@@ -472,7 +529,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
                 type="text"
                 danger
                 onClick={() =>
-                  setOverrides((list) => list.filter((_, i) => i !== idx))
+                  setOverrides((list) => list.filter((x) => x.id !== item.id))
                 }
                 style={{ flexShrink: 0, padding: "0 6px" }}
               >
@@ -484,7 +541,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
             size="small"
             type="dashed"
             block
-            onClick={() => setOverrides((list) => [...list, { key: "", value: "" }])}
+            onClick={() => setOverrides((list) => [...list, { id: newOverrideId(), key: "", value: "" }])}
             style={{ marginTop: 2 }}
           >
             <Plus size={12} /> 添加属性

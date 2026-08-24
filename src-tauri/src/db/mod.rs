@@ -1,19 +1,24 @@
 pub mod models;
 pub mod schema;
 
-use parking_lot::Mutex;
-
 use chrono::Utc;
-use once_cell::sync::Lazy;
-use rusqlite::Connection;
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
+use std::sync::OnceLock;
 use uuid::Uuid;
 
 use crate::error::AppResult;
 
 use models::{AppConfig, Project, Service};
 
-/// 全局数据库连接（parking_lot Mutex 包裹，跨线程访问且不会中毒）
-static DB: Lazy<Mutex<Option<Connection>>> = Lazy::new(|| Mutex::new(None));
+// 依赖关系 pair（service_id 依赖 depends_on）
+pub struct Dependency {
+    pub service_id: String,
+    pub depends_on: String,
+}
+
+/// 全局数据库连接池（r2d2 管理的多连接池，支持并发读取）
+static DB: OnceLock<Pool<SqliteConnectionManager>> = OnceLock::new();
 
 /// 初始化数据库，在 app setup 阶段调用一次
 pub fn init() -> AppResult<()> {
@@ -24,24 +29,41 @@ pub fn init() -> AppResult<()> {
     let db_path = db_dir.join("data.db");
     log::info!("数据库路径: {}", db_path.display());
 
-    let conn = Connection::open(db_path)?;
+    // 先用单连接做迁移，再建连接池
+    let conn = rusqlite::Connection::open(&db_path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     schema::run_migrations(&conn)?;
+    drop(conn); // 迁移完成后关闭，由连接池管理后续连接
 
-    *DB.lock() = Some(conn);
+    let manager = SqliteConnectionManager::file(&db_path)
+        .with_init(|c| {
+            c.pragma_update(None, "journal_mode", "WAL")?;
+            c.pragma_update(None, "foreign_keys", "ON")?;
+            Ok(())
+        });
+    let pool = Pool::builder()
+        .max_size(8)
+        .build(manager)
+        .map_err(|e| crate::error::AppError::Other(format!("连接池创建失败: {}", e)))?;
+
+    DB.set(pool).map_err(|_| {
+        crate::error::AppError::Other("数据库已初始化，不可重复调用".into())
+    })?;
     Ok(())
 }
 
 fn with_conn<F, R>(f: F) -> AppResult<R>
 where
-    F: FnOnce(&Connection) -> AppResult<R>,
+    F: FnOnce(&rusqlite::Connection) -> AppResult<R>,
 {
-    let guard = DB.lock();
-    let conn = guard.as_ref().ok_or_else(|| {
+    let pool = DB.get().ok_or_else(|| {
         crate::error::AppError::Other("数据库未初始化".into())
     })?;
-    f(conn)
+    let conn = pool.get().map_err(|e| {
+        crate::error::AppError::Other(format!("获取数据库连接失败: {}", e))
+    })?;
+    f(&conn)
 }
 
 // ============================ Project CRUD ============================
@@ -323,29 +345,103 @@ pub fn update_project_env(
     maven_home: Option<Option<&str>>,
 ) -> AppResult<()> {
     with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
         if let Some(jh) = java_home {
-            conn.execute(
+            tx.execute(
                 "UPDATE projects SET java_home = ?1 WHERE id = ?2",
                 rusqlite::params![jh, id],
             )?;
         }
         if let Some(mh) = maven_home {
-            conn.execute(
+            tx.execute(
                 "UPDATE projects SET maven_home = ?1 WHERE id = ?2",
                 rusqlite::params![mh, id],
             )?;
         }
+        tx.commit()?;
         Ok(())
     })
 }
 
 pub fn delete_service(id: &str) -> AppResult<()> {
+    // 确保外键约束生效
     with_conn(|conn| {
-        conn.execute("DELETE FROM services WHERE id = ?1", rusqlite::params![id])?;
-        conn.execute(
+        let tx = conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM services WHERE id = ?1", rusqlite::params![id])?;
+        tx.execute(
             "DELETE FROM service_run_pids WHERE service_id = ?1",
             rusqlite::params![id],
         )?;
+        // service_dependencies 的 FK 是 ON DELETE CASCADE，但 SQLite 的
+        // unchecked_transaction 下 PRAGMA foreign_keys=ON 已在连接初始化时设置，
+        // 所以服务删除后依赖行会自动清理。这里显式删一次更保险。
+        tx.execute(
+            "DELETE FROM service_dependencies WHERE service_id = ?1 OR depends_on = ?1",
+            rusqlite::params![id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    })
+}
+
+// ============================ Service Dependencies ============================
+
+/// 查询某个服务的直接依赖列表（depends_on IDs）
+pub fn list_dependencies(service_id: &str) -> AppResult<Vec<String>> {
+    with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT depends_on FROM service_dependencies WHERE service_id = ?1 ORDER BY depends_on",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![service_id], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut out = vec![];
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    })
+}
+
+/// 查询全部依赖关系
+pub fn list_all_dependencies() -> AppResult<Vec<Dependency>> {
+    with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT service_id, depends_on FROM service_dependencies",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(Dependency {
+                service_id: row.get(0)?,
+                depends_on: row.get(1)?,
+            })
+        })?;
+        let mut out = vec![];
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    })
+}
+
+/// 全量替换某个服务的依赖列表（先删后插，事务保护）
+pub fn set_dependencies(service_id: &str, depends_on_ids: &[String]) -> AppResult<()> {
+    with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM service_dependencies WHERE service_id = ?1",
+            rusqlite::params![service_id],
+        )?;
+        for dep in depends_on_ids {
+            // 不允许自引用
+            if dep == service_id {
+                continue;
+            }
+            tx.execute(
+                "INSERT OR IGNORE INTO service_dependencies (service_id, depends_on) VALUES (?1, ?2)",
+                rusqlite::params![service_id, dep],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     })
 }
@@ -381,6 +477,7 @@ pub fn load_config() -> AppResult<AppConfig> {
 
 pub fn save_config(cfg: &AppConfig) -> AppResult<()> {
     with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
         let pairs = [
             ("port_refresh_interval_secs", cfg.port_refresh_interval_secs.to_string()),
             ("stop_on_compile_fail", cfg.stop_on_compile_fail.to_string()),
@@ -389,11 +486,12 @@ pub fn save_config(cfg: &AppConfig) -> AppResult<()> {
             ("stop_all_on_exit", cfg.stop_all_on_exit.to_string()),
         ];
         for (k, v) in pairs {
-            conn.execute(
+            tx.execute(
                 "INSERT INTO app_config (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
                 rusqlite::params![k, v],
             )?;
         }
+        tx.commit()?;
         Ok(())
     })
 }

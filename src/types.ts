@@ -34,6 +34,19 @@ export interface OverrideProperty {
   value: string;
 }
 
+/** 服务依赖关系（service_id 依赖 depends_on 先启动） */
+export interface ServiceDependency {
+  service_id: string;
+  depends_on: string;
+}
+
+/** 批量启动结果 */
+export interface BatchStartResult {
+  succeeded: string[];
+  failed: [string, string][];
+  skipped: string[];
+}
+
 export type ServiceStatus =
   | "stopped"
   | "starting"

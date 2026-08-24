@@ -48,13 +48,16 @@ fn all_listening_ports_windows() -> AppResult<Vec<(u16, u32)>> {
 #[cfg(windows)]
 fn build_tcp_table() -> AppResult<Vec<(u16, u32)>> {
     use windows::Win32::NetworkManagement::IpHelper::{
-        GetExtendedTcpTable, MIB_TCPTABLE_OWNER_PID,
-        MIB_TCP6TABLE_OWNER_PID, TCP_TABLE_OWNER_PID_LISTENER,
+        GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID,
+        MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_LISTENER,
     };
     use windows::Win32::Networking::WinSock::{ntohs, AF_INET, AF_INET6};
 
+    let mut out = vec![];
+
+    // ---- IPv4 ----
     let mut size: u32 = 0;
-    // 第一次调用拿大小
+    // 第一次调用拿大小；返回值 ERROR_INSUFFICIENT_BUFFER(122) 是预期的
     unsafe {
         GetExtendedTcpTable(
             None,
@@ -65,37 +68,44 @@ fn build_tcp_table() -> AppResult<Vec<(u16, u32)>> {
             0,
         );
     }
-
-    let mut buf = vec![0u8; size as usize];
-    let result = unsafe {
-        GetExtendedTcpTable(
-            Some(buf.as_mut_ptr() as *mut _),
-            &mut size,
-            false,
-            AF_INET.0 as u32,
-            TCP_TABLE_OWNER_PID_LISTENER,
-            0,
-        )
-    };
-
-    let mut out = vec![];
-    if result == 0 {
-        let table =
-            unsafe { &*(buf.as_ptr() as *const MIB_TCPTABLE_OWNER_PID) };
-        let count = table.dwNumEntries as usize;
-        let rows = unsafe {
-            std::slice::from_raw_parts(
-                table.table.as_ptr(),
-                count,
+    // size==0 表示没有监听端口或 API 出错，直接跳过 IPv4 部分
+    if size > 0 {
+        let mut buf = vec![0u8; size as usize];
+        let result = unsafe {
+            GetExtendedTcpTable(
+                Some(buf.as_mut_ptr() as *mut _),
+                &mut size,
+                false,
+                AF_INET.0 as u32,
+                TCP_TABLE_OWNER_PID_LISTENER,
+                0,
             )
         };
-        for row in rows {
-            let port = unsafe { ntohs(row.dwLocalPort as u16) };
-            out.push((port, row.dwOwningPid));
+        // result==0 (NO_ERROR) 表示成功
+        if result == 0 && buf.len() >= std::mem::size_of::<MIB_TCPTABLE_OWNER_PID>() {
+            let table =
+                unsafe { &*(buf.as_ptr() as *const MIB_TCPTABLE_OWNER_PID) };
+            let count = table.dwNumEntries as usize;
+            // 校验 buf 足够容纳 count 个条目，防止 slice 越界
+            let header_size = std::mem::size_of::<MIB_TCPTABLE_OWNER_PID>()
+                - std::mem::size_of::<MIB_TCPROW_OWNER_PID>();
+            let entry_size = std::mem::size_of::<MIB_TCPROW_OWNER_PID>();
+            if header_size + count * entry_size <= buf.len() {
+                let rows = unsafe {
+                    std::slice::from_raw_parts(
+                        table.table.as_ptr(),
+                        count,
+                    )
+                };
+                for row in rows {
+                    let port = unsafe { ntohs(row.dwLocalPort as u16) };
+                    out.push((port, row.dwOwningPid));
+                }
+            }
         }
     }
 
-    // IPv6
+    // ---- IPv6 ----
     let mut size6: u32 = 0;
     unsafe {
         GetExtendedTcpTable(
@@ -119,16 +129,22 @@ fn build_tcp_table() -> AppResult<Vec<(u16, u32)>> {
                 0,
             )
         };
-        if r6 == 0 {
+        if r6 == 0 && buf6.len() >= std::mem::size_of::<MIB_TCP6TABLE_OWNER_PID>() {
             let table6 =
                 unsafe { &*(buf6.as_ptr() as *const MIB_TCP6TABLE_OWNER_PID) };
             let count6 = table6.dwNumEntries as usize;
-            let rows6 = unsafe {
-                std::slice::from_raw_parts(table6.table.as_ptr(), count6)
-            };
-            for row in rows6 {
-                let port = unsafe { ntohs(row.dwLocalPort as u16) };
-                out.push((port, row.dwOwningPid));
+            // 校验 buf 足够容纳 count6 个条目
+            let header6_size = std::mem::size_of::<MIB_TCP6TABLE_OWNER_PID>()
+                - std::mem::size_of::<MIB_TCP6ROW_OWNER_PID>();
+            let entry6_size = std::mem::size_of::<MIB_TCP6ROW_OWNER_PID>();
+            if header6_size + count6 * entry6_size <= buf6.len() {
+                let rows6 = unsafe {
+                    std::slice::from_raw_parts(table6.table.as_ptr(), count6)
+                };
+                for row in rows6 {
+                    let port = unsafe { ntohs(row.dwLocalPort as u16) };
+                    out.push((port, row.dwOwningPid));
+                }
             }
         }
     }

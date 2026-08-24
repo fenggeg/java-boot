@@ -31,7 +31,19 @@ _tmp_*
 # Env
 .env
 .env.local
+.env.*.local
 
+# Logs
+*.log
+npm-debug.log*
+
+# Test coverage
+coverage/
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Misc
 .workbuddy/
 .codefree/
 

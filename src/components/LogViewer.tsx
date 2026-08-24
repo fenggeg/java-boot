@@ -1,6 +1,6 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
-import {Input, Segmented, Tooltip} from "antd";
-import {ArrowDown, Clear, Pause, Play2, Search, Terminal} from "./Icons";
+import {App, Dropdown, Input, Segmented, Tooltip} from "antd";
+import {ArrowDown, ChevronLeft, Clear, Pause, Play2, Search, Terminal} from "./Icons";
 import {useStore} from "../store";
 import type {LogLine} from "../types";
 
@@ -31,6 +31,30 @@ function sourceClass(source: string): string {
 const LINE_HEIGHT = 19;
 const OVERSCAN = 30;
 
+/** 渲染单行日志时，高亮搜索匹配片段 */
+function renderLine(text: string, regex: RegExp | null): React.ReactNode {
+  if (!regex) return text;
+  const parts: React.ReactNode[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  // 重置 regex lastIndex（全局 g flag）
+  regex.lastIndex = 0;
+  let i = 0;
+  while ((m = regex.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    parts.push(
+      <mark className="log-highlight" key={i++}>
+        {m[0]}
+      </mark>
+    );
+    last = m.index + m[0].length;
+    // 防止零宽匹配死循环
+    if (m[0] === "") regex.lastIndex++;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts;
+}
+
 export default function LogViewer({ serviceId }: Props) {
   const logs = useStore((s) => (serviceId ? s.logs[serviceId] : undefined));
   const clearLog = useStore((s) => s.clearLog);
@@ -40,26 +64,129 @@ export default function LogViewer({ serviceId }: Props) {
   const logFlushTick = useStore((s) => s.logFlushTick);
   const [autoScroll, setAutoScroll] = useState(true);
   const [search, setSearch] = useState("");
+  const [useRegex, setUseRegex] = useState(false);
   const [level, setLevel] = useState<LogLevel>("all");
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(600);
+  // 当前高亮的搜索匹配索引（从 0 开始）
+  const [matchIdx, setMatchIdx] = useState(0);
+  // 日志右键菜单
+  const [logContextMenu, setLogContextMenu] = useState<{
+    x: number;
+    y: number;
+    selectedText: string;
+  } | null>(null);
+  const { message } = App.useApp();
   const containerRef = useRef<HTMLDivElement>(null);
   // 切换服务时标记需要跳到底部（内容渲染后再执行真正滚动）
   const pendingJumpBottom = useRef(false);
 
+  // 日志右键菜单处理
+  const handleLogContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const selection = window.getSelection();
+    const selectedText = selection?.toString() ?? "";
+    setLogContextMenu({ x: e.clientX, y: e.clientY, selectedText });
+  }, []);
+
+  const closeLogContextMenu = useCallback(() => setLogContextMenu(null), []);
+
+  // 编译搜索正则
+  const searchRegex = useMemo<RegExp | null>(() => {
+    if (!search.trim()) return null;
+    if (useRegex) {
+      try {
+        return new RegExp(search, "gi");
+      } catch {
+        return null; // 正则无效时静默退化为无高亮
+      }
+    }
+    // 转义正则特殊字符
+    const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(escaped, "gi");
+  }, [search, useRegex]);
+
   const allLines = logs?.lines ?? [];
   const filtered = useMemo<LogLine[]>(() => {
     const searchLower = search.toLowerCase();
-    // 依赖 logs 对象而非 lines 数组：appendLog 复用数组引用原地 push，
-    // 依赖数组引用会让新日志不触发重算（切级别才刷新）；对象每次 append 都是新引用
-    // logFlushTick 用于暂停恢复时强制刷新
     void logFlushTick;
     return (logs?.lines ?? []).filter((l) => {
       if (!matchLevel(l.line, level)) return false;
-      if (search && !l.line.toLowerCase().includes(searchLower)) return false;
+      if (search) {
+        if (useRegex && searchRegex) {
+          if (!searchRegex.test(l.line)) return false;
+          // reset lastIndex for subsequent highlight render
+          searchRegex.lastIndex = 0;
+        } else if (!useRegex && !l.line.toLowerCase().includes(searchLower)) {
+          return false;
+        }
+      }
       return true;
     });
-  }, [logs, level, search, logFlushTick]);
+  }, [logs, level, search, useRegex, searchRegex, logFlushTick]);
+
+  // 日志右键菜单处理（需在 filtered 定义之后，因为 copyAll 引用 filtered）
+  const handleLogContextAction = useCallback((action: string) => {
+    const sel = window.getSelection();
+    switch (action) {
+      case "copy":
+        if (sel && sel.toString()) {
+          navigator.clipboard.writeText(sel.toString()).then(() => {
+            message.success("已复制");
+          }).catch(() => {});
+        }
+        break;
+      case "copyAll":
+        navigator.clipboard.writeText(
+          filtered.map((l) => l.line).join("\n")
+        ).then(() => {
+          message.success("已复制全部日志");
+        }).catch(() => {});
+        break;
+      case "selectAll":
+        if (containerRef.current) {
+          const range = document.createRange();
+          range.selectNodeContents(containerRef.current);
+          sel?.removeAllRanges();
+          sel?.addRange(range);
+        }
+        break;
+      case "clear":
+        clearLog(serviceId!);
+        message.success("已清空日志");
+        break;
+      case "search":
+        // 在搜索框中填充选中文本
+        if (logContextMenu?.selectedText) {
+          setSearch(logContextMenu.selectedText);
+          setUseRegex(false);
+        }
+        break;
+    }
+    closeLogContextMenu();
+  }, [filtered, serviceId, clearLog, message, logContextMenu, closeLogContextMenu]);
+
+  // 计算匹配搜索关键词的行索引（在 filtered 数组中的位置）
+  const matchIndices = useMemo<number[]>(() => {
+    if (!search.trim() || !searchRegex) return [];
+    void logFlushTick;
+    const indices: number[] = [];
+    for (let i = 0; i < filtered.length; i++) {
+      const l = filtered[i]!;
+      if (searchRegex.test(l.line)) {
+        indices.push(i);
+      }
+      searchRegex.lastIndex = 0;
+    }
+    return indices;
+  }, [filtered, search, searchRegex, logFlushTick]);
+
+  const matchCount = matchIndices.length;
+
+  // 搜索词变化时重置匹配索引
+  useEffect(() => {
+    setMatchIdx(0);
+  }, [search, useRegex]);
 
   const handleScroll = useCallback(() => {
     const el = containerRef.current;
@@ -68,6 +195,23 @@ export default function LogViewer({ serviceId }: Props) {
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
     setAutoScroll(atBottom);
   }, []);
+
+  // 跳转到第 idx 个匹配
+  const jumpToMatch = useCallback(
+    (idx: number) => {
+      if (matchIndices.length === 0) return;
+      const clamped = ((idx % matchIndices.length) + matchIndices.length) % matchIndices.length;
+      const targetLine = matchIndices[clamped]!;
+      const targetScrollTop = targetLine * LINE_HEIGHT;
+      const el = containerRef.current;
+      if (el) {
+        el.scrollTop = targetScrollTop;
+        setScrollTop(targetScrollTop);
+      }
+      setMatchIdx(clamped);
+    },
+    [matchIndices]
+  );
 
   // 监听容器尺寸
   useEffect(() => {
@@ -86,7 +230,6 @@ export default function LogViewer({ serviceId }: Props) {
     const el = containerRef.current;
     if (!el) return;
     if (pendingJumpBottom.current) {
-      // 切换服务：新内容可能还没渲染完，用 rAF 等下一帧再滚动
       requestAnimationFrame(() => {
         if (containerRef.current) {
           containerRef.current.scrollTop = containerRef.current.scrollHeight;
@@ -105,6 +248,8 @@ export default function LogViewer({ serviceId }: Props) {
     setAutoScroll(true);
     setLevel("all");
     setSearch("");
+    setUseRegex(false);
+    setMatchIdx(0);
     pendingJumpBottom.current = true;
   }, [serviceId]);
 
@@ -151,14 +296,60 @@ export default function LogViewer({ serviceId }: Props) {
           size="small"
           allowClear
           prefix={<Search size={13} style={{ color: "var(--text-3)" }} />}
-          placeholder="搜索日志..."
+          placeholder={useRegex ? "正则搜索..." : "搜索日志..."}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
+          onPressEnter={() => jumpToMatch(matchIdx + 1)}
           style={{ width: 200 }}
+          suffix={
+            <Tooltip title={useRegex ? "切换为普通搜索" : "切换为正则搜索"}>
+              <button
+                className={`icon-btn sm ${useRegex ? "accent" : ""}`}
+                onClick={() => setUseRegex((v) => !v)}
+                aria-label="切换正则模式"
+                style={{ width: 20, height: 20, marginRight: -2, fontSize: 10, fontWeight: 700, fontFamily: "var(--font-mono)" }}
+              >
+                .*
+              </button>
+            </Tooltip>
+          }
         />
-        <span className="toolbar-count">
-          {filtered.length} / {allLines.length} 行
-        </span>
+        {matchCount > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+            <Tooltip title="上一个匹配">
+              <button
+                className="icon-btn sm"
+                onClick={() => jumpToMatch(matchIdx - 1)}
+                aria-label="上一个匹配"
+              >
+                <ChevronLeft size={13} />
+              </button>
+            </Tooltip>
+            <span className="toolbar-count" style={{ minWidth: 48, textAlign: "center" }}>
+              {matchIdx + 1}/{matchCount}
+            </span>
+            <Tooltip title="下一个匹配">
+              <button
+                className="icon-btn sm"
+                onClick={() => jumpToMatch(matchIdx + 1)}
+                aria-label="下一个匹配"
+                style={{ transform: "rotate(180deg)" }}
+              >
+                <ChevronLeft size={13} />
+              </button>
+            </Tooltip>
+          </div>
+        )}
+        {search && matchCount === 0 && (
+          <span className="toolbar-count" style={{ color: "var(--text-4)" }}>
+            无匹配
+          </span>
+        )}
+        {!search && (
+          <span className="toolbar-count">
+            {filtered.length} / {allLines.length} 行
+          </span>
+        )}
         <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
           {!autoScroll && !isPaused && (
             <Tooltip title="滚动到底部">
@@ -200,6 +391,7 @@ export default function LogViewer({ serviceId }: Props) {
         className="log-viewer"
         ref={containerRef}
         onScroll={handleScroll}
+        onContextMenu={handleLogContextMenu}
         style={{ position: "relative" }}
       >
         {isPaused && (
@@ -242,17 +434,19 @@ export default function LogViewer({ serviceId }: Props) {
             <div style={{ transform: `translateY(${offsetY}px)` }}>
               {renderLines.map((l, i) => {
                 const lv = classifyLine(l.line);
+                const absIdx = startIdx + i;
+                // 当前选中的匹配行高亮
+                const isCurrentMatch =
+                  matchCount > 0 && matchIndices[matchIdx] === absIdx;
                 return (
                   <div
-                    // 虚拟滚动窗口为静态切片、行内容无内部状态，用 index 作 key，
-                    // 避免 ts+source+行首 40 字符在重复行时产生重复 key 警告
                     key={i}
-                    className={`log-line ${sourceClass(l.source)} ${lv}`}
+                    className={`log-line ${sourceClass(l.source)} ${lv} ${isCurrentMatch ? "log-match-current" : ""}`}
                     style={{ height: LINE_HEIGHT, minHeight: LINE_HEIGHT }}
                   >
                     <span className="log-time">{l.ts.slice(11, 19)}</span>
                     <span className="log-source">{l.source}</span>
-                    {l.line}
+                    {renderLine(l.line, searchRegex)}
                   </div>
                 );
               })}
@@ -260,6 +454,53 @@ export default function LogViewer({ serviceId }: Props) {
           </div>
         )}
       </div>
+      {/* 日志右键菜单 */}
+      {logContextMenu && (
+        <Dropdown
+          open={true}
+          trigger={["contextMenu"]}
+          onOpenChange={(open) => { if (!open) closeLogContextMenu(); }}
+          menu={{
+            items: [
+              {
+                key: "copy",
+                label: "复制选中",
+                disabled: !logContextMenu.selectedText,
+                onClick: () => handleLogContextAction("copy"),
+              },
+              {
+                key: "copyAll",
+                label: "复制全部日志",
+                onClick: () => handleLogContextAction("copyAll"),
+              },
+              { type: "divider" as const },
+              {
+                key: "search",
+                label: "搜索选中内容",
+                disabled: !logContextMenu.selectedText,
+                onClick: () => handleLogContextAction("search"),
+              },
+              { type: "divider" as const },
+              {
+                key: "clear",
+                label: "清空日志",
+                danger: true,
+                onClick: () => handleLogContextAction("clear"),
+              },
+            ],
+          }}
+        >
+          <div
+            style={{
+              position: "fixed",
+              left: logContextMenu.x,
+              top: logContextMenu.y,
+              width: 0,
+              height: 0,
+            }}
+          />
+        </Dropdown>
+      )}
     </div>
   );
 }

@@ -1,5 +1,5 @@
-import {useEffect, useState} from "react";
-import {Badge, Tabs} from "antd";
+import {useCallback, useEffect, useMemo, useState} from "react";
+import {App as AntApp, Badge, Dropdown, Tabs} from "antd";
 import {listen, type UnlistenFn,} from "@tauri-apps/api/event";
 import {useStore} from "./store";
 import type {LogLine, Project, Service, ServiceRuntime} from "./types";
@@ -14,6 +14,12 @@ import AddServiceModal from "./components/AddServiceModal";
 import ServiceConfigModal from "./components/ServiceConfigModal";
 import SettingsDrawer from "./components/SettingsDrawer";
 import {HeroLogo, Terminal} from "./components/Icons";
+
+type ContextMenuAction =
+  | "close"
+  | "closeOthers"
+  | "closeAll"
+  | "copyName";
 
 export default function App() {
   const init = useStore((s) => s.init);
@@ -33,10 +39,21 @@ export default function App() {
   const [addServiceOpen, setAddServiceOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [configService, setConfigService] = useState<Service | null>(null);
+  // 侧边栏折叠状态（持久化到 localStorage）
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    return localStorage.getItem("javaboot:sidebarCollapsed") === "1";
+  });
   // 右侧主视图：日志（默认）、Git 面板或文件浏览器
   const [view, setView] = useState<"logs" | "git" | "files">("logs");
   const [gitProjectId, setGitProjectId] = useState<string | null>(null);
   const [fileProjectId, setFileProjectId] = useState<string | null>(null);
+  // Tab 右键菜单上下文
+  const [contextMenu, setContextMenu] = useState<{
+    serviceId: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const { message } = AntApp.useApp();
 
   // 初始化 + 事件监听
   useEffect(() => {
@@ -64,21 +81,29 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleAdded = async () => {
+  const handleAdded = useCallback(async () => {
     await refreshServices();
-  };
+  }, [refreshServices]);
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      localStorage.setItem("javaboot:sidebarCollapsed", next ? "1" : "0");
+      return next;
+    });
+  }, []);
 
   // 打开某项目的 Git 面板
-  const handleOpenGit = (project: Project) => {
+  const handleOpenGit = useCallback((project: Project) => {
     setGitProjectId(project.id);
     setView("git");
-  };
+  }, []);
 
   // 打开某项目的文件浏览器
-  const handleOpenFiles = (project: Project) => {
+  const handleOpenFiles = useCallback((project: Project) => {
     setFileProjectId(project.id);
     setView("files");
-  };
+  }, []);
 
   // 点击左侧服务（或切换日志 tab）时回到日志视图
   useEffect(() => {
@@ -97,38 +122,78 @@ export default function App() {
     }
   }, [projects, gitProjectId, fileProjectId]);
 
-  // 只渲染“已打开”的 tab（IDE-like），保持打开顺序
-  const serviceMap = new Map(services.map((s) => [s.id, s]));
-  const allTabs = openedTabs
-    .map((id) => serviceMap.get(id))
-    .filter((s): s is Service => !!s);
+  // Tab 右键菜单处理
+  const handleContextMenu = useCallback((e: React.MouseEvent, serviceId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({ serviceId, x: e.clientX, y: e.clientY });
+  }, []);
 
-  const tabItems = allTabs.map((s) => {
-    const rt = runtimes[s.id];
-    const status = rt?.status ?? "stopped";
-    const meta = STATUS_META[status];
-    const logBuf = logs[s.id];
-    const hasUnread = logBuf?.hasUnread ?? false;
-    return {
-      key: s.id,
-      closable: true,
-      label: (
-        <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  const handleContextAction = useCallback((action: ContextMenuAction, serviceId: string) => {
+    switch (action) {
+      case "close":
+        closeTab(serviceId);
+        break;
+      case "closeOthers": {
+        const others = openedTabs.filter((id) => id !== serviceId);
+        others.forEach((id) => closeTab(id));
+        break;
+      }
+      case "closeAll":
+        openedTabs.forEach((id) => closeTab(id));
+        break;
+      case "copyName": {
+        const svc = services.find((s) => s.id === serviceId);
+        if (svc) {
+          navigator.clipboard.writeText(svc.name).then(() => {
+            message.success(`已复制: ${svc.name}`);
+          }).catch(() => {});
+        }
+        break;
+      }
+    }
+    closeContextMenu();
+  }, [closeTab, openedTabs, services, message, closeContextMenu]);
+
+  // 只渲染“已打开”的 tab（IDE-like），保持打开顺序
+  const tabItems = useMemo(() => {
+    const serviceMap = new Map(services.map((s) => [s.id, s]));
+    const allTabs = openedTabs
+      .map((id) => serviceMap.get(id))
+      .filter((s): s is Service => !!s);
+
+    return allTabs.map((s) => {
+      const rt = runtimes[s.id];
+      const status = rt?.status ?? "stopped";
+      const meta = STATUS_META[status];
+      const logBuf = logs[s.id];
+      const hasUnread = logBuf?.hasUnread ?? false;
+      return {
+        key: s.id,
+        closable: true,
+        label: (
           <span
-            className={`status-node ${meta.live ? "live" : ""}`}
-            style={{ background: meta.dot, color: meta.dot }}
-          />
-          {s.name}
-          {hasUnread && (
-            <Badge
-              color="#0071e3"
-              style={{ width: 6, height: 6, minWidth: 6, boxShadow: "0 0 6px rgba(0,113,227,0.6)" }}
+            style={{ display: "flex", alignItems: "center", gap: 7 }}
+            onContextMenu={(e) => handleContextMenu(e, s.id)}
+          >
+            <span
+              className={`status-node ${meta.live ? "live" : ""}`}
+              style={{ background: meta.dot, color: meta.dot }}
             />
-          )}
-        </span>
-      ),
-    };
-  });
+            {s.name}
+            {hasUnread && (
+              <Badge
+                color="#0071e3"
+                style={{ width: 6, height: 6, minWidth: 6, boxShadow: "0 0 6px rgba(0,113,227,0.6)" }}
+              />
+            )}
+          </span>
+        ),
+      };
+    });
+  }, [services, openedTabs, runtimes, logs, handleContextMenu]);
 
   return (
     <div className="app-layout">
@@ -141,6 +206,8 @@ export default function App() {
           onConfigService={setConfigService}
           onOpenGit={handleOpenGit}
           onOpenFiles={handleOpenFiles}
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={toggleSidebar}
         />
 
         <div className="log-panel">
@@ -207,6 +274,34 @@ export default function App() {
           )}
         </div>
       </div>
+
+      {/* Tab 右键菜单 */}
+      {contextMenu && (
+        <Dropdown
+          open={true}
+          trigger={["contextMenu"]}
+          onOpenChange={(open) => { if (!open) closeContextMenu(); }}
+          menu={{
+            items: [
+              { key: "close", label: "关闭", onClick: () => handleContextAction("close", contextMenu.serviceId) },
+              { key: "closeOthers", label: "关闭其他", disabled: openedTabs.length <= 1, onClick: () => handleContextAction("closeOthers", contextMenu.serviceId) },
+              { key: "closeAll", label: "关闭全部", onClick: () => handleContextAction("closeAll", contextMenu.serviceId) },
+              { type: "divider" as const },
+              { key: "copyName", label: "复制服务名", onClick: () => handleContextAction("copyName", contextMenu.serviceId) },
+            ],
+          }}
+        >
+          <div
+            style={{
+              position: "fixed",
+              left: contextMenu.x,
+              top: contextMenu.y,
+              width: 0,
+              height: 0,
+            }}
+          />
+        </Dropdown>
+      )}
 
       <AddProjectModal
         open={addProjectOpen}

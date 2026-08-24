@@ -4,4 +4,4 @@ pub mod job;
 pub mod log_pipe;
 pub mod manager;
 
-pub use manager::{get_manager, ProcessManager};
+pub use manager::{get_manager, BatchStartResult, ProcessManager};

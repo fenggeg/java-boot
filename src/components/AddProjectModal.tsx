@@ -99,7 +99,6 @@ export default function AddProjectModal({
       setCheckedKeys([]);
       doScanFor(project.id, project.root_path);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openProp, project]);
 
   const doScanFor = async (projectId: string | null, dir: string) => {

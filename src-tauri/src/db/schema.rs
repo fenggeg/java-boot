@@ -74,6 +74,23 @@ fn migrate_v4(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// v5：服务依赖编排表（多对多，表示 service_id 依赖 depends_on 先启动）
+fn migrate_v5(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS service_dependencies (
+            service_id  TEXT NOT NULL,
+            depends_on  TEXT NOT NULL,
+            PRIMARY KEY (service_id, depends_on),
+            FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE,
+            FOREIGN KEY (depends_on) REFERENCES services(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_deps_depends_on ON service_dependencies(depends_on);
+        "#,
+    )?;
+    Ok(())
+}
+
 pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
     for sql in MIGRATIONS {
         conn.execute_batch(sql)?;
@@ -81,6 +98,7 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
     migrate_v2(conn)?;
     migrate_v3(conn)?;
     migrate_v4(conn)?;
+    migrate_v5(conn)?;
     // seed default config
     let defaults = [
         ("port_refresh_interval_secs", "2"),

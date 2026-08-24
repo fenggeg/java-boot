@@ -1,7 +1,8 @@
+use parking_lot::Mutex as SMutex;
 use std::io::BufRead;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use tauri::AppHandle;
 
@@ -157,9 +158,9 @@ pub async fn pull(app: AppHandle, project_id: &str) -> AppResult<PullResult> {
     // 用 tokio::time::timeout 包裹，60 秒超时。
     // 共享 stdout/stderr 缓冲与子进程 PID：超时后强杀 git 进程树，
     // 避免它继续在后台拉取、静默改写工作区。
-    let stdout_shared: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
-    let stderr_shared: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
-    let pid_slot: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
+    let stdout_shared: Arc<SMutex<String>> = Arc::new(SMutex::new(String::new()));
+    let stderr_shared: Arc<SMutex<String>> = Arc::new(SMutex::new(String::new()));
+    let pid_slot: Arc<SMutex<Option<u32>>> = Arc::new(SMutex::new(None));
 
     let stdout_shared_b = stdout_shared.clone();
     let stderr_shared_b = stderr_shared.clone();
@@ -185,7 +186,7 @@ pub async fn pull(app: AppHandle, project_id: &str) -> AppResult<PullResult> {
             cmd.creation_flags_no_window();
             let mut child = cmd.spawn()?;
             // 立即记录 PID，主流程在超时时能据此杀进程
-            *pid_slot_b.lock().unwrap() = Some(child.id());
+            *pid_slot_b.lock() = Some(child.id());
             let out = child.stdout.take();
             let err = child.stderr.take();
             // 两个读线程分别消费 stdout/stderr 管道，防止管道缓冲满导致 git 阻塞；
@@ -198,8 +199,8 @@ pub async fn pull(app: AppHandle, project_id: &str) -> AppResult<PullResult> {
                     if let Some(o) = out {
                         let reader = std::io::BufReader::new(o);
                         for line in reader.lines().flatten() {
-                            stdout_shared.lock().unwrap().push_str(&line);
-                            stdout_shared.lock().unwrap().push('\n');
+                            stdout_shared.lock().push_str(&line);
+                            stdout_shared.lock().push('\n');
                             for s in &services {
                                 process::ProcessManager::emit_log_static(&app, &s.id, "[git]", &line);
                             }
@@ -215,8 +216,8 @@ pub async fn pull(app: AppHandle, project_id: &str) -> AppResult<PullResult> {
                     if let Some(e) = err {
                         let reader = std::io::BufReader::new(e);
                         for line in reader.lines().flatten() {
-                            stderr_shared.lock().unwrap().push_str(&line);
-                            stderr_shared.lock().unwrap().push('\n');
+                            stderr_shared.lock().push_str(&line);
+                            stderr_shared.lock().push('\n');
                             for s in &services {
                                 process::ProcessManager::emit_log_static(&app, &s.id, "[git]", &line);
                             }
@@ -237,7 +238,7 @@ pub async fn pull(app: AppHandle, project_id: &str) -> AppResult<PullResult> {
         Ok(Err(e)) => return Err(AppError::Git(format!("git pull 任务失败: {}", e))),
         Err(_) => {
             // 超时：强杀 git 进程树（含子进程），避免继续在后台拉取改写工作区
-            if let Some(pid) = pid_slot.lock().unwrap().take() {
+            if let Some(pid) = pid_slot.lock().take() {
                 crate::process::manager::kill_process_tree_by_pid(pid);
                 log::warn!("git pull 超时，已强杀 git 进程 PID {}", pid);
             }
@@ -257,8 +258,8 @@ pub async fn pull(app: AppHandle, project_id: &str) -> AppResult<PullResult> {
         }
     };
 
-    let stdout = stdout_shared.lock().unwrap().clone();
-    let stderr = stderr_shared.lock().unwrap().clone();
+    let stdout = stdout_shared.lock().clone();
+    let stderr = stderr_shared.lock().clone();
     let success = result.success();
 
     let up_to_date = stdout.contains("Already up to date")

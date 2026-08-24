@@ -9,6 +9,7 @@ use parking_lot::Mutex;
 use tauri::AppHandle;
 
 use crate::db::models::Service;
+use crate::db::models::ServiceStatus;
 use crate::process;
 
 const IGNORE_DIRS: &[&str] = &[
@@ -169,7 +170,7 @@ pub fn get_watch_manager() -> &'static WatchManager {
 
 fn is_relevant_event(event: &notify::Event) -> bool {
     match event.kind {
-        EventKind::Modify(_) | EventKind::Create(_) => {
+        EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_) => {
             for path in &event.paths {
                 // 忽略特定目录
                 for comp in path.components() {
@@ -204,6 +205,20 @@ fn trigger_restart(app: &AppHandle, service_id: &str) {
     // 仅当服务正在运行时才自动重启
     let mgr = process::get_manager();
     if !mgr.is_running(service_id) {
+        return;
+    }
+    // 竞态防护：检查当前状态，若已在 Recompiling/Starting/Stopping 则跳过，
+    // 避免防抖窗口内多次事件触发并发 Maven 编译
+    let current_status = mgr.get_runtime(service_id).status;
+    if matches!(
+        current_status,
+        ServiceStatus::Recompiling | ServiceStatus::Starting | ServiceStatus::Stopping
+    ) {
+        log::info!(
+            "跳过自动重启（服务 {} 当前状态: {:?}）",
+            service_id,
+            current_status
+        );
         return;
     }
     let app_clone = app.clone();

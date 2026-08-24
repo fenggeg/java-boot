@@ -1,5 +1,6 @@
+import {memo} from "react";
 import {App, Dropdown, Switch, Tooltip} from "antd";
-import {Code, More, Play, Restart, Settings, Stop, Warning,} from "./Icons";
+import {Broom, Code, More, Play, Restart, Settings, Stop, Warning,} from "./Icons";
 import {useStore} from "../store";
 import type {Service} from "../types";
 import {STATUS_META} from "../types";
@@ -19,7 +20,7 @@ const NOISE_PORTS = new Set([
   4848,  // JMXMP
 ]);
 
-export default function ServiceCard({ service, active, onConfig }: Props) {
+function ServiceCardInner({ service, active, onConfig }: Props) {
   const runtime = useStore((s) => s.runtimes[service.id]);
   const selectService = useStore((s) => s.selectService);
   const refreshServices = useStore((s) => s.refreshServices);
@@ -35,7 +36,13 @@ export default function ServiceCard({ service, active, onConfig }: Props) {
 
   const handleStart = async () => {
     try {
-      await api.startService(service.id);
+      // 如果配置了依赖服务，走带依赖编排的启动流程
+      const deps = await api.getServiceDependencies(service.id);
+      if (deps.length > 0) {
+        await api.startServiceWithDependencies(service.id);
+      } else {
+        await api.startService(service.id);
+      }
       // 启动是异步的，真实结果通过 service://status 事件通知
     } catch (e: any) {
       message.error(`启动失败: ${e}`);
@@ -74,6 +81,15 @@ export default function ServiceCard({ service, active, onConfig }: Props) {
       // 重新编译并启动是异步的
     } catch (e: any) {
       message.error(`重新编译失败: ${e}`);
+    }
+  };
+
+  const handleClean = async () => {
+    try {
+      await api.cleanService(service.id);
+      message.success(`${service.name}: 清理完成`);
+    } catch (e: any) {
+      message.error(`清理失败: ${e}`);
     }
   };
 
@@ -118,6 +134,13 @@ export default function ServiceCard({ service, active, onConfig }: Props) {
       label: "重新编译并启动",
       icon: <Code size={13} />,
       onClick: handleRecompile,
+    },
+    {
+      key: "clean",
+      label: "清理编译产物",
+      icon: <Broom size={13} />,
+      disabled: isRunning,
+      onClick: handleClean,
     },
     { type: "divider" as const },
     {
@@ -183,7 +206,7 @@ export default function ServiceCard({ service, active, onConfig }: Props) {
                 {ports.map((p) => (
                   <Tooltip key={p} title={`在浏览器中打开 :${p}`}>
                     <span
-                      className={`port-tag ${runtime.port_conflict ? "conflict" : ""}`}
+                      className={`port-tag ${runtime?.port_conflict ? "conflict" : ""}`}
                       onClick={(e) => {
                         e.stopPropagation();
                         handlePortClick(p);
@@ -258,3 +281,5 @@ export default function ServiceCard({ service, active, onConfig }: Props) {
     </div>
   );
 }
+
+export default memo(ServiceCardInner);

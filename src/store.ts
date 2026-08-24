@@ -299,8 +299,10 @@ export const useStore = create<Store>((set, get) => {
       const remainingRuntimes: Record<string, ServiceRuntime> = {};
       const remainingLogs: Record<string, LogBuffer> = {};
       for (const s of remainingServices) {
-        if (state.runtimes[s.id]) remainingRuntimes[s.id] = state.runtimes[s.id];
-        if (state.logs[s.id]) remainingLogs[s.id] = state.logs[s.id];
+        const rt = state.runtimes[s.id];
+        if (rt) remainingRuntimes[s.id] = rt;
+        const lb = state.logs[s.id];
+        if (lb) remainingLogs[s.id] = lb;
       }
       const nextOpened = state.openedTabs.filter((id) => remainingIds.has(id));
       saveOpenedTabs(nextOpened);

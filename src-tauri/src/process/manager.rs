@@ -1309,7 +1309,12 @@ impl ProcessManager {
         );
 
         if strategy != BuildStrategy::Skip {
-            let compile_pid = Arc::new(PMutex::new(None));
+            // 从 handles 中获取或创建 compile_pid，确保 stop() 能中断编译进程
+            let compile_pid = {
+                let mut handles = self.handles.lock();
+                let handle = handles.entry(service.id.clone()).or_insert_with(ProcessHandle::placeholder);
+                handle.compile_pid.clone()
+            };
             self.run_maven_build(
                 app, service, &env_cfg, &working_dir, &program, &base_args,
                 &compile_pid, strategy, false,
@@ -1344,14 +1349,133 @@ impl ProcessManager {
             "[javaboot] 重新编译：强制 clean compile（忽略缓存）",
         );
 
-        let compile_pid = Arc::new(PMutex::new(None));
+        // 从 handles 中获取或创建 compile_pid，确保 stop() 能中断编译进程
+        let compile_pid = {
+            let mut handles = self.handles.lock();
+            let handle = handles.entry(service.id.clone()).or_insert_with(ProcessHandle::placeholder);
+            handle.compile_pid.clone()
+        };
         self.run_maven_build(
             &app, &service, &env_cfg, &working_dir, &program, &base_args,
             &compile_pid, strategy, true,
         ).await?;
 
         // 编译成功，启动（mvn clean 已删除 target，classpath 缓存文件也随之删除）
+        // start() 会检测到 placeholder（pid==0），清理后创建新 handle
         self.start(app, service).await
+    }
+
+    /// 清理服务编译产物（mvn clean），不重新启动
+    ///
+    /// - 先停止运行中的服务（避免 class 文件锁冲突）
+    /// - 执行 `mvn clean`，删除 target 目录
+    /// - 清除 classpath 缓存
+    pub async fn clean_service(&self, app: AppHandle, service: Service) -> AppResult<()> {
+        // 先停止服务
+        self.stop(app.clone(), &service.id).await?;
+        self.set_status(&app, &service.id, ServiceStatus::Recompiling);
+
+        use super::build::strip_verbatim_prefix;
+        use super::env::{preflight_check, resolve_env_config, resolve_maven_cmd};
+
+        let working_dir = strip_verbatim_prefix(&PathBuf::from(&service.working_dir));
+        let env_cfg = resolve_env_config(&service)?;
+        let (program, base_args) = resolve_maven_cmd(&working_dir, &env_cfg);
+        preflight_check(&env_cfg, &working_dir, &program)?;
+
+        // 计算执行目录和模块相对路径
+        let (cwd, module_rel) = match &env_cfg.project_root {
+            Some(root) => {
+                let root_path = std::path::Path::new(root);
+                let rel = match working_dir.strip_prefix(root_path) {
+                    Ok(r) => r.to_string_lossy().replace('\\', "/").trim_matches('/').to_string(),
+                    Err(_) => {
+                        let wd = working_dir.canonicalize().unwrap_or_default();
+                        let pr = root_path.canonicalize().unwrap_or_default();
+                        wd.strip_prefix(&pr)
+                            .map(|r| r.to_string_lossy().replace('\\', "/").trim_matches('/').to_string())
+                            .unwrap_or_default()
+                    }
+                };
+                if rel.is_empty() {
+                    (working_dir.to_path_buf(), String::new())
+                } else {
+                    (root_path.to_path_buf(), rel)
+                }
+            }
+            None => (working_dir.to_path_buf(), String::new()),
+        };
+
+        let mut args: Vec<String> = base_args.to_vec();
+        args.extend(common_mvn_flags());
+        args.push("clean".to_string());
+        if !module_rel.is_empty() {
+            args.push("-pl".into());
+            args.push(module_rel.clone());
+        }
+
+        let action_desc = if module_rel.is_empty() {
+            "清理当前模块"
+        } else {
+            "清理当前模块"
+        };
+        Self::emit_log(
+            &app,
+            &service.id,
+            LogSource::Mvn,
+            &format!("[javaboot] {}: mvn {}", action_desc, args.join(" ")),
+        );
+
+        // 获取 compile_pid 用于中断
+        let compile_pid = {
+            let mut handles = self.handles.lock();
+            let handle = handles.entry(service.id.clone()).or_insert_with(ProcessHandle::placeholder);
+            handle.compile_pid.clone()
+        };
+
+        let program = program.to_string();
+        let cwd_clone = cwd.clone();
+        let env_cfg_clone = env_cfg.clone();
+        let compile_pid_clone = compile_pid.clone();
+        let app_clone = app.clone();
+        let sid_clone = service.id.clone();
+
+        let status = tokio::task::spawn_blocking(move || {
+            run_mvn_capture(
+                &program,
+                &args,
+                &cwd_clone,
+                &env_cfg_clone,
+                compile_pid_clone,
+                app_clone,
+                sid_clone,
+            )
+        })
+        .await
+        .map_err(|e| AppError::Process(format!("Maven 任务失败: {}", e)))?
+        .map_err(|e| AppError::Process(format!("Maven 执行失败: {}", e)))?;
+
+        if !status.success() {
+            self.set_status(&app, &service.id, ServiceStatus::Error);
+            return Err(AppError::Process(format!(
+                "Maven clean 失败（exit code: {:?}）",
+                status.code()
+            )));
+        }
+
+        // 清除 classpath 缓存
+        let cache = ClasspathCache::for_module(&working_dir);
+        let _ = std::fs::remove_file(&cache.cp_file);
+        let _ = std::fs::remove_file(&cache.key_file);
+
+        Self::emit_log(
+            &app,
+            &service.id,
+            LogSource::Mvn,
+            "[javaboot] 清理完成",
+        );
+        self.set_status(&app, &service.id, ServiceStatus::Stopped);
+        Ok(())
     }
 
     /// 停止所有运行中的服务（真正并行：每个 stop 独立 spawn 到 tokio runtime）
@@ -1382,6 +1506,284 @@ impl ProcessManager {
         }
         Ok(())
     }
+
+    /// 带依赖的启动：拓扑排序后按序启动（依赖先启动并等待 Running）
+    ///
+    /// 1. 从 DB 读取目标服务及其递归依赖链
+    /// 2. Kahn 拓扑排序 + 循环检测
+    /// 3. 按序启动，跳过已 Running 的
+    /// 4. 每个启动后轮询等待变为 Running（超时 120s）
+    pub async fn start_with_dependencies(
+        &self,
+        app: AppHandle,
+        service: Service,
+    ) -> AppResult<()> {
+        let target_id = service.id.clone();
+
+        // 1. 递归收集所有依赖
+        let all_deps = db::list_all_dependencies()?;
+        let sorted = topo_sort(&target_id, &all_deps)?;
+
+        // 2. 按拓扑序启动
+        for sid in &sorted {
+            // 跳过目标服务本身（在循环结束后由调用方启动）
+            if sid == &target_id {
+                continue;
+            }
+            // 已在运行则跳过
+            if self.is_running(sid) {
+                Self::emit_log(
+                    &app,
+                    &target_id,
+                    LogSource::Mvn,
+                    &format!("[javaboot] 依赖服务 {} 已在运行，跳过", sid),
+                );
+                continue;
+            }
+
+            let dep_service = db::get_service(sid)?;
+            Self::emit_log(
+                &app,
+                &target_id,
+                LogSource::Mvn,
+                &format!("[javaboot] 正在启动依赖服务: {}", dep_service.name),
+            );
+            // 每个依赖也递归走 start_with_dependencies，确保多层依赖被正确处理
+            // 但 sorted 已经包含了完整依赖链，直接 start 即可
+            self.start(app.clone(), dep_service).await?;
+
+            // 等待依赖变为 Running（轮询 runtime status）
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+            loop {
+                let rt = self.get_runtime(sid);
+                if rt.status == ServiceStatus::Running {
+                    break;
+                }
+                if rt.status == ServiceStatus::Error {
+                    return Err(AppError::Process(format!(
+                        "依赖服务 {} 启动失败，中止编排",
+                        sid
+                    )));
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(AppError::Process(format!(
+                        "等待依赖服务 {} 启动超时（120s），中止编排",
+                        sid
+                    )));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            Self::emit_log(
+                &app,
+                &target_id,
+                LogSource::Mvn,
+                &format!("[javaboot] 依赖服务 {} 已就绪", sid),
+            );
+        }
+
+        // 3. 启动目标服务本身
+        Self::emit_log(
+            &app,
+            &target_id,
+            LogSource::Mvn,
+            "[javaboot] 所有依赖已就绪，启动目标服务",
+        );
+        self.start(app, service).await
+    }
+
+    /// 批量启动多个服务（一键启动项目下所有服务）
+    ///
+    /// 策略：
+    /// 1. 收集所有服务 ID（去重），加上它们的递归依赖，做全局拓扑排序
+    /// 2. 按拓扑序逐个启动，跳过已 Running 的
+    /// 3. 每个启动后等待 Running（超时 120s）
+    /// 4. 单个服务失败不中止整体流程，记录错误并继续下一个
+    /// 5. 返回成功/失败计数
+    pub async fn start_services_batch(
+        &self,
+        app: AppHandle,
+        service_ids: &[String],
+    ) -> AppResult<BatchStartResult> {
+        let mut result = BatchStartResult::default();
+
+        // 收集所有服务的递归依赖关系
+        let all_deps = db::list_all_dependencies()?;
+
+        // 从每个目标服务出发，收集完整依赖子图
+        use std::collections::{HashMap, HashSet, VecDeque};
+
+        // 邻接表：depends_on → service_id（depends_on 在前）
+        let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+        let mut nodes: HashSet<String> = HashSet::new();
+
+        // BFS 从所有目标服务出发收集相关节点
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: VecDeque<String> = VecDeque::new();
+        for id in service_ids {
+            queue.push_back(id.clone());
+            nodes.insert(id.clone());
+        }
+        while let Some(node) = queue.pop_front() {
+            if !visited.insert(node.clone()) {
+                continue;
+            }
+            nodes.insert(node.clone());
+            for dep in &all_deps {
+                if dep.service_id == node {
+                    nodes.insert(dep.depends_on.clone());
+                    adj.entry(dep.depends_on.clone())
+                        .or_default()
+                        .push(dep.service_id.clone());
+                    queue.push_back(dep.depends_on.clone());
+                }
+            }
+        }
+
+        // 计算入度
+        let mut in_degree: HashMap<String, usize> = HashMap::new();
+        for n in &nodes {
+            in_degree.insert(n.clone(), 0);
+        }
+        for (_from, tos) in &adj {
+            for to in tos {
+                *in_degree.get_mut(to).unwrap_or(&mut 0) += 1;
+            }
+        }
+
+        // Kahn BFS
+        let mut q: VecDeque<String> = VecDeque::new();
+        for (n, &d) in &in_degree {
+            if d == 0 {
+                q.push_back(n.clone());
+            }
+        }
+
+        let mut sorted: Vec<String> = vec![];
+        while let Some(n) = q.pop_front() {
+            sorted.push(n.clone());
+            if let Some(succs) = adj.get(&n) {
+                for s in succs {
+                    if let Some(d) = in_degree.get_mut(s) {
+                        *d -= 1;
+                        if *d == 0 {
+                            q.push_back(s.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        if sorted.len() != nodes.len() {
+            // 有循环依赖，把不在 sorted 中的节点追加到末尾（尽力而为）
+            let sorted_set: HashSet<String> = sorted.iter().cloned().collect();
+            for n in &nodes {
+                if !sorted_set.contains(n) {
+                    sorted.push(n.clone());
+                }
+            }
+            Self::emit_log(
+                &app,
+                &sorted[0],
+                LogSource::Mvn,
+                "[javaboot] 警告: 检测到循环依赖，受影响服务将按不确定顺序启动",
+            );
+        }
+
+        // 按拓扑序逐个启动
+        for sid in &sorted {
+            // 跳过不在原始请求列表中、但不是任何请求服务依赖的服务
+            // （拓扑排序可能引入了只作为中间依赖的节点，这些也需要启动）
+            if !nodes.contains(sid) {
+                continue;
+            }
+
+            // 已在运行则跳过
+            if self.is_running(sid) {
+                result.skipped.push(sid.clone());
+                continue;
+            }
+
+            let service = match db::get_service(sid) {
+                Ok(s) => s,
+                Err(e) => {
+                    result.failed.push((sid.clone(), format!("服务不存在: {}", e)));
+                    continue;
+                }
+            };
+
+            Self::emit_log(
+                &app,
+                sid,
+                LogSource::Mvn,
+                &format!("[javaboot] 批量启动: {}", service.name),
+            );
+
+            match self.start(app.clone(), service).await {
+                Ok(()) => {
+                    // 等待变为 Running（或 Error）
+                    let deadline = std::time::Instant::now()
+                        + std::time::Duration::from_secs(120);
+                    loop {
+                        let rt = self.get_runtime(sid);
+                        if rt.status == ServiceStatus::Running {
+                            result.succeeded.push(sid.clone());
+                            break;
+                        }
+                        if rt.status == ServiceStatus::Error {
+                            result.failed.push((
+                                sid.clone(),
+                                "启动后进入错误状态".to_string(),
+                            ));
+                            break;
+                        }
+                        if rt.status == ServiceStatus::Stopped {
+                            // 可能启动后立即退出（如端口冲突后 kill）
+                            result.failed.push((
+                                sid.clone(),
+                                "启动后立即退出".to_string(),
+                            ));
+                            break;
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            result.failed.push((
+                                sid.clone(),
+                                "等待启动超时（120s）".to_string(),
+                            ));
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(500))
+                            .await;
+                    }
+                }
+                Err(e) => {
+                    result.failed.push((sid.clone(), e.to_string()));
+                    // 不中止，继续下一个
+                }
+            }
+        }
+
+        Self::emit_log(
+            &app,
+            &sorted[0].clone(),
+            LogSource::Mvn,
+            &format!(
+                "[javaboot] 批量启动完成: {} 成功, {} 失败, {} 跳过",
+                result.succeeded.len(),
+                result.failed.len(),
+                result.skipped.len()
+            ),
+        );
+
+        Ok(result)
+    }
+}
+
+/// 批量启动结果
+#[derive(Debug, Clone, serde::Serialize, Default)]
+pub struct BatchStartResult {
+    pub succeeded: Vec<String>,
+    pub failed: Vec<(String, String)>,
+    pub skipped: Vec<String>,
 }
 
 // ================================================================
@@ -1437,6 +1839,94 @@ pub fn get_manager() -> &'static ProcessManager {
 }
 
 static SYS: Lazy<PMutex<sysinfo::System>> = Lazy::new(|| PMutex::new(sysinfo::System::new()));
+
+// ================================================================
+// 拓扑排序：服务依赖编排
+// ================================================================
+
+/// 对目标服务及其递归依赖做拓扑排序，返回启动顺序（依赖在前，目标在后）。
+///
+/// 使用 Kahn 算法（BFS）：
+/// 1. 以 target 为根做 BFS，收集所有可达的依赖关系
+/// 2. 统计入度，入度为 0 的先入队
+/// 3. 逐个出队并降低后继入度，入度归 0 则入队
+/// 4. 若最终排序数 != 节点数 → 存在循环依赖
+fn topo_sort(
+    target: &str,
+    all_deps: &[db::Dependency],
+) -> AppResult<Vec<String>> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+
+    // 构建邻接表：dep.depends_on → dep.service_id（depends_on 在前，service_id 在后）
+    // 同时收集所有相关节点
+    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+    let mut nodes: HashSet<String> = HashSet::new();
+    nodes.insert(target.to_string());
+
+    // 从 target 出发 BFS，收集相关依赖子图
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut queue: VecDeque<String> = VecDeque::new();
+    queue.push_back(target.to_string());
+    while let Some(node) = queue.pop_front() {
+        if !visited.insert(node.clone()) {
+            continue;
+        }
+        nodes.insert(node.clone());
+        // 找到 node 的所有直接依赖
+        for dep in all_deps {
+            if dep.service_id == node {
+                nodes.insert(dep.depends_on.clone());
+                adj.entry(dep.depends_on.clone())
+                    .or_default()
+                    .push(dep.service_id.clone());
+                queue.push_back(dep.depends_on.clone());
+            }
+        }
+    }
+
+    // 计算入度
+    let mut in_degree: HashMap<String, usize> = HashMap::new();
+    for n in &nodes {
+        in_degree.insert(n.clone(), 0);
+    }
+    for (_from, tos) in &adj {
+        for to in tos {
+            *in_degree.get_mut(to).unwrap_or(&mut 0) += 1;
+        }
+    }
+
+    // BFS：入度 0 先入队
+    let mut q: VecDeque<String> = VecDeque::new();
+    for (n, &d) in &in_degree {
+        if d == 0 {
+            q.push_back(n.clone());
+        }
+    }
+
+    let mut sorted: Vec<String> = vec![];
+    while let Some(n) = q.pop_front() {
+        sorted.push(n.clone());
+        if let Some(succs) = adj.get(&n) {
+            for s in succs {
+                if let Some(d) = in_degree.get_mut(s) {
+                    *d -= 1;
+                    if *d == 0 {
+                        q.push_back(s.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    if sorted.len() != nodes.len() {
+        return Err(AppError::Other(format!(
+            "检测到循环依赖，涉及 {} 个服务，无法编排启动顺序",
+            nodes.len() - sorted.len()
+        )));
+    }
+
+    Ok(sorted)
+}
 
 // ================================================================
 // classpath 替换：本地仓库 jar → 项目内 target/classes

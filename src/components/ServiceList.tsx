@@ -1,13 +1,16 @@
-import {useState} from "react";
-import {App, Button, Empty, Popconfirm, Tooltip} from "antd";
+import {memo, useState} from "react";
+import {App, Button, Dropdown, Empty, Tooltip} from "antd";
 import {
     CaretDown,
     CaretRight,
+    ChevronLeft,
     File,
     FolderOpen,
     GitBranch,
     GitPull,
     GitPullRestart,
+    Layers,
+    More,
     Plus,
     Refresh,
     Settings,
@@ -26,10 +29,13 @@ interface Props {
   onConfigService: (service: Service) => void;
   onOpenGit: (project: Project) => void;
   onOpenFiles: (project: Project) => void;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
 }
 
 // 提取到模块顶层：避免每次 ServiceList 渲染时创建新组件类型导致重挂载（丢失内部状态）
-function ServiceRow({
+// memo 化：切换选中态时只有 active 变化的卡片重渲染，其余跳过
+const ServiceRow = memo(function ServiceRow({
   service,
   onConfig,
 }: {
@@ -44,16 +50,16 @@ function ServiceRow({
       onConfig={onConfig}
     />
   );
-}
+});
 
-export default function ServiceList({ onAddProject, onAddService, onConfigService, onOpenGit, onOpenFiles }: Props) {
+export default function ServiceList({ onAddProject, onAddService, onConfigService, onOpenGit, onOpenFiles, collapsed: sidebarCollapsed, onToggleCollapse: onToggleSidebar }: Props) {
   const projects = useStore((s) => s.projects);
   const services = useStore((s) => s.services);
   const runtimes = useStore((s) => s.runtimes);
   const gitAvailable = useStore((s) => s.gitAvailable);
   const removeProject = useStore((s) => s.removeProject);
   const refreshServices = useStore((s) => s.refreshServices);
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
     try {
       const saved = localStorage.getItem("jb_collapsed_groups");
@@ -99,6 +105,41 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
     }
   };
 
+  const handleStartAll = async (project: Project) => {
+    const groupServices = services.filter(
+      (s) => s.project_id === project.id,
+    );
+    const stopped = groupServices.filter(
+      (s) =>
+        runtimes[s.id]?.status !== "running" &&
+        runtimes[s.id]?.status !== "starting",
+    );
+    if (stopped.length === 0) {
+      message.info("项目下所有服务已在运行中");
+      return;
+    }
+    try {
+      const ids = stopped.map((s) => s.id);
+      const result = await api.startServicesBatch(ids);
+      const okCount = result.succeeded.length;
+      const failCount = result.failed.length;
+      const skipCount = result.skipped.length;
+      if (failCount === 0) {
+        message.success(`已启动 ${okCount} 个服务${skipCount > 0 ? `（跳过 ${skipCount} 个已在运行的）` : ""}`);
+      } else {
+        const failNames = result.failed
+          .map(([id, _]) => services.find((s) => s.id === id)?.name ?? id)
+          .join("、");
+        message.warning(
+          `启动完成: ${okCount} 成功, ${failCount} 失败（${failNames}）${skipCount > 0 ? `, ${skipCount} 跳过` : ""}`,
+        );
+      }
+      await refreshServices();
+    } catch (e: any) {
+      message.error(`启动失败: ${e}`);
+    }
+  };
+
   const handleDeleteProject = async (project: Project) => {
     try {
       await api.deleteProject(project.id);
@@ -108,6 +149,12 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
       message.error(`删除失败: ${e}`);
     }
   };
+
+  // 顶部「添加」下拉菜单
+  const addMenuItems = [
+    { key: "project", label: "添加项目", icon: <Plus size={13} />, onClick: onAddProject },
+    { key: "service", label: "添加服务", icon: <Plus size={13} />, onClick: onAddService },
+  ];
 
   const renderProjectGroup = (project: Project) => {
     const groupServices = services.filter(
@@ -126,6 +173,64 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
         runtimes[s.id]?.status === "recompiling" ||
         runtimes[s.id]?.status === "pulling"
     );
+
+    // 项目级 More 下拉菜单（收纳低频操作）
+    const moreMenuItems = [
+      {
+        key: "rescan",
+        label: "重新扫描项目",
+        icon: <Refresh size={13} />,
+        onClick: () => setRescanProject(project),
+      },
+      {
+        key: "config",
+        label: "项目环境配置",
+        icon: <Settings size={13} />,
+        onClick: () => setConfigProject(project),
+      },
+      ...(gitAvailable && project.git_available
+        ? [
+            { type: "divider" as const },
+            {
+              key: "git",
+              label: "Git 工作区",
+              icon: <GitBranch size={13} />,
+              onClick: () => onOpenGit(project),
+            },
+            {
+              key: "pull",
+              label: "Git 拉取",
+              icon: <GitPull size={13} />,
+              disabled: isBusy,
+              onClick: () => handlePull(project, false),
+            },
+            {
+              key: "pull-restart",
+              label: "拉取并重启",
+              icon: <GitPullRestart size={13} />,
+              disabled: isBusy,
+              onClick: () => handlePull(project, true),
+            },
+          ]
+        : []),
+      { type: "divider" as const },
+      {
+        key: "delete",
+        label: "删除项目",
+        danger: true,
+        icon: <Trash size={13} />,
+        onClick: () => {
+          modal.confirm({
+            title: `删除项目 "${project.name}"？`,
+            content: "将停止并删除该项目下所有服务。",
+            okText: "删除",
+            cancelText: "取消",
+            okButtonProps: { danger: true },
+            onOk: () => handleDeleteProject(project),
+          });
+        },
+      },
+    ];
 
     return (
       <div key={project.id} className="project-group">
@@ -147,84 +252,34 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
             className="project-group-actions"
             onClick={(e) => e.stopPropagation()}
           >
-            <Tooltip title="重新扫描项目（发现新增模块）">
-              <button
-                className="icon-btn sm"
-                onClick={() => setRescanProject(project)}
-                aria-label="重新扫描"
-              >
-                <Refresh size={13} />
-              </button>
-            </Tooltip>
-            <Tooltip title="项目环境配置（JDK / Maven）">
-              <button
-                className="icon-btn sm"
-                onClick={() => setConfigProject(project)}
-                aria-label="项目配置"
-              >
-                <Settings size={13} />
-              </button>
-            </Tooltip>
-            <Tooltip title="文件浏览器（预览 / 编辑）">
+            {/* 高频：一键启动 */}
+            <Tooltip title="一键启动项目下所有服务">
               <button
                 className="icon-btn sm accent"
+                disabled={isBusy}
+                onClick={() => handleStartAll(project)}
+                aria-label="全部启动"
+                style={isBusy ? { opacity: 0.4, cursor: "not-allowed" } : undefined}
+              >
+                <Layers size={13} />
+              </button>
+            </Tooltip>
+            {/* 文件浏览器：与启动按钮同一层级，直接可见 */}
+            <Tooltip title="文件浏览器">
+              <button
+                className="icon-btn sm"
                 onClick={() => onOpenFiles(project)}
-                aria-label="文件"
+                aria-label="文件浏览器"
               >
                 <File size={13} />
               </button>
             </Tooltip>
-            {gitAvailable && project.git_available && (
-              <>
-                <Tooltip title="Git 工作区 / 提交 / 历史">
-                  <button
-                    className="icon-btn sm accent"
-                    onClick={() => onOpenGit(project)}
-                    aria-label="Git 面板"
-                  >
-                    <GitBranch size={13} />
-                  </button>
-                </Tooltip>
-                <Tooltip title={isBusy ? "有服务正在编译/启动中" : "Git 拉取"}>
-                  <button
-                    className="icon-btn sm accent"
-                    disabled={isBusy}
-                    onClick={() => handlePull(project, false)}
-                    aria-label="Git 拉取"
-                    style={isBusy ? { opacity: 0.4, cursor: "not-allowed" } : undefined}
-                  >
-                    <GitPull size={13} />
-                  </button>
-                </Tooltip>
-                <Tooltip
-                  title={isBusy ? "有服务正在编译/启动中" : "拉取并重启运行中的服务"}
-                >
-                  <button
-                    className="icon-btn sm accent"
-                    disabled={isBusy}
-                    onClick={() => handlePull(project, true)}
-                    aria-label="拉取并重启"
-                    style={isBusy ? { opacity: 0.4, cursor: "not-allowed" } : undefined}
-                  >
-                    <GitPullRestart size={13} />
-                  </button>
-                </Tooltip>
-              </>
-            )}
-            <Popconfirm
-              title={`删除项目 "${project.name}"？`}
-              description="将停止并删除该项目下所有服务。"
-              onConfirm={() => handleDeleteProject(project)}
-              okText="删除"
-              cancelText="取消"
-              okButtonProps={{ danger: true }}
-            >
-              <Tooltip title="删除项目">
-                <button className="icon-btn sm danger" aria-label="删除项目">
-                  <Trash size={13} />
-                </button>
-              </Tooltip>
-            </Popconfirm>
+            {/* 低频操作收纳到 More 下拉 */}
+            <Dropdown menu={{ items: moreMenuItems }} trigger={["click"]} placement="bottomRight">
+              <button className="icon-btn sm" aria-label="更多操作">
+                <More size={14} />
+              </button>
+            </Dropdown>
           </div>
         </div>
         {!isCollapsed &&
@@ -233,29 +288,51 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
           ))}
         {!isCollapsed && groupServices.length === 0 && (
           <div className="ungrouped-empty">
-            暂无服务，点击上方「重新扫描」按钮发现模块
+            暂无服务，点击「更多」→「重新扫描项目」发现模块
           </div>
         )}
       </div>
     );
   };
 
+  if (sidebarCollapsed) {
+    return (
+      <div className="sidebar sidebar-collapsed">
+        <Tooltip title="展开侧边栏" placement="right">
+          <button
+            className="icon-btn sidebar-expand-btn"
+            onClick={onToggleSidebar}
+            aria-label="展开侧边栏"
+          >
+            <ChevronLeft size={16} style={{ transform: "rotate(180deg)" }} />
+          </button>
+        </Tooltip>
+      </div>
+    );
+  }
+
   return (
     <div className="sidebar">
       <div className="sidebar-header">
-        <span className="side-label">tree</span>
-        <Button
-          type="primary"
-          size="small"
-          icon={<Plus size={12} />}
-          onClick={onAddProject}
-          style={{ flex: 1 }}
-        >
-          添加项目
-        </Button>
-        <Button size="small" icon={<Plus size={12} />} onClick={onAddService}>
-          服务
-        </Button>
+        <Dropdown menu={{ items: addMenuItems }} trigger={["click"]}>
+          <Button
+            type="primary"
+            size="small"
+            icon={<Plus size={12} />}
+            style={{ flex: 1 }}
+          >
+            添加
+          </Button>
+        </Dropdown>
+        <Tooltip title="收起侧边栏">
+          <button
+            className="icon-btn sm"
+            onClick={onToggleSidebar}
+            aria-label="收起侧边栏"
+          >
+            <ChevronLeft size={14} />
+          </button>
+        </Tooltip>
       </div>
 
       <div className="sidebar-list">

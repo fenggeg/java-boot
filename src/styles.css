@@ -75,11 +75,53 @@
   --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.08), 0 24px 56px rgba(0, 0, 0, 0.12);
   --shadow-focus: 0 0 0 4px var(--blue-glow);
 
-  /* —— Motion (Apple easing curves) —— */
+/* —— Motion (Apple easing curves) —— */
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
   --ease-out: cubic-bezier(0, 0, 0.2, 1);
   --ease-in: cubic-bezier(0.4, 0, 1, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* —— Dark mode (Apple dark palette) —— */
+[data-theme="dark"] {
+  --bg: #000000;
+  --bg-elevated: #1c1c1e;
+  --surface: #1c1c1e;
+  --surface-2: #2c2c2e;
+  --surface-3: #3a3a3c;
+  --surface-hi: #48484a;
+  --surface-blur: rgba(28, 28, 30, 0.72);
+
+  --border: rgba(255, 255, 255, 0.08);
+  --border-2: rgba(255, 255, 255, 0.12);
+  --border-3: rgba(255, 255, 255, 0.2);
+
+  --text: #f5f5f7;
+  --text-2: #98989d;
+  --text-3: #8e8e93;
+  --text-4: #636366;
+
+  --blue: #0a84ff;
+  --blue-hover: #3a9eff;
+  --blue-pressed: #0064cc;
+  --blue-glow: rgba(10, 132, 255, 0.22);
+
+  --green: #30d158;
+  --green-glow: rgba(48, 209, 88, 0.3);
+  --orange: #ff9f0a;
+  --orange-glow: rgba(255, 159, 10, 0.3);
+  --red: #ff453a;
+  --red-glow: rgba(255, 69, 58, 0.3);
+  --purple: #bf5af2;
+  --purple-glow: rgba(191, 90, 242, 0.3);
+  --cyan: #64d2ff;
+  --cyan-glow: rgba(100, 210, 255, 0.35);
+  --teal: #40cbe0;
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 1px 3px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.5), 0 24px 56px rgba(0, 0, 0, 0.6);
 }
 
 * {
@@ -111,6 +153,16 @@ body {
     radial-gradient(circle at 12% -8%, rgba(0, 113, 227, 0.06), transparent 42%),
     radial-gradient(circle at 92% 108%, rgba(175, 82, 222, 0.045), transparent 46%);
   background-attachment: fixed;
+}
+
+[data-theme="dark"] body {
+  background-image:
+    radial-gradient(circle at 12% -8%, rgba(10, 132, 255, 0.08), transparent 42%),
+    radial-gradient(circle at 92% 108%, rgba(191, 90, 242, 0.06), transparent 46%);
+}
+
+[data-theme="dark"] ::selection {
+  background: rgba(10, 132, 255, 0.22);
 }
 
 ::selection {
@@ -195,6 +247,9 @@ body {
   gap: 18px;
   font-size: 12px;
   color: var(--text-2);
+  margin-right: 4px;
+  padding-right: 16px;
+  border-right: 1px solid var(--border);
 }
 
 .stat-item {
@@ -242,6 +297,8 @@ body {
    ======================================================== */
 .sidebar {
   width: 380px;
+  min-width: 280px;
+  max-width: 420px;
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -252,10 +309,25 @@ body {
   overflow: hidden;
   position: relative;
   animation: fade-right 0.6s var(--ease-out) 0.05s both;
+  transition: width 0.28s var(--ease), min-width 0.28s var(--ease);
+}
+
+/* 收起态：窄条只留一个展开按钮 */
+.sidebar.sidebar-collapsed {
+  width: 44px;
+  min-width: 44px;
+  max-width: 44px;
+  align-items: center;
+  padding-top: 10px;
+}
+
+.sidebar-expand-btn {
+  width: 32px;
+  height: 32px;
 }
 
 .sidebar-header {
-  padding: 12px 14px;
+  padding: 10px 12px;
   display: flex;
   gap: 8px;
   border-bottom: 1px solid var(--border);
@@ -287,7 +359,7 @@ body {
 .project-group-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   padding: 8px 10px;
   font-size: 12px;
   color: var(--text-2);
@@ -440,21 +512,23 @@ body {
   font-size: 13.5px;
   font-weight: 500;
   color: var(--text);
-  max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   letter-spacing: -0.015em;
+  max-width: 100%;
 }
 
 .service-card-meta {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 5px;
   font-family: var(--font-mono);
   font-size: 10.5px;
   color: var(--text-3);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 .service-card-meta .meta-status {
@@ -502,9 +576,10 @@ body {
 .service-card-actions {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   opacity: 0.5;
   transition: opacity 0.18s var(--ease);
+  flex-shrink: 0;
 }
 
 .service-card:hover .service-card-actions,
@@ -611,11 +686,13 @@ body {
 .log-toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: 9px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-2);
   flex-shrink: 0;
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
 
 .log-toolbar .toolbar-count {
@@ -1341,6 +1418,7 @@ body {
   align-items: center;
   gap: 8px;
   min-width: 0;
+  flex-shrink: 1;
 }
 
 .git-branch {
@@ -1371,6 +1449,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
   margin-bottom: 8px;
 }
 
@@ -1415,10 +1494,15 @@ body {
   border-radius: var(--r-sm);
   cursor: pointer;
   user-select: none;
+  transition: background 0.15s var(--ease);
 }
 
 .git-change-item:hover {
-  background: var(--surface-2);
+  background: rgba(0, 113, 227, 0.06);
+}
+
+.git-change-item:active {
+  background: rgba(0, 113, 227, 0.1);
 }
 
 .git-change-badge {
@@ -1440,7 +1524,7 @@ body {
 }
 
 .git-commit-box {
-  margin-top: 4px;
+  margin-top: 12px;
   padding: 10px;
   border: 1px solid var(--border);
   border-radius: var(--r-md);
@@ -1613,7 +1697,7 @@ body {
 .file-panel-header {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: 8px 14px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
@@ -1763,7 +1847,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-2);
@@ -1804,6 +1888,267 @@ body {
   color: var(--text-2);
 }
 
+/* —— 语法高亮代码视图 —— */
+.file-code-view {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 14px 16px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--text);
+  background: var(--surface);
+  tab-size: 2;
+  white-space: pre;
+}
+
+/* Prism token 着色（亮色：Apple Xcode 风格） */
+.file-code-view .token.comment,
+.file-code-view .token.prolog,
+.file-code-view .token.doctype,
+.file-code-view .token.cdata {
+  color: #6e6e73;
+  font-style: italic;
+}
+.file-code-view .token.punctuation {
+  color: #48484a;
+}
+.file-code-view .token.property,
+.file-code-view .token.tag,
+.file-code-view .token.boolean,
+.file-code-view .token.number,
+.file-code-view .token.constant,
+.file-code-view .token.symbol,
+.file-code-view .token.deleted {
+  color: #c93400;
+}
+.file-code-view .token.selector,
+.file-code-view .token.attr-name,
+.file-code-view .token.string,
+.file-code-view .token.char,
+.file-code-view .token.builtin,
+.file-code-view .token.inserted {
+  color: #248a3d;
+}
+.file-code-view .token.operator,
+.file-code-view .token.entity,
+.file-code-view .token.url,
+.file-code-view .language-css .token.string,
+.file-code-view .style .token.string {
+  color: #6f42c1;
+}
+.file-code-view .token.atrule,
+.file-code-view .token.attr-value,
+.file-code-view .token.keyword {
+  color: #0071e3;
+}
+.file-code-view .token.function,
+.file-code-view .token.class-name {
+  color: #ad3da4;
+}
+.file-code-view .token.regex,
+.file-code-view .token.important,
+.file-code-view .token.variable {
+  color: #e28d0a;
+}
+.file-code-view .token.important,
+.file-code-view .token.bold {
+  font-weight: 600;
+}
+.file-code-view .token.italic {
+  font-style: italic;
+}
+.file-code-view .token.comment .token.url {
+  color: #6e6e73;
+}
+
+/* —— Markdown 预览 —— */
+.file-preview-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 22px;
+  background: var(--surface);
+}
+
+.file-preview-markdown {
+  max-width: 860px;
+  margin: 0 auto;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text);
+  user-select: text;
+}
+
+.file-preview-markdown > :first-child {
+  margin-top: 0;
+}
+
+.file-preview-markdown h1,
+.file-preview-markdown h2,
+.file-preview-markdown h3,
+.file-preview-markdown h4,
+.file-preview-markdown h5,
+.file-preview-markdown h6 {
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.3;
+  margin: 1.4em 0 0.6em;
+}
+.file-preview-markdown h1 {
+  font-size: 24px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.35em;
+}
+.file-preview-markdown h2 {
+  font-size: 19px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.3em;
+}
+.file-preview-markdown h3 {
+  font-size: 16px;
+}
+.file-preview-markdown h4,
+.file-preview-markdown h5,
+.file-preview-markdown h6 {
+  font-size: 14px;
+}
+.file-preview-markdown p {
+  margin: 0.8em 0;
+}
+.file-preview-markdown a {
+  color: var(--blue);
+  text-decoration: none;
+}
+.file-preview-markdown a:hover {
+  text-decoration: underline;
+}
+.file-preview-markdown ul,
+.file-preview-markdown ol {
+  margin: 0.8em 0;
+  padding-left: 1.6em;
+}
+.file-preview-markdown li {
+  margin: 0.25em 0;
+}
+.file-preview-markdown blockquote {
+  margin: 0.8em 0;
+  padding: 0.1em 1em;
+  border-left: 3px solid var(--border-3);
+  color: var(--text-2);
+  background: var(--surface-2);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+}
+.file-preview-markdown code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+.file-preview-markdown pre {
+  margin: 0.8em 0;
+  padding: 12px 14px;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  overflow: auto;
+  user-select: text;
+}
+.file-preview-markdown pre code {
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+/* Markdown 代码块内的 Prism token 着色（复用亮色主题） */
+.file-preview-markdown .token.comment,
+.file-preview-markdown .token.prolog,
+.file-preview-markdown .token.doctype,
+.file-preview-markdown .token.cdata {
+  color: #6e6e73;
+  font-style: italic;
+}
+.file-preview-markdown .token.punctuation {
+  color: #48484a;
+}
+.file-preview-markdown .token.property,
+.file-preview-markdown .token.tag,
+.file-preview-markdown .token.boolean,
+.file-preview-markdown .token.number,
+.file-preview-markdown .token.constant,
+.file-preview-markdown .token.symbol,
+.file-preview-markdown .token.deleted {
+  color: #c93400;
+}
+.file-preview-markdown .token.selector,
+.file-preview-markdown .token.attr-name,
+.file-preview-markdown .token.string,
+.file-preview-markdown .token.char,
+.file-preview-markdown .token.builtin,
+.file-preview-markdown .token.inserted {
+  color: #248a3d;
+}
+.file-preview-markdown .token.operator,
+.file-preview-markdown .token.entity,
+.file-preview-markdown .token.url {
+  color: #6f42c1;
+}
+.file-preview-markdown .token.atrule,
+.file-preview-markdown .token.attr-value,
+.file-preview-markdown .token.keyword {
+  color: #0071e3;
+}
+.file-preview-markdown .token.function,
+.file-preview-markdown .token.class-name {
+  color: #ad3da4;
+}
+.file-preview-markdown .token.regex,
+.file-preview-markdown .token.important,
+.file-preview-markdown .token.variable {
+  color: #e28d0a;
+}
+.file-preview-markdown table {
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  width: 100%;
+  font-size: 13px;
+}
+.file-preview-markdown th,
+.file-preview-markdown td {
+  border: 1px solid var(--border-2);
+  padding: 6px 12px;
+  text-align: left;
+}
+.file-preview-markdown th {
+  background: var(--surface-2);
+  font-weight: 600;
+}
+.file-preview-markdown tr:nth-child(2n) td {
+  background: var(--surface-2);
+}
+.file-preview-markdown hr {
+  border: none;
+  border-top: 1px solid var(--border-2);
+  margin: 1.4em 0;
+}
+.file-preview-markdown img {
+  max-width: 100%;
+  border-radius: var(--r-md);
+}
+.file-preview-markdown input[type="checkbox"] {
+  margin-right: 0.4em;
+  accent-color: var(--blue);
+}
+.file-preview-markdown del {
+  color: var(--text-3);
+}
+
 .file-editor-empty {
   flex: 1;
   display: flex;
@@ -1823,4 +2168,387 @@ body {
   border-radius: var(--r-sm);
   background: var(--surface-2);
   border: 1px solid var(--border);
+}
+
+/* —— 文件类型图标颜色 —— */
+.file-tree-icon.file-type-image {
+  color: var(--purple);
+}
+
+.file-tree-icon.file-type-binary {
+  color: var(--text-4);
+}
+
+.file-tree-row.active .file-tree-icon.file-type-image,
+.file-tree-row.active .file-tree-icon.file-type-binary {
+  color: var(--text-2);
+}
+
+/* —— 文件类型标签 —— */
+.file-type-badge {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  flex-shrink: 0;
+}
+
+.file-type-badge.image {
+  color: var(--purple);
+  background: var(--purple-glow);
+}
+
+.file-type-badge.binary {
+  color: var(--text-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+/* —— 图片预览区域 —— */
+.file-image-preview {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  padding: 24px;
+  background: var(--surface-2);
+}
+
+.file-image-preview img {
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-md);
+}
+
+/* —— 二进制文件提示 —— */
+.file-binary-hint {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 40px;
+  color: var(--text-3);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* ========================================================
+   Dark mode overrides — invert hardcoded rgba(0,0,0,…) hovers
+   and #ffffff backgrounds that can't use CSS variables
+   ======================================================== */
+
+[data-theme="dark"] .project-group-header:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="dark"] .project-group-count {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .service-card:hover {
+  background: rgba(255, 255, 255, 0.045);
+}
+
+[data-theme="dark"] .service-card.active {
+  background: rgba(10, 132, 255, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.22);
+}
+
+[data-theme="dark"] .log-line:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+[data-theme="dark"] .icon-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .ant-btn-default {
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: var(--text) !important;
+}
+
+[data-theme="dark"] .ant-btn-default:hover {
+  background: rgba(255, 255, 255, 0.12) !important;
+}
+
+[data-theme="dark"] .ant-btn-primary:disabled {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: var(--text-4) !important;
+}
+
+[data-theme="dark"] .ant-btn-text:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+
+/* Segmented thumb → dark surface */
+[data-theme="dark"] .ant-segmented {
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+
+[data-theme="dark"] .ant-segmented-thumb {
+  background: var(--surface-hi) !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 0 0 0.5px rgba(255, 255, 255, 0.04) !important;
+}
+
+/* Input focus → dark */
+[data-theme="dark"] .ant-input:focus,
+[data-theme="dark"] .ant-input-affix-wrapper-focused,
+[data-theme="dark"] .ant-input-number-focused {
+  background: var(--surface-2) !important;
+}
+
+/* Tree checkbox → dark */
+[data-theme="dark"] .ant-tree-checkbox-inner {
+  background: var(--surface-2) !important;
+}
+
+/* Tabs hover → dark */
+[data-theme="dark"] .ant-tabs-card > .ant-tabs-nav .ant-tabs-tab:hover {
+  background: rgba(255, 255, 255, 0.04) !important;
+}
+
+/* Dropdown / Select dropdown → dark frosted */
+[data-theme="dark"] .ant-dropdown-menu,
+[data-theme="dark"] .ant-popover-inner .ant-dropdown-menu {
+  background: rgba(44, 44, 46, 0.92) !important;
+}
+
+[data-theme="dark"] .ant-dropdown-menu-item:hover {
+  background: rgba(10, 132, 255, 0.15) !important;
+}
+
+[data-theme="dark"] .ant-select-dropdown {
+  background: rgba(44, 44, 46, 0.92) !important;
+}
+
+/* Scrollbars → light-on-dark */
+[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+  background-clip: padding-box;
+}
+
+[data-theme="dark"] .log-viewer::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  background-clip: padding-box;
+}
+
+[data-theme="dark"] .log-viewer::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+  background-clip: padding-box;
+}
+
+/* Tree hover → dark */
+[data-theme="dark"] .ant-tree-treenode:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* Modal close hover → dark */
+[data-theme="dark"] .ant-modal-close:hover,
+[data-theme="dark"] .ant-drawer-close:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+
+/* File tree row hover → dark */
+[data-theme="dark"] .file-tree-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* Stat dot box-shadow ring → dark */
+[data-theme="dark"] .stat-dot {
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.4),
+    0 0 8px currentColor;
+}
+
+/* Unread badge ring → dark */
+[data-theme="dark"] .unread-badge {
+  box-shadow: 0 0 0 2px var(--surface), 0 0 8px var(--blue-glow);
+}
+
+/* Port tag → dark */
+[data-theme="dark"] .port-tag {
+  background: rgba(100, 210, 255, 0.12);
+  color: #64d2ff;
+}
+
+[data-theme="dark"] .port-tag:hover {
+  background: var(--cyan);
+  color: #000000;
+}
+
+/* Git branch badge → dark */
+[data-theme="dark"] .git-branch {
+  background: rgba(10, 132, 255, 0.15);
+}
+
+[data-theme="dark"] .git-history-hash {
+  background: rgba(10, 132, 255, 0.12);
+}
+
+/* Diff line colors → dark */
+[data-theme="dark"] .diff-line.add .diff-content {
+  color: #30d158;
+  background: rgba(48, 209, 88, 0.1);
+}
+
+[data-theme="dark"] .diff-line.del .diff-content {
+  color: #ff453a;
+  background: rgba(255, 69, 58, 0.1);
+}
+
+[data-theme="dark"] .diff-line.hunk .diff-content {
+  background: rgba(10, 132, 255, 0.08);
+}
+
+/* Log search highlight → dark */
+[data-theme="dark"] .log-highlight {
+  background: rgba(255, 214, 10, 0.2);
+  color: #ffd60a;
+}
+
+/* Image preview → dark */
+[data-theme="dark"] .file-image-preview {
+  background: var(--surface-2);
+}
+
+[data-theme="dark"] .file-image-preview img {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5), 0 8px 32px rgba(0, 0, 0, 0.6);
+}
+
+/* Binary file type icon → dark */
+[data-theme="dark"] .file-tree-icon.file-type-binary {
+  color: var(--text-4);
+}
+
+/* Syntax highlight tokens → dark (Xcode dark palette) */
+[data-theme="dark"] .file-code-view .token.comment,
+[data-theme="dark"] .file-code-view .token.prolog,
+[data-theme="dark"] .file-code-view .token.doctype,
+[data-theme="dark"] .file-code-view .token.cdata {
+  color: #7c7c80;
+}
+[data-theme="dark"] .file-code-view .token.punctuation {
+  color: #98989d;
+}
+[data-theme="dark"] .file-code-view .token.property,
+[data-theme="dark"] .file-code-view .token.tag,
+[data-theme="dark"] .file-code-view .token.boolean,
+[data-theme="dark"] .file-code-view .token.number,
+[data-theme="dark"] .file-code-view .token.constant,
+[data-theme="dark"] .file-code-view .token.symbol,
+[data-theme="dark"] .file-code-view .token.deleted {
+  color: #ff7ab2;
+}
+[data-theme="dark"] .file-code-view .token.selector,
+[data-theme="dark"] .file-code-view .token.attr-name,
+[data-theme="dark"] .file-code-view .token.string,
+[data-theme="dark"] .file-code-view .token.char,
+[data-theme="dark"] .file-code-view .token.builtin,
+[data-theme="dark"] .file-code-view .token.inserted {
+  color: #69e4a6;
+}
+[data-theme="dark"] .file-code-view .token.operator,
+[data-theme="dark"] .file-code-view .token.entity,
+[data-theme="dark"] .file-code-view .token.url {
+  color: #d2a8ff;
+}
+[data-theme="dark"] .file-code-view .token.atrule,
+[data-theme="dark"] .file-code-view .token.attr-value,
+[data-theme="dark"] .file-code-view .token.keyword {
+  color: #4fa8ff;
+}
+[data-theme="dark"] .file-code-view .token.function,
+[data-theme="dark"] .file-code-view .token.class-name {
+  color: #ff9f0a;
+}
+[data-theme="dark"] .file-code-view .token.regex,
+[data-theme="dark"] .file-code-view .token.important,
+[data-theme="dark"] .file-code-view .token.variable {
+  color: #ffd60a;
+}
+[data-theme="dark"] .file-code-view .token.comment .token.url {
+  color: #7c7c80;
+}
+
+/* Markdown 预览 → dark */
+[data-theme="dark"] .file-preview-markdown h1,
+[data-theme="dark"] .file-preview-markdown h2 {
+  border-bottom-color: var(--border);
+}
+[data-theme="dark"] .file-preview-markdown a {
+  color: var(--blue);
+}
+[data-theme="dark"] .file-preview-markdown code {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+[data-theme="dark"] .file-preview-markdown pre {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+[data-theme="dark"] .file-preview-markdown blockquote {
+  background: var(--surface-2);
+  border-left-color: var(--border-3);
+  color: var(--text-2);
+}
+[data-theme="dark"] .file-preview-markdown th {
+  background: var(--surface-2);
+}
+[data-theme="dark"] .file-preview-markdown tr:nth-child(2n) td {
+  background: var(--surface-2);
+}
+
+/* Markdown 代码块 Prism token → dark */
+[data-theme="dark"] .file-preview-markdown .token.comment,
+[data-theme="dark"] .file-preview-markdown .token.prolog,
+[data-theme="dark"] .file-preview-markdown .token.doctype,
+[data-theme="dark"] .file-preview-markdown .token.cdata {
+  color: #7c7c80;
+}
+[data-theme="dark"] .file-preview-markdown .token.punctuation {
+  color: #98989d;
+}
+[data-theme="dark"] .file-preview-markdown .token.property,
+[data-theme="dark"] .file-preview-markdown .token.tag,
+[data-theme="dark"] .file-preview-markdown .token.boolean,
+[data-theme="dark"] .file-preview-markdown .token.number,
+[data-theme="dark"] .file-preview-markdown .token.constant,
+[data-theme="dark"] .file-preview-markdown .token.symbol,
+[data-theme="dark"] .file-preview-markdown .token.deleted {
+  color: #ff7ab2;
+}
+[data-theme="dark"] .file-preview-markdown .token.selector,
+[data-theme="dark"] .file-preview-markdown .token.attr-name,
+[data-theme="dark"] .file-preview-markdown .token.string,
+[data-theme="dark"] .file-preview-markdown .token.char,
+[data-theme="dark"] .file-preview-markdown .token.builtin,
+[data-theme="dark"] .file-preview-markdown .token.inserted {
+  color: #69e4a6;
+}
+[data-theme="dark"] .file-preview-markdown .token.operator,
+[data-theme="dark"] .file-preview-markdown .token.entity,
+[data-theme="dark"] .file-preview-markdown .token.url {
+  color: #d2a8ff;
+}
+[data-theme="dark"] .file-preview-markdown .token.atrule,
+[data-theme="dark"] .file-preview-markdown .token.attr-value,
+[data-theme="dark"] .file-preview-markdown .token.keyword {
+  color: #4fa8ff;
+}
+[data-theme="dark"] .file-preview-markdown .token.function,
+[data-theme="dark"] .file-preview-markdown .token.class-name {
+  color: #ff9f0a;
+}
+[data-theme="dark"] .file-preview-markdown .token.regex,
+[data-theme="dark"] .file-preview-markdown .token.important,
+[data-theme="dark"] .file-preview-markdown .token.variable {
+  color: #ffd60a;
 }

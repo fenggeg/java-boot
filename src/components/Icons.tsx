@@ -405,3 +405,69 @@ export function Play2({ size, ...rest }: IconProps) {
     </Svg>
   );
 }
+
+export function Moon({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <path d="M21 12.8 A9 9 0 1 1 11.2 3 A7 7 0 0 0 21 12.8 Z" />
+    </Svg>
+  );
+}
+
+export function Sun({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2 V5 M12 19 V22 M4.2 4.2 L6.3 6.3 M17.7 17.7 L19.8 19.8 M2 12 H5 M19 12 H22 M4.2 19.8 L6.3 17.7 M17.7 6.3 L19.8 4.2" />
+    </Svg>
+  );
+}
+
+export function Layers({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <path d="M12 3 L21 8 L12 13 L3 8 Z" />
+      <path d="M3 12 L12 17 L21 12" />
+      <path d="M3 16 L12 21 L21 16" />
+    </Svg>
+  );
+}
+
+export function Broom({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <path d="M19 4 L17 6 L10 13 L7 13 L3 17 L4 20 L7 19 L11 15 L11 12 L18 5 L20 3 Z" />
+      <path d="M5 17 L7 19" />
+      <path d="M14 12 L16 14" />
+    </Svg>
+  );
+}
+
+export function Copy({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <rect x="3" y="3" width="13" height="13" rx="2" />
+      <path d="M8 8 H19 V20 H8" />
+    </Svg>
+  );
+}
+
+export function Image({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <circle cx="8.5" cy="8.5" r="1.5" />
+      <path d="M21 15 L16 10 L5 21" />
+    </Svg>
+  );
+}
+
+export function Binary({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <path d="M7 8 V12 M9 10 L5 10 M9 12 L5 12 M7 14 L7 16 M5 16 L9 16" />
+      <path d="M14 7 V17 M12 7 L16 7 M12 17 L16 17 M14 12 L14 12" />
+    </Svg>
+  );
+}
