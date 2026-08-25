@@ -1,6 +1,6 @@
 ---
 name: version-release
-description: JavaBoot Launcher 项目专用版本发布流程：同步版本号、维护 CHANGELOG、本地预检、规范化提交并推送 master、打 v* 标签触发 CI 构建发布 GitHub Release。当用户说「发版」「发布新版本」「打个 tag」「release」「发个版本」或要求升级版本号发布时使用。
+description: JavaBoot Launcher 项目专用版本发布流程：同步版本号、维护 CHANGELOG、本地预检、规范化提交并推送 master、打 v* 标签触发 CI 构建。当用户说「发版」「发布新版本」「打个 tag」「release」「发个版本」或要求升级版本号发布时使用。
 metadata:
   scope: project
 ---
@@ -8,14 +8,14 @@ metadata:
 # JavaBoot Launcher 版本发布技能
 
 本项目是 Tauri 2 + React + Rust 的 Windows 桌面应用，发布完全由 Git tag 驱动 CI 完成。
-本技能覆盖从版本准备到发布验证的完整链路。执行前先通读一遍，再逐步操作；
+本技能覆盖从版本准备到触发构建的完整链路；**tag 推送成功即为发版完成**，
+不轮询 CI、不做发布后验证（构建结果由 GitHub Actions 自行反馈）。
 每一步有硬性校验点，未通过不得进入下一步。
 
 ## 流程总览
 
 ```
-确认版本号 → 同步版本(4处) → 写 CHANGELOG → 本地预检 → 提交 → 推送 master
-→ 打 tag → 推送 tag → 盯 CI → 验证 Release 与自更新
+确认版本号 → 同步版本(4处) → 写 CHANGELOG → 本地预检 → 提交 → 推送 master → 打 tag 并推送（完成）
 ```
 
 ## 第 1 步：确认目标版本号
@@ -35,7 +35,7 @@ metadata:
 | `src-tauri/tauri.conf.json` | `"version"` | 应用内 `getVersion()` 取此值，**决定自更新比较基准** |
 | `src-tauri/Cargo.toml` | `[package] version` | 改完须跑一次 `cargo check` 让 `Cargo.lock` 同步 |
 
-> 历史教训：Cargo.toml 曾长期停在旧版本号。从本次起四处必须一致。
+> 历史教训：Cargo.toml 曾长期停在旧版本号、锁文件曾漂移一个版本。四处必须一致。
 
 校验点：四个文件的版本字符串完全相同（Cargo.lock 由 cargo 自动同步后核对）。
 
@@ -76,7 +76,7 @@ metadata:
 ```bash
 npm ci          # 锁文件与 package.json 同步校验
 npm run typecheck
-npm run lint
+npm run lint    # 0 error 即通过，存量 warning 不阻断
 cargo check     # workdir: src-tauri
 ```
 
@@ -106,10 +106,7 @@ src-tauri/Cargo.toml  src-tauri/Cargo.lock  CHANGELOG.md
 git push origin master
 ```
 
-推送后确认远端 `ci-check.yml` 工作流启动（可用 `gh run list --limit 3` 查看）。
-ci-check 失败必须先修复再重新提交推送，禁止带病打 tag。
-
-## 第 7 步：打标签并推送（触发构建发布）
+## 第 7 步：打标签并推送（触发构建，发版完成）
 
 ```bash
 git tag -a vX.Y.Z -m "JavaBoot Launcher vX.Y.Z"
@@ -118,32 +115,13 @@ git push origin vX.Y.Z
 
 - tag 名必须带 `v` 前缀且与第 2 步版本号严格一致（`v*` 是构建工作流的唯一触发条件）
 - 使用 annotated tag（`-a -m`），便于追溯
-- 此步之后不要在该 commit 上追加任何提交，保持 tag 指向的树与构建产物一致
+- 推送成功即向用户报告发版完成：CI 将自动构建 NSIS 安装包并发布 GitHub Release，
+  无需轮询监控；若用户事后反馈构建失败，再按下节处理
 
-## 第 8 步：监控 CI 构建发布
+## 失败处理（仅应事后反馈时使用）
 
-```bash
-gh run list --limit 5
-gh run watch <run-id>   # 或轮询直到完成
-```
-
-构建内容（tauri-build.yml，windows-latest）：NSIS x64 打包 → 从 CHANGELOG.md
-提取 `## [x.y.z]` 章节作为 Release Notes → 创建正式 GitHub Release（非草稿、
-非预发布）→ 上传资产 `JavaBoot.Launcher_x64-setup.exe`。
-
-## 第 9 步：发布后验证
-
-1. `gh release view vX.Y.Z`：确认标题、Notes（应为 CHANGELOG 对应章节而非提交列表回退）、
-   资产 `JavaBoot.Launcher_x64-setup.exe` 存在
-2. 请用户在旧版本应用内点击「检查更新」：
-   - 弹窗应显示新版本号与本次更新日志（自更新接口聚合 GitHub Releases，
-     draft/prerelease 不会推送）
-   - 「立即更新」下载进度正常推进，「立即重启」后版本号变为新版本
-
-## 失败处理
-
-- **ci-check 红**：修复后追加 fix 提交重新推送；tag 尚未打则无影响
-- **构建阶段失败**：删除远端 tag 重打（`git push origin :refs/tags/vX.Y.Z && git tag -d vX.Y.Z`），
-  修复后再走第 5~8 步；若 Release 已创建为半成品，到 GitHub 页面手动删除后重试
+- **master 推送被拒**：先 `git pull --rebase` 解决冲突后重推
+- **构建失败**：删除远端 tag 重打（`git push origin :refs/tags/vX.Y.Z && git tag -d vX.Y.Z`），
+  修复后再走第 5~7 步；若 Release 已创建为半成品，到 GitHub 页面手动删除后重试
 - **发错版本号**：同上删除 tag 与 Release，修正四处版本号后重新发布；
   已分发的安装包无法撤回，需评估是否补发修订版
