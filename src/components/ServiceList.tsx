@@ -1,14 +1,12 @@
-import {memo, useCallback, useEffect, useRef, useState} from "react";
+import {memo, useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {App, Button, Dropdown, Empty, Tooltip} from "antd";
 import {
     CaretDown,
     CaretRight,
     ChevronLeft,
     File,
+    Filter,
     FolderOpen,
-    GitBranch,
-    GitPull,
-    GitPullRestart,
     Layers,
     More,
     Plus,
@@ -27,7 +25,6 @@ interface Props {
   onAddProject: () => void;
   onAddService: () => void;
   onConfigService: (service: Service) => void;
-  onOpenGit: (project: Project) => void;
   onOpenFiles: (project: Project) => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
@@ -52,11 +49,10 @@ const ServiceRow = memo(function ServiceRow({
   );
 });
 
-export default function ServiceList({ onAddProject, onAddService, onConfigService, onOpenGit, onOpenFiles, collapsed: sidebarCollapsed, onToggleCollapse: onToggleSidebar }: Props) {
+export default function ServiceList({ onAddProject, onAddService, onConfigService, onOpenFiles, collapsed: sidebarCollapsed, onToggleCollapse: onToggleSidebar }: Props) {
   const projects = useStore((s) => s.projects);
   const services = useStore((s) => s.services);
   const runtimes = useStore((s) => s.runtimes);
-  const gitAvailable = useStore((s) => s.gitAvailable);
   const removeProject = useStore((s) => s.removeProject);
   const refreshServices = useStore((s) => s.refreshServices);
   const { message, modal } = App.useApp();
@@ -70,6 +66,46 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
   });
   const [configProject, setConfigProject] = useState<Project | null>(null);
   const [rescanProject, setRescanProject] = useState<Project | null>(null);
+
+  // 仅显示有服务运行的项目（持久化到 localStorage）
+  const [runningOnly, setRunningOnly] = useState<boolean>(() => {
+    return localStorage.getItem("javaboot:runningOnly") === "1";
+  });
+
+  const toggleRunningOnly = useCallback(() => {
+    setRunningOnly((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("javaboot:runningOnly", next ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }, []);
+
+  const isRunningStatus = (serviceId: string) => {
+    const st = runtimes[serviceId]?.status;
+    return st === "running" || st === "starting";
+  };
+
+  // 过滤后的项目列表：开启开关时只保留存在运行中服务的项目
+  const visibleProjects = useMemo(() => {
+    if (!runningOnly) return projects;
+    return projects.filter((p) =>
+      services.some(
+        (s) => s.project_id === p.id && isRunningStatus(s.id)
+      )
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runningOnly, projects, services, runtimes]);
+
+  const ungroupedServices = services.filter((s) => !s.project_id);
+  const visibleUngrouped = useMemo(() => {
+    if (!runningOnly) return ungroupedServices;
+    return ungroupedServices.filter((s) => isRunningStatus(s.id));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runningOnly, ungroupedServices, runtimes]);
 
   // 侧边栏可拖拽宽度（持久化到 localStorage，交互与文件树分隔条一致）
   const [width, setWidth] = useState<number>(() => {
@@ -114,8 +150,6 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
     };
   }, []);
 
-  const ungroupedServices = services.filter((s) => !s.project_id);
-
   const toggleCollapse = (id: string) => {
     setCollapsed((prev) => {
       const next = { ...prev, [id]: !prev[id] };
@@ -126,26 +160,6 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
       }
       return next;
     });
-  };
-
-  const handlePull = async (project: Project, restart: boolean) => {
-    try {
-      const result = restart
-        ? await api.gitPullAndRestart(project.id)
-        : await api.gitPull(project.id);
-      if (result.success) {
-        if (result.up_to_date) {
-          message.success(`${project.name}: 已是最新`);
-        } else {
-          message.success(`${project.name}: 拉取成功`);
-        }
-      } else {
-        message.error(`${project.name}: 拉取失败 - ${result.message}`);
-      }
-      await refreshServices();
-    } catch (e: any) {
-      message.error(`拉取失败: ${e}`);
-    }
   };
 
   const handleStartAll = async (project: Project) => {
@@ -231,31 +245,6 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
         icon: <Settings size={13} />,
         onClick: () => setConfigProject(project),
       },
-      ...(gitAvailable && project.git_available
-        ? [
-            { type: "divider" as const },
-            {
-              key: "git",
-              label: "Git 工作区",
-              icon: <GitBranch size={13} />,
-              onClick: () => onOpenGit(project),
-            },
-            {
-              key: "pull",
-              label: "Git 拉取",
-              icon: <GitPull size={13} />,
-              disabled: isBusy,
-              onClick: () => handlePull(project, false),
-            },
-            {
-              key: "pull-restart",
-              label: "拉取并重启",
-              icon: <GitPullRestart size={13} />,
-              disabled: isBusy,
-              onClick: () => handlePull(project, true),
-            },
-          ]
-        : []),
       { type: "divider" as const },
       {
         key: "delete",
@@ -371,6 +360,18 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
             添加
           </Button>
         </Dropdown>
+        <Tooltip
+          title={runningOnly ? "当前：仅显示运行中的项目" : "当前：显示全部项目"}
+        >
+          <button
+            className={`icon-btn sm ${runningOnly ? "accent" : ""}`}
+            onClick={toggleRunningOnly}
+            aria-label="筛选运行中的项目"
+            aria-pressed={runningOnly}
+          >
+            <Filter size={14} />
+          </button>
+        </Tooltip>
         <Tooltip title="收起侧边栏">
           <button
             className="icon-btn sm"
@@ -389,11 +390,17 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
             description="暂无服务，点击上方添加"
             style={{ marginTop: 60 }}
           />
+        ) : runningOnly && visibleProjects.length === 0 && visibleUngrouped.length === 0 ? (
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description="没有正在运行服务的项目"
+            style={{ marginTop: 60 }}
+          />
         ) : (
           <>
-            {projects.map(renderProjectGroup)}
+            {visibleProjects.map(renderProjectGroup)}
 
-            {ungroupedServices.length > 0 && (
+            {visibleUngrouped.length > 0 && (
               <div className="project-group">
                 <div
                   className="project-group-header"
@@ -411,11 +418,11 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
                   </span>
                   <span className="group-name">未分组</span>
                   <span className="project-group-count">
-                    {ungroupedServices.length}
+                    {visibleUngrouped.length}
                   </span>
                 </div>
                 {!collapsed["__ungrouped__"] &&
-                  ungroupedServices.map((s) => (
+                  visibleUngrouped.map((s) => (
                     <ServiceRow key={s.id} service={s} onConfig={onConfigService} />
                   ))}
               </div>

@@ -5,7 +5,31 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/)。
 
-## [0.1.1]
+## [Unreleased]
+
+## [0.1.2] - 2026-08-25
+
+### 新增
+
+- **项目筛选**：侧边栏新增筛选开关，可仅显示存在运行中服务的项目（状态持久化，随服务启停实时刷新）
+- **编辑态语法高亮**：文件编辑模式实时显示语法颜色（高亮底层 + 透明输入层叠加，滚动同步），与查看模式同一套配色
+- **Git 面板返回文件树**：Git 工作区面板新增「返回文件树」按钮，与文件树双向切换
+
+### 变更
+
+- Git 拉取 / 拉取并重启快捷入口从项目「更多」菜单移除，「Git 工作区」入口集成到文件树头部（仅 Git 可用项目显示），Git 相关操作统一收敛至文件树模块
+
+### 修复
+
+- 修复「检查更新」请求失败（CORS）的问题：改用 Tauri http 插件经 Rust 侧发出请求，绕过 webview 跨域限制
+- 修复 package-lock.json 与 package.json 不同步导致 CI 构建失败的问题
+
+### CI
+
+- 构建工作流改为仅 tag 推送 / 手动触发，master 推送不再自动构建
+- 新增轻量校验工作流：推送时自动执行 npm ci（锁文件同步校验）、typecheck、lint
+
+## [0.1.1] - 2026-08-25
 
 ### 新增
 
@@ -43,5 +67,7 @@
 
 - 基于 Tauri 2 + React + Zustand 构建，Windows x64 NSIS 安装器（免管理员权限）
 
-[Unreleased]: https://github.com/fenggeg/java-boot/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/fenggeg/java-boot/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/fenggeg/java-boot/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/fenggeg/java-boot/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/fenggeg/java-boot/releases/tag/v0.1.0

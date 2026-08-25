@@ -3,7 +3,7 @@ import {App, Segmented, Spin, Tooltip} from "antd";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {convertFileSrc} from "@tauri-apps/api/core";
-import {Binary, CaretDown, CaretRight, ChevronLeft, File, Folder, Image as ImageIcon, Save,} from "./Icons";
+import {Binary, CaretDown, CaretRight, ChevronLeft, File, Folder, GitBranch, Image as ImageIcon, Save,} from "./Icons";
 import {Prism} from "../prism-langs";
 import {getPrismLang, isMarkdown} from "../languages";
 import * as api from "../api";
@@ -12,6 +12,8 @@ import type {FileContent, Project} from "../types";
 interface Props {
   project: Project;
   onClose: () => void;
+  /** 打开同项目的 Git 工作区面板 */
+  onOpenGit: (project: Project) => void;
 }
 
 // ================================================================
@@ -250,7 +252,7 @@ function TreeRow({
 // ================================================================
 // 主组件
 // ================================================================
-export default function FilePanel({ project, onClose }: Props) {
+export default function FilePanel({ project, onClose, onOpenGit }: Props) {
   const { message, modal } = App.useApp();
   const [treeData, setTreeData] = useState<FileTreeNode[]>(() => [
     {
@@ -267,6 +269,8 @@ export default function FilePanel({ project, onClose }: Props) {
   );
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(false);
+  // 编辑态语法高亮底层（与输入层滚动同步）
+  const editorUnderlayRef = useRef<HTMLPreElement>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // 图片预览 URL
@@ -489,6 +493,17 @@ export default function FilePanel({ project, onClose }: Props) {
           <span className="file-panel-sub">文件</span>
         </span>
         <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+          {project.git_available && (
+            <Tooltip title="Git 工作区">
+              <button
+                className="icon-btn sm"
+                onClick={() => onOpenGit(project)}
+                aria-label="Git 工作区"
+              >
+                <GitBranch size={13} />
+              </button>
+            </Tooltip>
+          )}
           {doc && currentFileType === "text" && (
             <>
               <span className="file-enc-badge">{doc.meta.encoding}</span>
@@ -670,18 +685,43 @@ export default function FilePanel({ project, onClose }: Props) {
                   />
                 )
               ) : (
-                <textarea
-                  className="file-editor-textarea"
-                  value={content}
-                  onChange={(e) => setContent(e.target.value)}
-                  spellCheck={false}
-                  onKeyDown={(e) => {
-                    if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-                      e.preventDefault();
-                      handleSave();
-                    }
-                  }}
-                />
+                <div className="file-editor-overlay">
+                  {/* 高亮底层：随内容实时渲染语法颜色 */}
+                  <pre
+                    ref={editorUnderlayRef}
+                    className="file-code-view file-code-underlay"
+                    aria-hidden
+                    dangerouslySetInnerHTML={{
+                      __html: highlightCode(
+                        // 末尾换行时补一个空格，保证底层行数与输入层一致
+                        content.endsWith("\n") ? content + " " : content,
+                        getPrismLang(doc.path)
+                      ),
+                    }}
+                  />
+                  {/* 输入层：文字透明，仅显示光标与选区 */}
+                  <textarea
+                    className="file-editor-textarea file-editor-input"
+                    value={content}
+                    onChange={(e) => setContent(e.target.value)}
+                    onScroll={(e) => {
+                      const el = e.currentTarget;
+                      const under = editorUnderlayRef.current;
+                      if (under) {
+                        under.scrollTop = el.scrollTop;
+                        under.scrollLeft = el.scrollLeft;
+                      }
+                    }}
+                    wrap="off"
+                    spellCheck={false}
+                    onKeyDown={(e) => {
+                      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+                        e.preventDefault();
+                        handleSave();
+                      }
+                    }}
+                  />
+                </div>
               )}
             </>
           ) : error ? (

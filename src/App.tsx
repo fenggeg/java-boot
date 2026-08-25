@@ -199,7 +199,6 @@ export default function App() {
           onAddProject={() => setAddProjectOpen(true)}
           onAddService={() => setAddServiceOpen(true)}
           onConfigService={setConfigService}
-          onOpenGit={handleOpenGit}
           onOpenFiles={handleOpenFiles}
           collapsed={sidebarCollapsed}
           onToggleCollapse={toggleSidebar}
@@ -213,6 +212,7 @@ export default function App() {
                 <GitPanel
                   project={project}
                   onClose={() => setView("logs")}
+                  onBackFiles={() => setView("files")}
                 />
               ) : null;
             })()
@@ -223,6 +223,7 @@ export default function App() {
                 <FilePanel
                   project={project}
                   onClose={() => setView("logs")}
+                  onOpenGit={handleOpenGit}
                 />
               ) : null;
             })()

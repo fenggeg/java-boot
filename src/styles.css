@@ -2062,6 +2062,36 @@ body {
   color: var(--text-2);
 }
 
+/* —— 编辑态语法高亮叠加层 —— */
+/* 高亮底层与输入层必须保持完全一致的字体/字号/行高/内边距/换行，否则文字错位 */
+.file-editor-overlay {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.file-editor-overlay .file-code-underlay {
+  position: absolute;
+  inset: 0;
+  padding: 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.file-editor-overlay .file-editor-input {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  color: transparent;
+  caret-color: var(--text);
+  background: transparent;
+  overflow: auto;
+}
+
 /* —— 语法高亮代码视图 —— */
 .file-code-view {
   flex: 1;

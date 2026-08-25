@@ -387,6 +387,14 @@ export function Download({ size, ...rest }: IconProps) {
   );
 }
 
+export function Filter({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <path d="M4 5 L20 5 L13.5 12.5 L13.5 19 L10.5 16.5 L10.5 12.5 Z" />
+    </Svg>
+  );
+}
+
 export function ChevronLeft({ size, ...rest }: IconProps) {
   return (
     <Svg size={size} {...rest}>

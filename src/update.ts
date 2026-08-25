@@ -2,8 +2,10 @@
  * 应用更新服务层
  *
  * - 检查更新：已接入后端（GitHub Releases 格式）
+ *   请求经 Tauri http 插件（Rust reqwest）发出，绕过 webview CORS 限制
  * - 下载 / 安装：暂为前端模拟，后端接入后替换（见函数 TODO）
  */
+import {fetch as tauriFetch} from "@tauri-apps/plugin-http";
 
 export interface UpdateInfo {
   /** 是否有可用更新 */
@@ -110,7 +112,8 @@ function formatDate(iso: string): string {
  */
 export async function checkForUpdate(): Promise<UpdateInfo> {
   const current = await currentVersion();
-  const res = await fetch(UPDATE_API, {
+  // 使用 Tauri http 插件：请求走 Rust 侧，不受 webview CORS 约束
+  const res = await tauriFetch(UPDATE_API, {
     headers: { Accept: "application/json" },
   });
   if (!res.ok) {

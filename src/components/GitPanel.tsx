@@ -1,7 +1,7 @@
 import {useCallback, useEffect, useMemo, useState} from "react";
 import {App, Button, Empty, Input, Segmented, Spin, Tooltip} from "antd";
 import dayjs from "dayjs";
-import {Check, ChevronLeft, Commit, GitBranch, GitPull, Plus, Refresh,} from "./Icons";
+import {Check, ChevronLeft, Commit, Folder, GitBranch, GitPull, Plus, Refresh,} from "./Icons";
 import * as api from "../api";
 import type {GitChange, GitCommitInfo, GitStatus, Project} from "../types";
 import {gitChangeKind} from "../types";
@@ -10,6 +10,8 @@ import GitDiffModal from "./GitDiffModal";
 interface Props {
   project: Project;
   onClose: () => void;
+  /** 返回文件树（从文件树进入时提供） */
+  onBackFiles?: () => void;
 }
 
 const KIND_META: Record<string, { label: string; color: string; bg: string }> = {
@@ -21,7 +23,7 @@ const KIND_META: Record<string, { label: string; color: string; bg: string }> = 
   conflict: { label: "冲突", color: "#c50f1f", bg: "rgba(197,15,31,0.12)" },
 };
 
-export default function GitPanel({ project, onClose }: Props) {
+export default function GitPanel({ project, onClose, onBackFiles }: Props) {
   const { message, modal } = App.useApp();
   const [tab, setTab] = useState<"changes" | "history">("changes");
   const [status, setStatus] = useState<GitStatus | null>(null);
@@ -270,6 +272,17 @@ export default function GitPanel({ project, onClose }: Props) {
               <Refresh size={13} />
             </button>
           </Tooltip>
+          {onBackFiles && (
+            <Tooltip title="返回文件树">
+              <button
+                className="icon-btn sm"
+                onClick={onBackFiles}
+                aria-label="返回文件树"
+              >
+                <Folder size={13} />
+              </button>
+            </Tooltip>
+          )}
           <Tooltip title="返回日志">
             <button
               className="icon-btn sm"
