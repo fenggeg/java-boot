@@ -719,12 +719,19 @@ fn collect_jdk_candidates() -> Vec<String> {
                         if crate::util::path_exists_follow_junction(&p.join("bin").join("java.exe")) {
                             cc.push(p.to_string_lossy().to_string());
                         }
-                        // scoop 下可能再嵌套一层（如 temurin17-jdk/current）
+                        // scoop 下可能再嵌套一层（如 temurin17-jdk/current）：
+                        // current 优先且排他——升级只替换版本目录、current 恒定，
+                        // 存 current 才能保证项目配置在环境升级后长期有效
                         if let Ok(sub_entries) = std::fs::read_dir(&p) {
-                            for sub in sub_entries.flatten() {
-                                let sp = sub.path();
-                                if crate::util::path_exists_follow_junction(&sp.join("bin").join("java.exe")) {
-                                    cc.push(sp.to_string_lossy().to_string());
+                            let cur = p.join("current");
+                            if crate::util::path_exists_follow_junction(&cur.join("bin").join("java.exe")) {
+                                cc.push(cur.to_string_lossy().to_string());
+                            } else {
+                                for sub in sub_entries.flatten() {
+                                    let sp = sub.path();
+                                    if crate::util::path_exists_follow_junction(&sp.join("bin").join("java.exe")) {
+                                        cc.push(sp.to_string_lossy().to_string());
+                                    }
                                 }
                             }
                         }
@@ -745,7 +752,148 @@ fn collect_jdk_candidates() -> Vec<String> {
         }
     }
 
+    // 4. IDEA 下载的 JDK：~\.jdks\<name>\（IDE "Download JDK" 的固定落点）
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        let jdks_dir = PathBuf::from(&home).join(".jdks");
+        if let Ok(entries) = std::fs::read_dir(&jdks_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if crate::util::path_exists_follow_junction(&p.join("bin").join("java.exe")) {
+                    cc.push(p.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+
+    // 5. IDEA 注册过的 SDK 表（含手动安装后挂进 IDEA 的任意位置 JDK）
+    collect_jdk_table_candidates(&mut cc);
+
+    // 6. IDEA / Android Studio 自带 JBR（新版含 javac，可作兜底编译环境）
+    for root in collect_ide_install_roots() {
+        let jbr = root.join("jbr");
+        if crate::util::path_exists_follow_junction(&jbr.join("bin").join("java.exe")) {
+            cc.push(jbr.to_string_lossy().to_string());
+        }
+    }
+
     cc.into_candidates()
+}
+
+/// 展开 JetBrains 配置 XML 里的路径宏并统一分隔符
+///
+/// jdk.table.xml 中路径形如 `$USER_HOME$/.jdks/corretto-17.0.9`；
+/// 其余无法解析的宏（如 $MODULE_DIR$）返回 None 跳过。
+fn expand_xml_path(raw: &str) -> Option<String> {
+    let mut s = raw.trim().to_string();
+    if s.is_empty() {
+        return None;
+    }
+    if s.contains("$USER_HOME$") {
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            s = s.replace("$USER_HOME$", &home);
+        }
+    }
+    if s.contains('$') {
+        return None;
+    }
+    Some(s.replace('/', "\\"))
+}
+
+/// 从 jdk.table.xml 内容中提取全部 homePath 值
+fn extract_home_paths(content: &str) -> Vec<String> {
+    const MARKER: &str = "homePath value=\"";
+    content
+        .split(MARKER)
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// 扫描 JetBrains 系 IDE 的 SDK 注册表：
+/// - `%APPDATA%\JetBrains\<IDE>\options\jdk.table.xml`（IDEA / PyCharm / GoLand 等）
+/// - `%APPDATA%\Google\AndroidStudio*\options\jdk.table.xml`
+fn collect_jdk_table_candidates(cc: &mut CandidateCollector) {
+    let Ok(appdata) = std::env::var("APPDATA") else {
+        return;
+    };
+    let bases = [
+        PathBuf::from(&appdata).join("JetBrains"),
+        PathBuf::from(&appdata).join("Google"),
+    ];
+    for base in &bases {
+        let Ok(entries) = std::fs::read_dir(base) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let xml = entry.path().join("options").join("jdk.table.xml");
+            let Ok(content) = std::fs::read_to_string(&xml) else {
+                continue;
+            };
+            for raw in extract_home_paths(&content) {
+                let Some(path) = expand_xml_path(&raw) else {
+                    continue;
+                };
+                let p = PathBuf::from(&path);
+                if crate::util::path_exists_follow_junction(&p.join("bin").join("java.exe")) {
+                    cc.push(path);
+                }
+            }
+        }
+    }
+}
+
+/// 收集 JetBrains 系 IDE 安装根目录（用于定位自带 JBR / 捆绑 Maven）
+///
+/// 覆盖三种安装方式：
+/// - 全局安装：`C:\Program Files\JetBrains\<IDE>`
+/// - Toolbox 新版（per-user）：`%LOCALAPPDATA%\Programs\<IDE>`
+/// - Toolbox 旧版：`%LOCALAPPDATA%\JetBrains\Toolbox\apps\<app>\<channel>\<version>`
+fn collect_ide_install_roots() -> Vec<PathBuf> {
+    fn name_matches(name: &str) -> bool {
+        let n = name.to_lowercase();
+        n.contains("intellij") || n.contains("idea") || n.contains("android") || n.contains("jetbrains")
+    }
+
+    let mut roots: Vec<PathBuf> = Vec::new();
+
+    // C:\Program Files\JetBrains\*
+    if let Ok(entries) = std::fs::read_dir(r"C:\Program Files\JetBrains") {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() && name_matches(&entry.file_name().to_string_lossy()) {
+                roots.push(p);
+            }
+        }
+    }
+
+    if let Some(local) = dirs::data_local_dir() {
+        // %LOCALAPPDATA%\Programs\<IDE>
+        let programs = local.join("Programs");
+        if let Ok(entries) = std::fs::read_dir(&programs) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() && name_matches(&entry.file_name().to_string_lossy()) {
+                    roots.push(p);
+                }
+            }
+        }
+        // %LOCALAPPDATA%\JetBrains\Toolbox\apps\<app>\<ver>（旧版布局两层）
+        let toolbox_apps = local.join("JetBrains").join("Toolbox").join("apps");
+        if let Ok(apps) = std::fs::read_dir(&toolbox_apps) {
+            for app in apps.flatten() {
+                if let Ok(channels) = std::fs::read_dir(app.path()) {
+                    for channel in channels.flatten() {
+                        if channel.path().is_dir() {
+                            roots.push(channel.path());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    roots
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -820,12 +968,11 @@ fn probe_jdk(java_home: &str) -> Option<JdkInfo> {
             }
         }
     }
-    // 返回 canonicalize 后的真实路径，避免 current junction 在后续使用中无法解析
-    let real_home = crate::util::canonicalize_clean(std::path::Path::new(java_home))
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| java_home.to_string());
+    // 保留候选原路径（scoop 场景即 ...\current junction）：
+    // junction 升级后指向自动跟随，存版本化真实目录反而会在 scoop 清理旧版本后失效。
+    // 运行层使用时由 resolve_java_home / canonicalize_clean 统一解析，无需在此固化。
     Some(JdkInfo {
-        path: real_home,
+        path: java_home.to_string(),
         version,
         vendor,
     })
@@ -907,21 +1054,23 @@ fn collect_maven_candidates() -> Vec<String> {
         }
     }
 
-    // 3. scoop 安装目录
+    // 3. scoop 安装目录：current junction 优先且排他（升级恒定，配置长期有效），
+    //    无 current 时退回扫描版本目录
     if let Ok(home) = std::env::var("USERPROFILE") {
-        let scoop_maven = format!("{}\\scoop\\apps\\maven", home);
-        if let Ok(entries) = std::fs::read_dir(&scoop_maven) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if crate::util::path_exists_follow_junction(&p.join("bin").join("mvn.cmd")) {
-                    cc.push(p.to_string_lossy().to_string());
-                }
-            }
-        }
         let scoop_current = format!("{}\\scoop\\apps\\maven\\current", home);
         let scoop_current_mvn = std::path::Path::new(&scoop_current).join("bin").join("mvn.cmd");
         if crate::util::path_exists_follow_junction(&scoop_current_mvn) {
             cc.push(scoop_current);
+        } else {
+            let scoop_maven = format!("{}\\scoop\\apps\\maven", home);
+            if let Ok(entries) = std::fs::read_dir(&scoop_maven) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if crate::util::path_exists_follow_junction(&p.join("bin").join("mvn.cmd")) {
+                        cc.push(p.to_string_lossy().to_string());
+                    }
+                }
+            }
         }
     }
 
@@ -937,6 +1086,35 @@ fn collect_maven_candidates() -> Vec<String> {
                 let p = entry.path();
                 if p.is_dir() && crate::util::path_exists_follow_junction(&p.join("bin").join("mvn.cmd")) {
                     cc.push(p.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+
+    // 5. IDEA 捆绑的 Maven：<IDE 安装目录>\plugins\maven\lib\maven3
+    //    （项目设置里选 "Use Maven home: Bundled (Maven 3)" 时实际使用的就是它）
+    for root in collect_ide_install_roots() {
+        let m3 = root.join("plugins").join("maven").join("lib").join("maven3");
+        if crate::util::path_exists_follow_junction(&m3.join("bin").join("mvn.cmd")) {
+            cc.push(m3.to_string_lossy().to_string());
+        }
+    }
+
+    // 6. Maven Wrapper 下载的分发包：~\.m2\wrapper\dists\<dist>\<hash>\<apache-maven-x.y.z>
+    //    （项目首次跑 mvnw.cmd 时解压到此处，是现成可用的完整发行版）
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        let dists = PathBuf::from(&home).join(".m2").join("wrapper").join("dists");
+        if let Ok(l1) = std::fs::read_dir(&dists) {
+            for d1 in l1.flatten() {
+                let Ok(l2) = std::fs::read_dir(d1.path()) else { continue };
+                for d2 in l2.flatten() {
+                    let Ok(l3) = std::fs::read_dir(d2.path()) else { continue };
+                    for d3 in l3.flatten() {
+                        let p = d3.path();
+                        if crate::util::path_exists_follow_junction(&p.join("bin").join("mvn.cmd")) {
+                            cc.push(p.to_string_lossy().to_string());
+                        }
+                    }
                 }
             }
         }
