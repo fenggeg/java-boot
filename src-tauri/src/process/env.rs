@@ -13,6 +13,7 @@ use tokio::process::Command;
 use crate::db;
 use crate::db::models::Service;
 use crate::error::AppResult;
+use crate::util::NoWindow;
 
 /// 环境配置（从项目解析得出）
 #[derive(Clone)]
@@ -87,19 +88,121 @@ pub fn resolve_maven_cmd(working_dir: &Path, cfg: &EnvConfig) -> (String, Vec<St
     }
 }
 
-/// 确定生效的 JAVA_HOME：项目配置优先，否则用系统环境变量。
-/// 返回 canonicalize 后的真实路径，避免 scoop current junction 在 elevated 进程中无法解析。
-pub fn resolve_java_home(cfg: &EnvConfig) -> Option<String> {
-    let raw = cfg
-        .java_home
-        .clone()
-        .or_else(|| std::env::var("JAVA_HOME").ok().filter(|s| !s.is_empty()))?;
-    // canonicalize 解析 junction，失败时返回原路径
-    Some(
-        crate::util::canonicalize_clean(std::path::Path::new(&raw))
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or(raw),
+/// 校验 JAVA_HOME 是否有效：bin/java.exe 必须存在。
+///
+/// 背景：mvn.cmd 会检查 `%JAVA_HOME%\bin\java.exe`，JAVA_HOME 指向已卸载/迁移的
+/// JDK 时报 "The JAVA_HOME environment variable is not defined correctly"，
+/// 而 PATH 里若有可用 java，preflight 会误放行。注入前必须先验证。
+fn java_home_valid(home: &str) -> bool {
+    crate::util::path_exists_follow_junction(
+        &PathBuf::from(home).join("bin").join("java.exe"),
     )
+}
+
+/// 反推缓存：java.exe 路径 → 真实 java.home（进程内共享，避免批量启动时反复探测）
+static JAVA_HOME_DETECT_CACHE: once_cell::sync::Lazy<
+    parking_lot::Mutex<std::collections::HashMap<String, Option<String>>>,
+> = once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+
+/// 通过执行 java 反推真实 java.home（处理 PATH 目录、scoop shims 等非标准布局）
+///
+/// scoop 的 shims/java.exe 是转发 stub，其所在目录不是 JDK home；
+/// 用 `-XshowSettings:properties -version` 输出中的 `java.home` 拿到真实路径。
+fn detect_java_home_from_java_exe(java_exe: &str) -> Option<String> {
+    if let Some(cached) = JAVA_HOME_DETECT_CACHE.lock().get(java_exe).cloned() {
+        return cached;
+    }
+    let detected = detect_java_home_uncached(java_exe);
+    log::info!(
+        "从 {} 反推 java.home: {:?}",
+        java_exe,
+        detected.as_deref().unwrap_or("<失败>")
+    );
+    JAVA_HOME_DETECT_CACHE
+        .lock()
+        .insert(java_exe.to_string(), detected.clone());
+    detected
+}
+
+fn detect_java_home_uncached(java_exe: &str) -> Option<String> {
+    let output = std::process::Command::new(java_exe)
+        .args(["-XshowSettings:properties", "-version"])
+        .creation_flags_no_window()
+        .output()
+        .ok()?;
+    // 属性输出在 stderr；合并 stdout 兜底
+    let mut text = crate::util::decode_output(&output.stderr);
+    text.push_str(&crate::util::decode_output(&output.stdout));
+    for line in text.lines() {
+        // 形如 "    java.home = C:\Program Files\Java\jdk-17"
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("java.home") {
+            let rest = rest.trim_start();
+            if let Some(v) = rest.strip_prefix('=') {
+                let home = v.trim();
+                if home.is_empty() {
+                    continue;
+                }
+                let canon = |p: &Path| {
+                    crate::util::canonicalize_clean(p)
+                        .map(|x| x.to_string_lossy().to_string())
+                        .unwrap_or_else(|| p.to_string_lossy().to_string())
+                };
+                // JDK ≤ 9 的 java.home 指向 <JDK>\jre 子目录：
+                // 父目录含 bin/javac.exe 时优先用父目录，否则 Maven 编译找不到 tools.jar
+                if let Some(parent) = Path::new(home).parent() {
+                    if java_home_valid(&parent.to_string_lossy())
+                        && crate::util::path_exists_follow_junction(
+                            &parent.join("bin").join("javac.exe"),
+                        )
+                    {
+                        return Some(canon(parent));
+                    }
+                }
+                if java_home_valid(home) {
+                    return Some(canon(Path::new(home)));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 确定生效的 JAVA_HOME，逐级回退并校验有效性：
+/// 1. 项目配置的 java_home
+/// 2. 系统环境变量 JAVA_HOME
+/// 3. 从 PATH / scoop shims 里的 java.exe 反推真实 home
+///
+/// 每个候选都会 canonicalize 解析 junction（scoop current 在 elevated 进程中
+/// 可能无法解析），且要求 bin/java.exe 存在——无效配置直接跳过而不是注入给 mvn。
+pub fn resolve_java_home(cfg: &EnvConfig) -> Option<String> {
+    let candidates = [
+        cfg.java_home.clone(),
+        std::env::var("JAVA_HOME").ok().filter(|s| !s.is_empty()),
+    ];
+    for raw in candidates.into_iter().flatten() {
+        if raw.trim().is_empty() {
+            continue;
+        }
+        let resolved = crate::util::canonicalize_clean(Path::new(&raw))
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or(raw);
+        if java_home_valid(&resolved) {
+            return Some(resolved);
+        }
+        log::warn!("跳过无效 JAVA_HOME: {}（bin\\java.exe 不存在）", resolved);
+    }
+
+    // 全部候选无效时反推
+    let java_exe = which_java()?;
+    let home = detect_java_home_from_java_exe(&java_exe);
+    if home.is_none() {
+        log::warn!(
+            "无法从 {} 反推有效 java.home，项目配置与系统 JAVA_HOME 均无效",
+            java_exe
+        );
+    }
+    home
 }
 
 /// 启动前预检：确认 java / mvn 可用
@@ -109,22 +212,13 @@ pub fn preflight_check(
     program: &str,
 ) -> AppResult<()> {
     // 1. java 可执行性检查
+    // resolve_java_home 已做有效性校验与多级回退，返回 None 说明所有来源均无效，
+    // 此时即使 PATH 里残留 java.exe（反推也失败），mvn / java 也无法正常工作，直接报错
     let java_home = resolve_java_home(cfg);
-    let java_bin = if let Some(jh) = &java_home {
-        PathBuf::from(jh).join("bin").join("java.exe")
-    } else {
-        PathBuf::from("java.exe")
-    };
-    let java_ok = java_home.is_some() && crate::util::path_exists_follow_junction(&java_bin);
-    if !java_ok && which_java().is_none() {
-        return Err(crate::error::AppError::Process(format!(
-            "未找到可用的 JDK。\n{}请在该服务所属项目的设置里指定 JDK 路径，或确保系统 JAVA_HOME / PATH 配置正确。",
-            if java_home.is_some() {
-                format!("配置的 JAVA_HOME 不存在: {}\n", java_home.unwrap())
-            } else {
-                "未设置 JAVA_HOME。\n".to_string()
-            }
-        )));
+    if java_home.is_none() {
+        return Err(crate::error::AppError::Process(
+            "未找到可用的 JDK。\n项目配置的 JDK 与系统 JAVA_HOME 均无效（缺少 bin\\java.exe），且无法从 PATH 中的 java 反推。\n请在项目设置里指定正确的 JDK 路径，或修复系统 JAVA_HOME。".to_string(),
+        ));
     }
 
     // 2. mvn 可执行性检查

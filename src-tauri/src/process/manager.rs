@@ -600,6 +600,22 @@ impl ProcessManager {
         let (program, base_args) = resolve_maven_cmd(&working_dir, &env_cfg);
         try_cleanup!(preflight_check(&env_cfg, &working_dir, &program));
 
+        // 输出实际生效的 JAVA_HOME，便于排查 "JAVA_HOME is not defined correctly" 类问题
+        match resolve_java_home(&env_cfg) {
+            Some(jh) => Self::emit_log(
+                &app,
+                &service.id,
+                LogSource::Mvn,
+                &format!("[javaboot] JAVA_HOME: {}", jh),
+            ),
+            None => Self::emit_log(
+                &app,
+                &service.id,
+                LogSource::Mvn,
+                "[javaboot] 警告: 未找到有效的 JAVA_HOME（项目配置与系统环境变量均无效）",
+            ),
+        }
+
         let cache = ClasspathCache::for_module(&working_dir);
         let cache_key = ClasspathCache::compute_key(&working_dir, &env_cfg);
         let cache_valid = cache.is_valid(&cache_key);
