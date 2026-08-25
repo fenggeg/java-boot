@@ -39,6 +39,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_http::init())
         .on_window_event(|window, event| {
             // 应用关闭时停止所有服务
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

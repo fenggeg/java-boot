@@ -16,6 +16,12 @@
     "core:window:allow-start-dragging",
     "core:app:default",
     "dialog:default",
-    "opener:default"
+    "opener:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "https://node-red.gyfwork.cc.cd/*" }
+      ]
+    }
   ]
 }
