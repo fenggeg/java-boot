@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useState} from "react";
+import {useCallback, useEffect, useRef, useState} from "react";
 import {App, Button, Modal, Progress, Spin} from "antd";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -36,6 +36,8 @@ export default function UpdateModal({open, onClose}: Props) {
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [downloaded, setDownloaded] = useState(false);
+  // 已下载的安装包路径（重启安装用）
+  const installerPathRef = useRef<string | null>(null);
 
   // ---- 检查更新（打开时自动执行，失败可重试） ----
   const runCheck = useCallback((cancelledRef: {value: boolean}) => {
@@ -60,6 +62,7 @@ export default function UpdateModal({open, onClose}: Props) {
     setDownloading(false);
     setProgress(0);
     setDownloaded(false);
+    installerPathRef.current = null;
     const cancelledRef = {value: false};
     runCheck(cancelledRef);
     return () => {
@@ -67,13 +70,16 @@ export default function UpdateModal({open, onClose}: Props) {
     };
   }, [open, runCheck]);
 
-  // ---- 立即更新（下载进度模拟，后端接入后走真实进度事件） ----
+  // ---- 立即更新（后端流式下载，进度经 update://progress 事件上报） ----
   const handleUpdate = useCallback(async () => {
     if (!info) return;
     setDownloading(true);
     setProgress(0);
     try {
-      await downloadAndInstall((p) => setProgress(p));
+      installerPathRef.current = await downloadAndInstall(
+        info.download_url,
+        (p) => setProgress(p)
+      );
       setDownloaded(true);
     } catch (e: any) {
       message.error(`下载失败: ${e}`);
@@ -82,16 +88,18 @@ export default function UpdateModal({open, onClose}: Props) {
     }
   }, [info, message]);
 
+  // ---- 立即重启：静默安装器启动后当前进程退出，后续代码不会执行 ----
   const handleRelaunch = useCallback(async () => {
+    if (!installerPathRef.current) {
+      message.error("尚未下载更新包");
+      return;
+    }
     try {
-      await relaunchAndInstall();
-      // TODO(backend): relaunch 成功后进程会退出，此处仅 mock
-      message.info("安装逻辑待后端接入");
-      onClose();
+      await relaunchAndInstall(installerPathRef.current);
     } catch (e: any) {
       message.error(`重启失败: ${e}`);
     }
-  }, [message, onClose]);
+  }, [message]);
 
   const renderMarkdown = (notes: string) => (
     <div className="file-preview-markdown">

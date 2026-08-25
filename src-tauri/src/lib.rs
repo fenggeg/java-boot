@@ -6,6 +6,7 @@ pub mod pom;
 pub mod port;
 pub mod process;
 pub mod project_fs;
+pub mod update;
 pub mod util;
 pub mod watcher;
 
@@ -175,6 +176,9 @@ pub fn run() {
             commands::open_in_browser,
             commands::detect_jdks,
             commands::detect_mavens,
+            // update
+            update::download_update,
+            update::install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

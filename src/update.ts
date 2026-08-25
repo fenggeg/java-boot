@@ -1,10 +1,13 @@
 /**
  * 应用更新服务层
  *
- * - 检查更新：已接入后端（GitHub Releases 格式）
- *   请求经 Tauri http 插件（Rust reqwest）发出，绕过 webview CORS 限制
- * - 下载 / 安装：暂为前端模拟，后端接入后替换（见函数 TODO）
+ * - 检查更新：请求后端接口（GitHub Releases 格式），经 Tauri http 插件发出
+ * - 下载：invoke download_update，Rust reqwest 流式落盘，进度经
+ *   update://progress 事件上报
+ * - 安装：invoke install_update 启动 NSIS 静默安装器（/S /R）后退出当前进程
  */
+import {invoke} from "@tauri-apps/api/core";
+import {listen, type UnlistenFn} from "@tauri-apps/api/event";
 import {fetch as tauriFetch} from "@tauri-apps/plugin-http";
 
 export interface UpdateInfo {
@@ -147,25 +150,35 @@ export async function checkForUpdate(): Promise<UpdateInfo> {
 }
 
 /**
- * 下载更新包
- * TODO(backend): 用 download_url（UpdateInfo 中已返回）实现真实下载，
- * 进度通过 onProgress 回调上报（0-100），例如 invoke + 事件流
+ * 下载更新包：后端流式下载，进度经 update://progress 事件上报（0-100），
+ * 返回安装包落盘路径（供 install_update 使用）
  */
 export async function downloadAndInstall(
+  downloadUrl: string,
   onProgress: (percent: number) => void
-): Promise<void> {
-  let p = 0;
-  while (p < 100) {
-    p = Math.min(100, p + 3 + Math.round(Math.random() * 9));
-    onProgress(p);
-    await new Promise((r) => setTimeout(r, 90 + Math.random() * 130));
+): Promise<string> {
+  if (!downloadUrl) {
+    throw new Error("更新包下载地址为空");
+  }
+  const unlisten: UnlistenFn = await listen<{percent: number}>(
+    "update://progress",
+    (event) => onProgress(event.payload.percent)
+  );
+  try {
+    return await invoke<string>("download_update", {url: downloadUrl});
+  } finally {
+    unlisten();
   }
 }
 
 /**
- * 重启应用并安装更新
- * TODO(backend): 替换为 Tauri relaunch（tauri-plugin-process）
+ * 重启应用并完成安装：
+ * 启动 NSIS 静默安装器（/S /R），当前进程随即退出，
+ * 安装器覆盖文件后自动拉起新版本
  */
-export async function relaunchAndInstall(): Promise<void> {
-  await new Promise((r) => setTimeout(r, 200));
+export async function relaunchAndInstall(installerPath: string): Promise<void> {
+  if (!installerPath) {
+    throw new Error("尚未下载更新包");
+  }
+  await invoke("install_update", {path: installerPath});
 }
