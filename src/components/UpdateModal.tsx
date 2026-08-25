@@ -1,0 +1,271 @@
+import {useCallback, useEffect, useState} from "react";
+import {App, Button, Modal, Progress, Spin} from "antd";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import {ArrowDown, Check, Download, Refresh, Warning} from "./Icons";
+import {checkForUpdate, downloadAndInstall, relaunchAndInstall, type UpdateInfo,} from "../update";
+import {Prism} from "../prism-langs";
+
+interface Props {
+  open: boolean;
+  onClose: () => void;
+}
+
+/**
+ * 检查阶段：
+ *  checking   检查中
+ *  available  有可用更新（展示更新日志 + 立即更新/取消）
+ *  latest     已是最新版本
+ *  error      检查失败（可重试）
+ */
+type Phase = "checking" | "available" | "latest" | "error";
+
+function escapeHtml(raw: string): string {
+  return raw
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+export default function UpdateModal({open, onClose}: Props) {
+  const {message} = App.useApp();
+  const [phase, setPhase] = useState<Phase>("checking");
+  const [info, setInfo] = useState<UpdateInfo | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [downloaded, setDownloaded] = useState(false);
+
+  // ---- 检查更新（打开时自动执行，失败可重试） ----
+  const runCheck = useCallback((cancelledRef: {value: boolean}) => {
+    setPhase("checking");
+    setInfo(null);
+    setError(null);
+    checkForUpdate()
+      .then((result) => {
+        if (cancelledRef.value) return;
+        setInfo(result);
+        setPhase(result.available ? "available" : "latest");
+      })
+      .catch((e) => {
+        if (cancelledRef.value) return;
+        setError(String(e));
+        setPhase("error");
+      });
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    setDownloading(false);
+    setProgress(0);
+    setDownloaded(false);
+    const cancelledRef = {value: false};
+    runCheck(cancelledRef);
+    return () => {
+      cancelledRef.value = true;
+    };
+  }, [open, runCheck]);
+
+  // ---- 立即更新（下载进度模拟，后端接入后走真实进度事件） ----
+  const handleUpdate = useCallback(async () => {
+    if (!info) return;
+    setDownloading(true);
+    setProgress(0);
+    try {
+      await downloadAndInstall((p) => setProgress(p));
+      setDownloaded(true);
+    } catch (e: any) {
+      message.error(`下载失败: ${e}`);
+    } finally {
+      setDownloading(false);
+    }
+  }, [info, message]);
+
+  const handleRelaunch = useCallback(async () => {
+    try {
+      await relaunchAndInstall();
+      // TODO(backend): relaunch 成功后进程会退出，此处仅 mock
+      message.info("安装逻辑待后端接入");
+      onClose();
+    } catch (e: any) {
+      message.error(`重启失败: ${e}`);
+    }
+  }, [message, onClose]);
+
+  const renderMarkdown = (notes: string) => (
+    <div className="file-preview-markdown">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          code({className, children, ...props}) {
+            const match = /language-(\w+)/.exec(className ?? "");
+            if (match) {
+              const lang = match[1] ?? "";
+              const grammar = Prism.languages[lang];
+              const raw = Array.isArray(children)
+                ? children.join("")
+                : String(children ?? "");
+              const html = grammar
+                ? Prism.highlight(raw, grammar, lang)
+                : escapeHtml(raw);
+              return (
+                <code
+                  className={`${className ?? ""} file-md-code`}
+                  dangerouslySetInnerHTML={{__html: html}}
+                  {...props}
+                />
+              );
+            }
+            return (
+              <code className={className} {...props}>
+                {children}
+              </code>
+            );
+          },
+        }}
+      >
+        {notes}
+      </ReactMarkdown>
+    </div>
+  );
+
+  // ---- 弹窗内容 ----
+  let content: React.ReactNode;
+  switch (phase) {
+    case "checking":
+      content = (
+        <div className="update-center">
+          <Spin />
+          <span>正在检查更新...</span>
+        </div>
+      );
+      break;
+    case "latest":
+      content = (
+        <div className="update-center">
+          <span className="update-status-ok">
+            <Check size={40} />
+          </span>
+          <span>当前已是最新版本</span>
+          {info && (
+            <span className="update-meta">
+              v{info.current_version}
+            </span>
+          )}
+        </div>
+      );
+      break;
+    case "error":
+      content = (
+        <div className="update-center">
+          <span className="update-status-err">
+            <Warning size={36} />
+          </span>
+          <span>检查更新失败</span>
+          {error && (
+            <span className="update-meta" style={{maxWidth: 380, wordBreak: "break-all"}}>
+              {error}
+            </span>
+          )}
+          <Button
+            size="small"
+            icon={<Refresh size={13} />}
+            onClick={() => runCheck({value: false})}
+          >
+            重试
+          </Button>
+        </div>
+      );
+      break;
+    default:
+      content = info ? (
+        <>
+          <div className="update-version-row">
+            <span className="update-version-pill">
+              v{info.current_version}
+            </span>
+            <span className="update-version-arrow">
+              <ArrowDown size={14} style={{transform: "rotate(-90deg)"}} />
+            </span>
+            <span className="update-version-pill new">v{info.version}</span>
+            <span className="update-meta">
+              {[info.pub_date, info.download_size].filter(Boolean).join(" · ")}
+            </span>
+          </div>
+
+          <div className="update-changelog">{renderMarkdown(info.notes)}</div>
+
+          {downloading && (
+            <div className="update-progress-row">
+              <Progress
+                percent={progress}
+                size="small"
+                strokeColor="var(--blue)"
+              />
+            </div>
+          )}
+          {downloaded && (
+            <div className="update-progress-row">
+              <span className="update-status-ok">
+                <Check size={14} />
+              </span>
+              <span className="update-meta">下载完成，重启应用以完成安装</span>
+            </div>
+          )}
+        </>
+      ) : null;
+  }
+
+  // ---- 底部按钮 ----
+  let footer: React.ReactNode = null;
+  if (phase === "available" && info) {
+    if (downloaded) {
+      footer = (
+        <>
+          <Button onClick={onClose}>以后再说</Button>
+          <Button type="primary" icon={<Refresh size={13} />} onClick={handleRelaunch}>
+            立即重启
+          </Button>
+        </>
+      );
+    } else if (downloading) {
+      footer = (
+        <Button disabled>
+          下载中 {progress}%
+        </Button>
+      );
+    } else {
+      footer = (
+        <>
+          <Button onClick={onClose}>取消</Button>
+          <Button type="primary" icon={<Download size={13} />} onClick={handleUpdate}>
+            立即更新
+          </Button>
+        </>
+      );
+    }
+  } else if (phase === "latest" || phase === "error") {
+    footer = (
+      <Button type="primary" onClick={onClose}>
+        知道了
+      </Button>
+    );
+  }
+
+  return (
+    <Modal
+      title="软件更新"
+      open={open}
+      onCancel={onClose}
+      footer={footer}
+      width={560}
+      maskClosable={!downloading}
+      keyboard={!downloading}
+      closable={!downloading}
+      destroyOnClose
+    >
+      {content}
+    </Modal>
+  );
+}

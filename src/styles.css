@@ -198,58 +198,151 @@ body {
   animation: fade-down 0.6s var(--ease-out) both;
 }
 
-.topbar-brand {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  margin-right: auto;
-}
-
-.brand-mark {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  flex-shrink: 0;
-  filter: drop-shadow(0 1px 3px rgba(0, 113, 227, 0.35));
-}
-
-.brand-word {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.1;
-  gap: 2px;
-}
-
-.brand-word .brand-name {
-  font-family: var(--font-sans);
-  font-weight: 600;
-  font-size: 15px;
-  letter-spacing: -0.02em;
-  color: var(--text);
-}
-
-.brand-word .brand-name .accent {
-  color: var(--blue);
-}
-
-.brand-word .brand-sub {
-  font-family: var(--font-sans);
-  font-size: 11px;
-  letter-spacing: 0.01em;
-  color: var(--text-3);
-  font-weight: 400;
-}
-
 .topbar-stats {
   display: flex;
   align-items: center;
   gap: 18px;
+  margin-right: auto;
   font-size: 12px;
   color: var(--text-2);
-  margin-right: 4px;
-  padding-right: 16px;
-  border-right: 1px solid var(--border);
+  cursor: default;
+}
+
+/* 窗口控制（自定义标题栏）— 与顶栏同材质、同圆角、同悬停语言 */
+.window-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 8px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+
+.win-btn {
+  width: 32px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease);
+}
+
+.win-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text);
+}
+
+.win-btn:active {
+  transform: scale(0.94);
+}
+
+.win-btn.close:hover {
+  background: var(--red);
+  color: #ffffff;
+}
+
+[data-theme="dark"] .win-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+[data-theme="dark"] .win-btn.close:hover {
+  background: var(--red);
+  color: #ffffff;
+}
+
+/* ========================================================
+   Update Modal — 版本徽标 / 更新日志 / 下载进度
+   ======================================================== */
+.update-center {
+  padding: 44px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.update-status-ok {
+  color: var(--green);
+  display: inline-flex;
+}
+
+.update-status-err {
+  color: var(--red);
+  display: inline-flex;
+}
+
+.update-version-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.update-version-pill {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: var(--r-pill);
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.update-version-pill.new {
+  background: var(--blue-glow);
+  color: var(--blue);
+  font-weight: 600;
+  box-shadow: 0 0 0 1px rgba(0, 113, 227, 0.15);
+}
+
+.update-version-arrow {
+  color: var(--text-4);
+  display: inline-flex;
+}
+
+.update-meta {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.update-changelog {
+  max-height: 380px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  padding: 4px 16px;
+}
+
+.update-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.update-progress-row .ant-progress {
+  flex: 1;
+  margin: 0;
+}
+
+.update-progress-row .ant-progress-text {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+[data-theme="dark"] .update-version-pill {
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .stat-item {
@@ -296,9 +389,8 @@ body {
    Sidebar — frosted translucent column
    ======================================================== */
 .sidebar {
-  width: 380px;
   min-width: 280px;
-  max-width: 420px;
+  max-width: 640px;
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -310,6 +402,29 @@ body {
   position: relative;
   animation: fade-right 0.6s var(--ease-out) 0.05s both;
   transition: width 0.28s var(--ease), min-width 0.28s var(--ease);
+}
+
+/* 拖拽调整宽度时禁用过渡，保证跟手 */
+.sidebar.sidebar-dragging {
+  transition: none;
+}
+
+/* 可拖拽分隔条（贴右缘，与文件树分隔条交互一致） */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 5px;
+  cursor: col-resize;
+  z-index: 20;
+  background: transparent;
+  transition: background 0.15s var(--ease);
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizer:active {
+  background: rgba(0, 113, 227, 0.3);
 }
 
 /* 收起态：窄条只留一个展开按钮 */
@@ -523,10 +638,11 @@ body {
   display: flex;
   align-items: center;
   gap: 5px;
+  row-gap: 2px;
   font-family: var(--font-mono);
   font-size: 10.5px;
   color: var(--text-3);
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   overflow: hidden;
   white-space: nowrap;
 }
@@ -942,6 +1058,36 @@ body {
   border-color: rgba(255, 59, 48, 0.45) !important;
 }
 
+/* 实心危险主按钮（Popconfirm 确认键等）— Apple 红，与主色系同一套阴影语言 */
+.ant-btn-primary.ant-btn-dangerous {
+  background: var(--red) !important;
+  border-color: var(--red) !important;
+  color: #ffffff !important;
+  box-shadow: 0 1px 2px rgba(255, 59, 48, 0.25),
+    0 4px 12px rgba(255, 59, 48, 0.2) !important;
+}
+
+.ant-btn-primary.ant-btn-dangerous:hover:not(:disabled) {
+  background: #ff5147 !important;
+  border-color: #ff5147 !important;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(255, 59, 48, 0.3),
+    0 8px 18px rgba(255, 59, 48, 0.28) !important;
+}
+
+.ant-btn-primary.ant-btn-dangerous:active:not(:disabled) {
+  background: #e0332a !important;
+  border-color: #e0332a !important;
+  transform: translateY(0) scale(0.98);
+}
+
+.ant-btn-primary.ant-btn-dangerous:disabled {
+  background: rgba(0, 0, 0, 0.06) !important;
+  color: var(--text-4) !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
 /* Tabs (card style in log panel) */
 .ant-tabs-card > .ant-tabs-nav .ant-tabs-tab {
   background: transparent !important;
@@ -1244,7 +1390,7 @@ body {
 
 /* Popover / Popconfirm — Apple popover card */
 .ant-popover-inner,
-.ant-popconfirm-inner {
+.ant-popconfirm.ant-popover .ant-popover-inner {
   background: var(--surface) !important;
   border: 1px solid var(--border);
   border-radius: var(--r-lg) !important;
@@ -1252,11 +1398,18 @@ body {
   padding: 4px !important;
 }
 
+/* 箭头与卡片同色（antd 默认恒为浅色算法的白底，暗色下会脱节） */
+.ant-popover-arrow::before,
+.ant-popconfirm-arrow::before {
+  background: var(--surface) !important;
+}
+
 .ant-popover-title,
 .ant-popover-message-title,
 .ant-popconfirm-message-title {
   color: var(--text) !important;
   font-weight: 600 !important;
+  font-size: 13px !important;
 }
 
 .ant-popover-inner-content,
@@ -1265,8 +1418,29 @@ body {
   padding: 12px 14px !important;
 }
 
+/* Popconfirm 内容排版 — 图标/描述/按钮与卡片同一套字色与间距 */
+.ant-popconfirm-message-icon {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 1px;
+  margin-inline-end: 8px;
+}
+
+.ant-popconfirm-description {
+  color: var(--text-2) !important;
+  font-size: 12px !important;
+  margin-top: 3px !important;
+}
+
 .ant-popconfirm-buttons {
+  display: flex;
+  justify-content: flex-end;
   gap: 6px;
+  margin-top: 12px;
+}
+
+.ant-popconfirm-buttons .ant-btn {
+  margin-inline-start: 0 !important;
 }
 
 /* Dropdown menu — Apple menu */

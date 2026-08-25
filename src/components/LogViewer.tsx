@@ -495,8 +495,12 @@ export default function LogViewer({ serviceId }: Props) {
               position: "fixed",
               left: logContextMenu.x,
               top: logContextMenu.y,
-              width: 0,
-              height: 0,
+              // 锚点必须非 0 尺寸：0x0 的 fixed 元素会被 rc-trigger 判定为
+              // 不可见（offsetParent 为 null 且宽高为 0），导致弹层永不对齐、菜单无法显示
+              width: 1,
+              height: 1,
+              opacity: 0,
+              pointerEvents: "none",
             }}
           />
         </Dropdown>

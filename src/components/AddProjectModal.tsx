@@ -231,7 +231,7 @@ export default function AddProjectModal({
       destroyOnClose
     >
       {/* 目录选择（rescan 模式无需选择，直接显示项目路径） */}
-      <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
         <Input
           value={path}
           placeholder="选择项目根目录（含 pom.xml）"
@@ -239,7 +239,7 @@ export default function AddProjectModal({
           onClick={() => {
             if (!project) handlePickDir();
           }}
-          style={{ cursor: project ? "default" : "pointer" }}
+          style={{ flex: 1, cursor: project ? "default" : "pointer" }}
         />
         {!project && (
           <Button
@@ -250,7 +250,7 @@ export default function AddProjectModal({
             选择目录
           </Button>
         )}
-      </Space.Compact>
+      </div>
 
       {error && (
         <Alert

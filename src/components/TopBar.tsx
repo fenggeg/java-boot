@@ -1,10 +1,13 @@
-import {useMemo, useState} from "react";
+import {useEffect, useMemo, useState} from "react";
+import type {UnlistenFn} from "@tauri-apps/api/event";
+import {getCurrentWindow} from "@tauri-apps/api/window";
 import {App, Button, Popconfirm, Tooltip} from "antd";
-import {GitPull, Logo, Moon, Settings, Stop, Sun} from "./Icons";
+import {Copy, Download, GitPull, Minus, Moon, Settings, Square, Stop, Sun, Warning, X} from "./Icons";
 import {useStore} from "../store";
 import * as api from "../api";
 import {STATUS_META} from "../types";
 import {useThemeStore} from "../theme";
+import UpdateModal from "./UpdateModal";
 
 interface Props {
   onOpenSettings: () => void;
@@ -19,6 +22,35 @@ export default function TopBar({ onOpenSettings }: Props) {
   const themeMode = useThemeStore((s) => s.mode);
   const toggleTheme = useThemeStore((s) => s.toggle);
   const [hoverTheme, setHoverTheme] = useState(false);
+  // 检查更新弹窗
+  const [updateOpen, setUpdateOpen] = useState(false);
+
+  // 自定义窗口控制：最小化 / 最大化还原 / 关闭
+  const appWindow = useMemo(() => getCurrentWindow(), []);
+  const [isMaximized, setIsMaximized] = useState(false);
+
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let disposed = false;
+    appWindow.isMaximized().then((v) => {
+      if (!disposed) setIsMaximized(v);
+    }).catch(() => {});
+    appWindow.onResized(async () => {
+      try {
+        const v = await appWindow.isMaximized();
+        if (!disposed) setIsMaximized(v);
+      } catch {
+        /* ignore */
+      }
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    }).catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [appWindow]);
 
   const total = services.length;
   const { running, errorCount } = useMemo(() => {
@@ -43,20 +75,8 @@ export default function TopBar({ onOpenSettings }: Props) {
   };
 
   return (
-    <div className="topbar">
-      <div className="topbar-brand">
-        <span className="brand-mark">
-          <Logo size={28} />
-        </span>
-        <div className="brand-word">
-          <span className="brand-name">
-            java<span className="accent">boot</span>
-          </span>
-          <span className="brand-sub">launcher · v0.1</span>
-        </div>
-      </div>
-
-      <div className="topbar-stats">
+    <div className="topbar" data-tauri-drag-region>
+      <div className="topbar-stats" data-tauri-drag-region>
         <span className="stat-item">
           <span
             className="stat-dot"
@@ -102,10 +122,14 @@ export default function TopBar({ onOpenSettings }: Props) {
         {running > 0 && (
           <Popconfirm
             title="停止所有运行中的服务？"
+            description={`将强制结束 ${running} 个运行中的服务`}
+            icon={<Warning size={14} style={{ color: "var(--red)" }} />}
             onConfirm={handleStopAll}
             okText="停止全部"
             cancelText="取消"
-            okButtonProps={{ danger: true }}
+            okButtonProps={{ danger: true, size: "small" }}
+            cancelButtonProps={{ size: "small" }}
+            placement="bottomRight"
           >
             <Button size="small" danger icon={<Stop size={13} />}>
               停止全部
@@ -129,12 +153,49 @@ export default function TopBar({ onOpenSettings }: Props) {
           </button>
         </Tooltip>
 
+        <Tooltip title="检查更新">
+          <button
+            className="icon-btn"
+            onClick={() => setUpdateOpen(true)}
+            aria-label="检查更新"
+          >
+            <Download size={15} />
+          </button>
+        </Tooltip>
+
         <Tooltip title="设置">
           <button className="icon-btn" onClick={onOpenSettings} aria-label="设置">
             <Settings size={15} />
           </button>
         </Tooltip>
+
+        {/* 窗口控制（自定义标题栏，与顶栏融为一体） */}
+        <div className="window-controls">
+          <button
+            className="win-btn"
+            onClick={() => appWindow.minimize()}
+            aria-label="最小化"
+          >
+            <Minus size={14} />
+          </button>
+          <button
+            className="win-btn"
+            onClick={() => appWindow.toggleMaximize()}
+            aria-label={isMaximized ? "还原" : "最大化"}
+          >
+            {isMaximized ? <Copy size={12} /> : <Square size={12} />}
+          </button>
+          <button
+            className="win-btn close"
+            onClick={() => appWindow.close()}
+            aria-label="关闭"
+          >
+            <X size={14} />
+          </button>
+        </div>
       </div>
+
+      <UpdateModal open={updateOpen} onClose={() => setUpdateOpen(false)} />
     </div>
   );
 }

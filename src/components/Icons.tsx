@@ -361,6 +361,32 @@ export function X({ size, ...rest }: IconProps) {
   );
 }
 
+export function Minus({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <path d="M5 12 L19 12" />
+    </Svg>
+  );
+}
+
+export function Square({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <rect x="6.5" y="6.5" width="11" height="11" rx="1.5" />
+    </Svg>
+  );
+}
+
+export function Download({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <path d="M12 4 L12 15" />
+      <path d="M7 10.5 L12 15.5 L17 10.5" />
+      <path d="M5 19.5 L19 19.5" />
+    </Svg>
+  );
+}
+
 export function ChevronLeft({ size, ...rest }: IconProps) {
   return (
     <Svg size={size} {...rest}>

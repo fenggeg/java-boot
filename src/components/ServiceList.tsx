@@ -1,4 +1,4 @@
-import {memo, useState} from "react";
+import {memo, useCallback, useEffect, useRef, useState} from "react";
 import {App, Button, Dropdown, Empty, Tooltip} from "antd";
 import {
     CaretDown,
@@ -70,6 +70,49 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
   });
   const [configProject, setConfigProject] = useState<Project | null>(null);
   const [rescanProject, setRescanProject] = useState<Project | null>(null);
+
+  // 侧边栏可拖拽宽度（持久化到 localStorage，交互与文件树分隔条一致）
+  const [width, setWidth] = useState<number>(() => {
+    const saved = localStorage.getItem("javaboot:sidebarWidth");
+    return saved ? parseInt(saved, 10) || 380 : 380;
+  });
+  const [dragging, setDragging] = useState(false);
+  const draggingRef = useRef(false);
+  const sidebarRef = useRef<HTMLDivElement>(null);
+
+  const startDrag = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    draggingRef.current = true;
+    setDragging(true);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }, []);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!draggingRef.current || !sidebarRef.current) return;
+      const rect = sidebarRef.current.getBoundingClientRect();
+      const next = Math.max(280, Math.min(640, e.clientX - rect.left));
+      setWidth(next);
+    };
+    const onUp = () => {
+      if (!draggingRef.current) return;
+      draggingRef.current = false;
+      setDragging(false);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      setWidth((w) => {
+        localStorage.setItem("javaboot:sidebarWidth", String(w));
+        return w;
+      });
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
 
   const ungroupedServices = services.filter((s) => !s.project_id);
 
@@ -312,7 +355,11 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
   }
 
   return (
-    <div className="sidebar">
+    <div
+      ref={sidebarRef}
+      className={`sidebar ${dragging ? "sidebar-dragging" : ""}`}
+      style={{ width }}
+    >
       <div className="sidebar-header">
         <Dropdown menu={{ items: addMenuItems }} trigger={["click"]}>
           <Button
@@ -376,6 +423,10 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
           </>
         )}
       </div>
+
+      {/* 可拖拽分隔条：调整侧边栏宽度 */}
+      <div className="sidebar-resizer" onMouseDown={startDrag} />
+
       <ProjectConfigModal
         project={configProject}
         onClose={() => setConfigProject(null)}

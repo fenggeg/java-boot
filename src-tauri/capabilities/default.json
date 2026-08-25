@@ -9,6 +9,11 @@
     "core:window:default",
     "core:window:allow-scale-factor",
     "core:window:allow-set-focus",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-is-maximized",
+    "core:window:allow-start-dragging",
     "core:app:default",
     "dialog:default",
     "opener:default"
