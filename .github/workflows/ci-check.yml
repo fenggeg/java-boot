@@ -1,0 +1,35 @@
+name: CI Check
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js (LTS)
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      # npm ci 严格校验 package.json 与 package-lock.json 同步，
+      # 锁文件漂移（如手改 package.json 未更新锁文件）会在此处立即失败
+      - name: Install Dependencies (lock file sync check)
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint

@@ -2,8 +2,6 @@ name: Build Windows x64 Setup
 
 on:
   push:
-    branches:
-      - master
     tags:
       - "v*"
   workflow_dispatch:
