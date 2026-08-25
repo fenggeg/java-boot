@@ -7,6 +7,21 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-25
+
+### 新增
+
+- **IDEA 开发环境适配**：JDK 探测新增 IDEA「Download JDK」落点 `~/.jdks`、JetBrains SDK 注册表 `jdk.table.xml`（支持 `$USER_HOME$` 宏展开，覆盖 PyCharm / Android Studio）、IDE 自带 JBR；Maven 探测新增 IDEA 捆绑 maven3 与 `~/.m2/wrapper/dists` 分发包
+- **JAVA_HOME 启动日志**：服务启动时输出实际生效的 JDK 路径，便于排查 Maven 报「JAVA_HOME is not defined correctly」类问题
+
+### 变更
+
+- scoop 安装的 JDK / Maven 改为记录 `current` 稳定路径，环境升级后项目配置自动跟随、不再失效
+
+### 修复
+
+- 修复项目配置或系统 `JAVA_HOME` 失效（如 JDK 升级后旧目录被清理）导致一键启动全部报「JAVA_HOME is not defined correctly」的问题：注入前校验有效性并多级回退（项目配置 → 系统环境变量 → 从 PATH / scoop shims 的 java 反推真实 home），预检不再因 PATH 残留 java 带病放行
+
 ## [0.1.2] - 2026-08-25
 
 ### 新增
