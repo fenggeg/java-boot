@@ -840,14 +840,61 @@ pub fn write_file(project_id: &str, path: &str, content: &str) -> AppResult<()> 
     std::fs::write(&full, content).map_err(|e| AppError::Git(format!("写入失败: {}", e)))
 }
 
-/// 读取 HEAD 中某文件的内容（用于前端做工作区 vs HEAD 的行级 diff 标记）。
-/// 文件不在 HEAD（未跟踪 / 新增）或读取失败时返回 None。
-pub fn file_at_head(project_id: &str, path: &str) -> AppResult<Option<String>> {
+/// HEAD 中文件内容 + 行级标记抑制标志（用于编辑器与 Git 面板口径一致）
+#[derive(Debug, serde::Serialize)]
+pub struct FileHeadInfo {
+    /// HEAD 中的文件内容；不在 HEAD（未跟踪 / 新增）为 None
+    pub head: Option<String>,
+    /// true = 编辑器不显示行级 diff 标记：
+    /// 文件被 .gitignore 忽略，或被 skip-worktree / assume-unchanged 标记时，
+    /// 其本地差异不会出现在 `git status`（Git 面板因此无此文件）；
+    /// 编辑器若仍按 HEAD 比对会标出改动，造成两处不一致。
+    pub suppress: bool,
+}
+
+/// 读取 HEAD 中某文件的内容并判定标记抑制。
+///
+/// - `git ls-files -v`：小写 tag = assume-unchanged，`S`/`s` = skip-worktree
+/// - 完全未跟踪时用 `git check-ignore -q` 判定是否被忽略
+pub fn file_head_info(project_id: &str, path: &str) -> AppResult<FileHeadInfo> {
     let root = repo_root(project_id)?;
     safe_join(&root, path)?;
+    let tracked = run_git(&root, &["ls-files", "-v", "--", path])
+        .map(|o| crate::util::decode_output(&o.stdout))
+        .unwrap_or_default();
+    let first_tag = tracked
+        .lines()
+        .next()
+        .and_then(|l| l.chars().next());
+    // 小写 tag 均为 assume-unchanged 系（h/m 等），S/s 为 skip-worktree
+    let flag_hidden =
+        matches!(first_tag, Some('S') | Some('s')) || first_tag.is_some_and(|c| c.is_ascii_lowercase());
+    if flag_hidden {
+        return Ok(FileHeadInfo {
+            head: None,
+            suppress: true,
+        });
+    }
+    if tracked.trim().is_empty() {
+        // 未跟踪：被 ignore 的文件同样不出现在 status，抑制标记
+        let ignored = run_git(&root, &["check-ignore", "-q", "--", path])
+            .map(|_| true)
+            .unwrap_or(false);
+        return Ok(FileHeadInfo {
+            head: None,
+            suppress: ignored,
+        });
+    }
     match run_git(&root, &["show", &format!("HEAD:{}", path)]) {
-        Ok(out) => Ok(Some(crate::util::decode_output(&out.stdout))),
-        Err(_) => Ok(None),
+        Ok(out) => Ok(FileHeadInfo {
+            head: Some(crate::util::decode_output(&out.stdout)),
+            suppress: false,
+        }),
+        // HEAD 中不存在（如刚 add 但尚无提交）：按未跟踪处理，正常标绿
+        Err(_) => Ok(FileHeadInfo {
+            head: None,
+            suppress: false,
+        }),
     }
 }
 

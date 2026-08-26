@@ -578,6 +578,9 @@ export default function FilePanel({
   ]);
   // 多标签打开的文件（保留各自未保存内容，切换不丢编辑）
   const [tabs, setTabs] = useState<OpenTab[]>([]);
+  // tabs 的实时镜像：异步流程里读取最新标签列表（避免闭包过期）
+  const tabsRef = useRef<OpenTab[]>([]);
+  tabsRef.current = tabs;
   const [activePath, setActivePath] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -720,13 +723,41 @@ export default function FilePanel({
     );
   }, [refreshGitStatus]);
 
+  /**
+   * 外部修改同步：把无未保存编辑的文本标签页从磁盘静默重读。
+   * Git 面板 / 文件树状态始终读磁盘，若编辑器缓冲区停留在外部修改前，
+   * 行级 diff 标记（HEAD vs 缓冲区）会与面板不一致——聚焦/可见刷新时一并重读。
+   * updater 内二次校验「仍未保存」，保护 await 期间用户产生的新编辑。
+   */
+  const syncCleanTabsFromDisk = useCallback(async () => {
+    const clean = tabsRef.current.filter(
+      (t) =>
+        t.fileType === "text" && t.content === t.meta.content
+    );
+    for (const t of clean) {
+      try {
+        const fresh = await api.readProjectFile(project.id, t.path);
+        setTabs((prev) =>
+          prev.map((tb) =>
+            tb.path === t.path && tb.content === tb.meta.content
+              ? {...tb, content: fresh.content, meta: fresh}
+              : tb
+          )
+        );
+      } catch {
+        /* 文件可能已被外部删除 / 移动：保留原标签内容 */
+      }
+    }
+  }, [project.id]);
+
   // 面板重新可见 / 切换项目时刷新 git 状态（含行级 diff，可能在外部被改动）
   useEffect(() => {
     if (visible) {
       void refreshGitStatus();
       setDiffRev((v) => v + 1);
+      void syncCleanTabsFromDisk();
     }
-  }, [visible, refreshGitStatus]);
+  }, [visible, refreshGitStatus, syncCleanTabsFromDisk]);
 
   // 窗口重新聚焦时刷新：覆盖在 IDE 等外部工具中编辑/提交后切回的场景，
   // 否则文件树状态点与行级 diff 标记会停留在过期数据上
@@ -735,10 +766,11 @@ export default function FilePanel({
     const onFocus = () => {
       scheduleGitRefresh();
       setDiffRev((v) => v + 1);
+      void syncCleanTabsFromDisk();
     };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [visible, scheduleGitRefresh]);
+  }, [visible, scheduleGitRefresh, syncCleanTabsFromDisk]);
 
   // 懒加载目录子节点（含紧凑路径合并）
   const loadChildren = useCallback(async (path: string) => {
@@ -1006,12 +1038,18 @@ export default function FilePanel({
         }
         const head = await api.gitFileHead(project.id, activeTab.path);
         if (cancelled) return;
-        if (head === null) {
+        if (head.suppress) {
+          // ignored / skip-worktree / assume-unchanged：git status 不会展示其差异，
+          // 编辑器同样不标，保证与 Git 面板一致
+          setLineKinds(null);
+          return;
+        }
+        if (head.head === null) {
           // 未跟踪 / HEAD 中不存在：整个文件标记为新增
           setLineKinds(lines.map(() => 2 as LineKind));
           return;
         }
-        const kinds = diffLineKinds(head, activeTab.content);
+        const kinds = diffLineKinds(head.head, activeTab.content);
         setLineKinds(kinds.some((k) => k !== 0) ? kinds : null);
       } catch {
         if (!cancelled) setLineKinds(null);

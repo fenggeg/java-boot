@@ -134,9 +134,17 @@ export const gitWriteFile = (
   content: string,
 ) =>
   invoke<void>("git_write_file", { projectId, path, content });
-/// 读取 HEAD 中某文件内容（未跟踪 / 不存在返回 null），用于行级 diff
+/** HEAD 文件信息 + 行级标记抑制标志（ignored / skip-worktree 时 suppress=true） */
+export interface FileHeadInfo {
+  /** HEAD 中内容；未跟踪 / 不在 HEAD 为 null */
+  head: string | null;
+  /** true = 不显示行级 diff 标记（与 Git 面板口径一致） */
+  suppress: boolean;
+}
+
+/// 读取 HEAD 中某文件内容（含 ignored / skip-worktree 抑制判定），用于行级 diff
 export const gitFileHead = (projectId: string, path: string) =>
-  invoke<string | null>("git_file_head", { projectId, path });
+  invoke<FileHeadInfo>("git_file_head", { projectId, path });
 /// 工作区 vs HEAD 的 diff hunk（unified=0，与 Git 面板同引擎）
 export const gitDiffHunks = (projectId: string, path: string) =>
   invoke<{new_start: number; new_lines: number; del_lines: number}[]>(

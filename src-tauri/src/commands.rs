@@ -615,10 +615,11 @@ pub async fn git_write_file(
         .map_err(|e| AppError::Other(format!("写入文件任务失败: {}", e)))?
 }
 
-/// 读取 HEAD 中某文件内容（未跟踪 / 不存在返回 null），用于行级 diff 标记
+/// 读取 HEAD 中某文件内容 + 标记抑制信息（ignored / skip-worktree 时 suppress=true），
+/// 用于编辑器行级 diff 与 Git 面板口径一致
 #[tauri::command]
-pub async fn git_file_head(project_id: String, path: String) -> AppResult<Option<String>> {
-    tokio::task::spawn_blocking(move || git::file_at_head(&project_id, &path))
+pub async fn git_file_head(project_id: String, path: String) -> AppResult<crate::git::FileHeadInfo> {
+    tokio::task::spawn_blocking(move || git::file_head_info(&project_id, &path))
         .await
         .map_err(|e| AppError::Other(format!("读取 HEAD 文件任务失败: {}", e)))?
 }
