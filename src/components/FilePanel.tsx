@@ -1,20 +1,52 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
-import {App, Segmented, Spin, Tooltip} from "antd";
+import {App, Dropdown, Input, Modal, Segmented, Spin, Tooltip} from "antd";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {convertFileSrc} from "@tauri-apps/api/core";
-import {Binary, CaretDown, CaretRight, ChevronLeft, File, Folder, GitBranch, Image as ImageIcon, Save,} from "./Icons";
+import {
+  Binary,
+  CaretDown,
+  CaretRight,
+  ChevronLeft,
+  ClipboardPaste,
+  Copy,
+  Edit,
+  File,
+  Folder,
+  FolderOpen,
+  GitBranch,
+  Image as ImageIcon,
+  Save,
+  Scissors,
+  Terminal,
+  X,
+} from "./Icons";
 import {Prism} from "../prism-langs";
 import {getPrismLang, isMarkdown} from "../languages";
 import * as api from "../api";
-import type {FileContent, Project} from "../types";
+import type {
+  DirGitAgg,
+  FileContent,
+  FileGitStatus,
+  GitChange,
+  Project,
+} from "../types";
+import {gitChangeKind} from "../types";
+import TerminalView from "./TerminalView";
 
 interface Props {
   project: Project;
   onClose: () => void;
   /** 打开同项目的 Git 工作区面板 */
   onOpenGit: (project: Project) => void;
+  /** 面板是否可见（重新可见时刷新 git 状态） */
+  visible?: boolean;
 }
+
+/** 代码区行高（px）：视图 / 编辑底层 / 输入层必须一致，diff 标记按此定位 */
+const LINE_H = 22;
+/** 代码区顶部内边距（px），与 CSS 保持一致 */
+const GUTTER_PAD = 12;
 
 // ================================================================
 // 文件类型分类
@@ -73,6 +105,148 @@ interface FileTreeNode {
   loaded?: boolean; // 目录是否已懒加载子节点
   loading?: boolean;
   expanded?: boolean; // 目录是否展开
+}
+
+/** 打开的文件标签 */
+interface OpenTab {
+  path: string;
+  meta: FileContent;
+  content: string;
+  fileType: FileType;
+  /** 图片 / 二进制的 asset 协议 URL */
+  assetUrl?: string;
+}
+
+/** 剪贴板：记录待复制 / 剪切的条目 */
+interface TreeClipboard {
+  mode: "copy" | "cut";
+  path: string;
+}
+
+/** 由 porcelain 记录归一化状态：与 Git 面板共用 gitChangeKind，保证两处归类一致 */
+function classifyChange(ch: GitChange): FileGitStatus {
+  return gitChangeKind(ch);
+}
+
+/** 行级 diff 标记：0=未变 1=修改 2=新增 */
+type LineKind = 0 | 1 | 2;
+
+/** 行比较的归一化：忽略行尾 CR，抵消 core.autocrlf 的 CRLF/LF 差异 */
+function normLine(l: string): string {
+  return l.endsWith("\r") ? l.slice(0, -1) : l;
+}
+
+/**
+ * 行级 LCS diff（HEAD 内容 → 当前编辑器内容），返回与编辑器行号精确对齐的标记。
+ * 不再使用 git hunk 行号映射磁盘文件——那在缓冲区与磁盘不一致（未保存编辑、
+ * 外部修改）时整体错位。这里直接对显示中的内容做 diff，位置永远正确。
+ * 策略：公共前后缀裁剪 + 中间区 DP；中间区过大时降级为整段「修改」。
+ */
+function diffLineKinds(head: string, buf: string): LineKind[] {
+  const a = head.split("\n");
+  const b = buf.split("\n");
+  const kinds: LineKind[] = new Array(b.length).fill(0);
+  let pre = 0;
+  while (
+    pre < a.length &&
+    pre < b.length &&
+    normLine(a[pre]!) === normLine(b[pre]!)
+  ) {
+    pre++;
+  }
+  let suf = 0;
+  while (
+    suf < a.length - pre &&
+    suf < b.length - pre &&
+    normLine(a[a.length - 1 - suf]!) === normLine(b[b.length - 1 - suf]!)
+  ) {
+    suf++;
+  }
+  const am = a.length - pre - suf;
+  const bm = b.length - pre - suf;
+  if (bm === 0) return kinds; // 纯删除：缓冲区无行可标
+  if (am === 0) {
+    // 纯新增
+    for (let i = pre; i < pre + bm; i++) kinds[i] = 2;
+    return kinds;
+  }
+  if (am * bm > 1_600_000) {
+    // 差异区过大：整段标为修改（位置仍精确，只是不细分橙/绿）
+    for (let i = pre; i < pre + bm; i++) kinds[i] = 1;
+    return kinds;
+  }
+  // LCS DP（中间区），dir: 1=对角(相同) 2=上(HEAD侧删除) 3=左(缓冲区新增)
+  const w = bm + 1;
+  const dp = new Int32Array((am + 1) * w);
+  const dir = new Uint8Array((am + 1) * w);
+  for (let i = 1; i <= am; i++) {
+    const av = normLine(a[pre + i - 1]!);
+    for (let j = 1; j <= bm; j++) {
+      const idx = i * w + j;
+      if (av === normLine(b[pre + j - 1]!)) {
+        dp[idx] = dp[idx - w - 1]! + 1;
+        dir[idx] = 1;
+      } else {
+        const up = dp[idx - w]!;
+        const left = dp[idx - 1]!;
+        if (up >= left) {
+          dp[idx] = up;
+          dir[idx] = 2;
+        } else {
+          dp[idx] = left;
+          dir[idx] = 3;
+        }
+      }
+    }
+  }
+  // 回溯收集操作序列（0=HEAD侧删除 1=缓冲区新增 2=相同），再按连续块正向分配：
+  // 每个差异块内前 min(删,增) 个新增行标为「修改」，其余为「新增」（与 git hunk 口径一致）
+  const ops: number[] = [];
+  let i2 = am;
+  let j2 = bm;
+  while (i2 > 0 && j2 > 0) {
+    const d = dir[i2 * w + j2]!;
+    if (d === 1) {
+      i2--;
+      j2--;
+      ops.push(2);
+    } else if (d === 2) {
+      i2--;
+      ops.push(0);
+    } else {
+      j2--;
+      ops.push(1);
+    }
+  }
+  while (j2 > 0) {
+    j2--;
+    ops.push(1);
+  }
+  ops.reverse();
+  let row = pre;
+  let t = 0;
+  while (t < ops.length) {
+    const op = ops[t]!;
+    if (op === 2) {
+      t++;
+      continue;
+    }
+    let delN = 0;
+    let addN = 0;
+    let t2 = t;
+    while (t2 < ops.length && ops[t2] !== 2) {
+      if (ops[t2] === 0) delN++;
+      else addN++;
+      t2++;
+    }
+    const modN = Math.min(delN, addN);
+    for (let k = 0; k < addN; k++) {
+      kinds[row + k] = k < modN ? 1 : 2;
+    }
+    row += addN;
+    t = t2;
+  }
+  return kinds;
 }
 
 /** 紧凑路径最大合并层数（防止极端深目录导致请求风暴） */
@@ -157,62 +331,187 @@ function toggleExpand(
   });
 }
 
+/** 收集子树内所有节点到 Map（path → 节点），用于刷新后恢复展开状态 */
+function collectNodeMap(
+  nodes: FileTreeNode[],
+  map: Map<string, FileTreeNode>
+): void {
+  for (const n of nodes) {
+    map.set(n.path, n);
+    if (n.children) collectNodeMap(n.children, map);
+  }
+}
+
+/**
+ * 把新加载的子树与旧子树按 path 合并：
+ * 旧节点已展开的目录在刷新后保持展开（重命名 / 复制 / 移动后不丢失状态）
+ */
+function mergePreserveExpand(
+  fresh: FileTreeNode[],
+  oldMap: Map<string, FileTreeNode>
+): FileTreeNode[] {
+  return fresh.map((n) => {
+    const old = oldMap.get(n.path);
+    const merged: FileTreeNode = old
+      ? {...n, expanded: n.expanded || !!old.expanded}
+      : n;
+    if (merged.children) {
+      merged.children = mergePreserveExpand(merged.children, oldMap);
+    }
+    return merged;
+  });
+}
+
 // ================================================================
-// 单个树行（递归组件）— 根据文件类型显示不同图标
+// 单个树行（递归组件）— 根据文件类型显示不同图标；支持右键菜单与拖拽移动
 // ================================================================
+interface DndHandlers {
+  draggingPath: string | null;
+  onDragStart: (path: string) => void;
+  onDragEnd: () => void;
+  /** 拖放到某个目录（path 为空串表示项目根） */
+  onDropInto: (targetDir: string) => void;
+}
+
+/** 目录聚合状态 → 展示优先级（冲突 > 红 > 紫 > 橙 > 绿） */
+function dirStatusClass(agg?: DirGitAgg): string {
+  if (!agg || agg.count === 0) return "";
+  if (agg.conflict) return "gs-conflict";
+  if (agg.deleted) return "gs-deleted";
+  if (agg.modified) return "gs-modified";
+  if (agg.renamed) return "gs-renamed";
+  if (agg.added) return "gs-added";
+  return "";
+}
+
+/** 状态中文名（编辑器徽标用），与 Git 面板 KIND_META 文案一致 */
+function statusLabel(k: FileGitStatus): string {
+  switch (k) {
+    case "added":
+      return "新增";
+    case "untracked":
+      return "未跟踪";
+    case "deleted":
+      return "已删除";
+    case "renamed":
+      return "重命名";
+    case "conflict":
+      return "冲突";
+    default:
+      return "已修改";
+  }
+}
+
 function TreeRow({
   node,
   depth,
-  selectedPath,
+  activePath,
   onSelect,
   onToggle,
+  onContextMenu,
+  dnd,
+  statusFor,
 }: {
   node: FileTreeNode;
   depth: number;
-  selectedPath: string | null;
+  activePath: string | null;
   onSelect: (path: string) => void;
   onToggle: (path: string) => void;
+  onContextMenu: (e: React.MouseEvent, path: string, isDir: boolean) => void;
+  dnd: DndHandlers;
+  /** 节点 → git 状态查找（文件返回 kind，目录返回聚合 agg） */
+  statusFor: (node: FileTreeNode) => { kind?: FileGitStatus; agg?: DirGitAgg };
 }) {
-  const isSelected = selectedPath === node.path;
-  const isExpanded = !!node.expanded;
+  const gs = statusFor(node);
+  const [dropHover, setDropHover] = useState(false);
+  const isActive = activePath === node.path;
+
+  // 拖放合法性：目标目录不能是被拖动条目自身或其子孙目录
+  // （把子目录拖回父目录 / 祖先目录是合法移动）
+  const droppable =
+    !!node.isDir &&
+    !!dnd.draggingPath &&
+    node.path !== dnd.draggingPath &&
+    !node.path.startsWith(dnd.draggingPath + "/");
+
+  const commonHandlers = {
+    onContextMenu: (e: React.MouseEvent) =>
+      onContextMenu(e, node.path, node.isDir),
+    draggable: true,
+    onDragStart: (e: React.DragEvent) => {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", node.path);
+      dnd.onDragStart(node.path);
+    },
+    onDragEnd: () => {
+      setDropHover(false);
+      dnd.onDragEnd();
+    },
+  };
 
   if (node.isDir) {
+    const aggClass = dirStatusClass(gs.agg);
     return (
       <>
         <div
-          className={`file-tree-row ${isSelected ? "active" : ""}`}
+          className={[
+            "file-tree-row",
+            dropHover && droppable ? "drop-target" : "",
+          ].join(" ")}
           style={{ paddingLeft: 8 + depth * 14 }}
           onClick={() => onToggle(node.path)}
+          onDragOver={(e) => {
+            if (droppable) {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              setDropHover(true);
+            }
+          }}
+          onDragLeave={() => setDropHover(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDropHover(false);
+            if (droppable) dnd.onDropInto(node.path);
+          }}
+          {...commonHandlers}
         >
           <span className="file-tree-caret">
             {node.loading ? (
               <Spin size="small" style={{ transform: "scale(0.6)" }} />
-            ) : isExpanded ? (
+            ) : node.expanded ? (
               <CaretDown size={10} />
             ) : (
               <CaretRight size={10} />
             )}
           </span>
-          <span className="file-tree-icon folder">
+          <span className={`file-tree-icon folder ${aggClass}`}>
             <Folder size={14} />
           </span>
-          <span className="file-tree-name">{node.name}</span>
+          <span className={`file-tree-name ${aggClass}`}>{node.name}</span>
+          {gs.agg && gs.agg.count > 0 && (
+            <span className={`file-tree-badge ${aggClass}`}>
+              {gs.agg.count}
+            </span>
+          )}
         </div>
-        {isExpanded && node.children && node.children.length > 0 && (
+        {node.expanded && node.children && node.children.length > 0 && (
           <div className="file-tree-children">
             {node.children.map((child) => (
               <TreeRow
                 key={child.path}
                 node={child}
                 depth={depth + 1}
-                selectedPath={selectedPath}
+                activePath={activePath}
                 onSelect={onSelect}
                 onToggle={onToggle}
+                onContextMenu={onContextMenu}
+                dnd={dnd}
+                statusFor={statusFor}
               />
             ))}
           </div>
         )}
-        {isExpanded && node.children && node.children.length === 0 && (
+        {node.expanded && node.children && node.children.length === 0 && (
           <div
             className="file-tree-empty-hint"
             style={{ paddingLeft: 8 + (depth + 1) * 14 }}
@@ -228,9 +527,10 @@ function TreeRow({
 
   return (
     <div
-      className={`file-tree-row file ${isSelected ? "active" : ""}`}
+      className={`file-tree-row file ${isActive ? "active" : ""}`}
       style={{ paddingLeft: 8 + depth * 14 }}
       onClick={() => onSelect(node.path)}
+      {...commonHandlers}
     >
       <span className="file-tree-caret" />
       <span
@@ -244,7 +544,15 @@ function TreeRow({
           <File size={14} />
         )}
       </span>
-      <span className="file-tree-name">{node.name}</span>
+      <span className={`file-tree-name ${gs.kind ? `gs-${gs.kind}` : ""}`}>
+        {node.name}
+      </span>
+      {gs.kind && (
+        <span
+          className={`file-tree-dot dot-${gs.kind}`}
+          title={statusLabel(gs.kind)}
+        />
+      )}
     </div>
   );
 }
@@ -252,7 +560,12 @@ function TreeRow({
 // ================================================================
 // 主组件
 // ================================================================
-export default function FilePanel({ project, onClose, onOpenGit }: Props) {
+export default function FilePanel({
+  project,
+  onClose,
+  onOpenGit,
+  visible = true,
+}: Props) {
   const { message, modal } = App.useApp();
   const [treeData, setTreeData] = useState<FileTreeNode[]>(() => [
     {
@@ -263,22 +576,51 @@ export default function FilePanel({ project, onClose, onOpenGit }: Props) {
       expanded: true,
     },
   ]);
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [doc, setDoc] = useState<{ path: string; meta: FileContent } | null>(
-    null
-  );
-  const [content, setContent] = useState("");
+  // 多标签打开的文件（保留各自未保存内容，切换不丢编辑）
+  const [tabs, setTabs] = useState<OpenTab[]>([]);
+  const [activePath, setActivePath] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  // 编辑态语法高亮底层（与输入层滚动同步）
-  const editorUnderlayRef = useRef<HTMLPreElement>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // 图片预览 URL
-  const [imageUrl, setImageUrl] = useState<string | null>(null);
-  // 当前文件的类型（已打开后）
-  const [currentFileType, setCurrentFileType] = useState<FileType | null>(null);
-  // 文本/标记文件的查看模式：view=高亮/预览，edit=编辑
+  // 编辑态语法高亮底层（与输入层滚动同步）
+  const editorUnderlayRef = useRef<HTMLPreElement>(null);
+  // 文本/标记文件的查看模式：仅 Markdown 使用（预览 ↔ 编辑）；
+  // 其他文本文件无需切换，直接在单页内编辑（只读文件静态展示）
   const [viewMode, setViewMode] = useState<"view" | "edit">("view");
+
+  // 右键菜单 / 剪贴板 / 重命名弹窗 / 拖拽
+  const [ctxMenu, setCtxMenu] = useState<{
+    x: number;
+    y: number;
+    path: string;
+    isDir: boolean;
+  } | null>(null);
+  const [clipboard, setClipboard] = useState<TreeClipboard | null>(null);
+  const [renaming, setRenaming] = useState<{ path: string; name: string } | null>(
+    null
+  );
+  const [draggingPath, setDraggingPath] = useState<string | null>(null);
+
+  // Git 状态标记：文件级状态 + 目录聚合状态
+  const [statusMap, setStatusMap] = useState<Map<string, FileGitStatus>>(
+    new Map()
+  );
+  const [dirAgg, setDirAgg] = useState<Map<string, DirGitAgg>>(new Map());
+  const gitTimerRef = useRef<number | undefined>(undefined);
+
+  // 行级 diff 标记（工作区内容 vs HEAD）：与激活文件行号对齐
+  const [lineKinds, setLineKinds] = useState<LineKind[] | null>(null);
+  // diff 刷新序号：保存成功 / 面板重新可见时递增，强制重算行标记
+  const [diffRev, setDiffRev] = useState(0);
+  const gutterInnerRef = useRef<HTMLDivElement | null>(null);
+
+  // 集成终端抽屉
+  const [termOpen, setTermOpen] = useState(false);
+  const [termHeight, setTermHeight] = useState<number>(() => {
+    const saved = localStorage.getItem("jb_term_height");
+    return saved ? Math.max(120, parseInt(saved, 10) || 220) : 220;
+  });
+  const termResizingRef = useRef(false);
 
   // 可拖拽宽度：文件树宽度持久化到 localStorage
   const [treeWidth, setTreeWidth] = useState<number>(() => {
@@ -288,10 +630,115 @@ export default function FilePanel({ project, onClose, onOpenGit }: Props) {
   const draggingRef = useRef(false);
   const panelBodyRef = useRef<HTMLDivElement>(null);
 
-  const dirty = useMemo(
-    () => doc !== null && content !== doc.meta.content,
-    [doc, content]
+  const activeTab = useMemo(
+    () => tabs.find((t) => t.path === activePath) ?? null,
+    [tabs, activePath]
   );
+
+  /** 激活文件的 git 状态（编辑器徽标用） */
+  const activeGitKind = useMemo(
+    () => (activeTab ? statusMap.get(activeTab.path) : undefined),
+    [activeTab, statusMap]
+  );
+
+  // 切换激活标签时回到查看模式
+  useEffect(() => {
+    setViewMode("view");
+  }, [activePath]);
+
+  // ================================================================
+  // Git 状态：文件树 / 标签栏着色 + 目录聚合计数
+  // ================================================================
+
+  /** 拉取 git status 并构建 文件状态表 / 目录聚合表 */
+  const refreshGitStatus = useCallback(async () => {
+    if (!project.git_available) {
+      setStatusMap((prev) => (prev.size ? new Map() : prev));
+      setDirAgg((prev) => (prev.size ? new Map() : prev));
+      return;
+    }
+    try {
+      const st = await api.gitStatus(project.id);
+      const fmap = new Map<string, FileGitStatus>();
+      const dmap = new Map<string, DirGitAgg>();
+      const bump = (rel: string) => {
+        let agg = dmap.get(rel);
+        if (!agg) {
+          agg = {
+            modified: false,
+            added: false,
+            deleted: false,
+            renamed: false,
+            conflict: false,
+            count: 0,
+          };
+          dmap.set(rel, agg);
+        }
+        return agg;
+      };
+      for (const ch of st.changes) {
+        if (fmap.has(ch.path)) continue;
+        const kind = classifyChange(ch);
+        fmap.set(ch.path, kind);
+        // 根目录与所有祖先目录聚合
+        const rootAgg = bump("");
+        rootAgg.count++;
+        if (kind === "modified") rootAgg.modified = true;
+        else if (kind === "deleted") rootAgg.deleted = true;
+        else if (kind === "renamed") rootAgg.renamed = true;
+        else if (kind === "conflict") rootAgg.conflict = true;
+        else rootAgg.added = true;
+        const segs = ch.path.split("/");
+        segs.pop();
+        let cur = "";
+        for (const s of segs) {
+          cur = cur ? `${cur}/${s}` : s;
+          const agg = bump(cur);
+          agg.count++;
+          if (kind === "modified") agg.modified = true;
+          else if (kind === "deleted") agg.deleted = true;
+          else if (kind === "renamed") agg.renamed = true;
+          else if (kind === "conflict") agg.conflict = true;
+          else agg.added = true;
+        }
+      }
+      setStatusMap(fmap);
+      setDirAgg(dmap);
+    } catch {
+      // 非 git 仓库 / git 不可用：静默清空标记
+      setStatusMap(new Map());
+      setDirAgg(new Map());
+    }
+  }, [project.id, project.git_available]);
+
+  /** 防抖刷新（保存/重命名/移动等操作后调用，避免频繁 spawn git） */
+  const scheduleGitRefresh = useCallback(() => {
+    window.clearTimeout(gitTimerRef.current);
+    gitTimerRef.current = window.setTimeout(
+      () => void refreshGitStatus(),
+      300
+    );
+  }, [refreshGitStatus]);
+
+  // 面板重新可见 / 切换项目时刷新 git 状态（含行级 diff，可能在外部被改动）
+  useEffect(() => {
+    if (visible) {
+      void refreshGitStatus();
+      setDiffRev((v) => v + 1);
+    }
+  }, [visible, refreshGitStatus]);
+
+  // 窗口重新聚焦时刷新：覆盖在 IDE 等外部工具中编辑/提交后切回的场景，
+  // 否则文件树状态点与行级 diff 标记会停留在过期数据上
+  useEffect(() => {
+    if (!visible) return;
+    const onFocus = () => {
+      scheduleGitRefresh();
+      setDiffRev((v) => v + 1);
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [visible, scheduleGitRefresh]);
 
   // 懒加载目录子节点（含紧凑路径合并）
   const loadChildren = useCallback(async (path: string) => {
@@ -305,6 +752,26 @@ export default function FilePanel({ project, onClose, onOpenGit }: Props) {
       setTreeData((prev) => setChildren(prev, path, []));
     }
   }, [project.id, message]);
+
+  /**
+   * 刷新某目录内容（文件操作后调用）：
+   * 先快照当前展开状态，重载后按 path 恢复，展开的目录不会折叠
+   */
+  const refreshDir = useCallback(
+    async (dirPath: string) => {
+      const snapshot = new Map<string, FileTreeNode>();
+      const target = findNode(treeData, dirPath);
+      if (target?.children) collectNodeMap(target.children, snapshot);
+      try {
+        const fresh = await loadMergedNodes(project.id, dirPath);
+        const merged = mergePreserveExpand(fresh, snapshot);
+        setTreeData((prev) => setChildren(prev, dirPath, merged));
+      } catch (e) {
+        message.error(`刷新目录失败: ${e}`);
+      }
+    },
+    [project.id, treeData, message]
+  );
 
   // 递归标记某节点 loading
   function markLoading(nodes: FileTreeNode[], key: string): FileTreeNode[] {
@@ -350,9 +817,10 @@ export default function FilePanel({ project, onClose, onOpenGit }: Props) {
   // 初始加载根目录
   useEffect(() => {
     loadChildren("");
-  }, [loadChildren]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // 切换项目时重置文件树、选中文件和编辑器
+  // 切换项目时重置文件树、标签和编辑器
   useEffect(() => {
     setTreeData([
       {
@@ -363,92 +831,355 @@ export default function FilePanel({ project, onClose, onOpenGit }: Props) {
         expanded: true,
       },
     ]);
-    setSelectedPath(null);
-    setDoc(null);
-    setContent("");
+    setTabs([]);
+    setActivePath(null);
     setError(null);
-    setImageUrl(null);
-    setCurrentFileType(null);
     setViewMode("view");
+    setClipboard(null);
     loadChildren("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id]);
 
-  const openFile = async (path: string) => {
-    if (dirty) {
-      const ok = await new Promise<boolean>((resolve) => {
+  /** 打开文件（已有标签则直接激活；未保存的内容随标签保留，无需确认丢弃） */
+  const openFile = useCallback(
+    async (path: string) => {
+      const existing = tabs.find((t) => t.path === path);
+      if (existing) {
+        setActivePath(path);
+        return;
+      }
+      setLoading(true);
+      setError(null);
+
+      const filename = path.split("/").pop() ?? path;
+      const fileType = getFileType(filename);
+
+      try {
+        if (fileType === "image") {
+          // 图片：获取绝对路径后通过 Tauri asset 协议展示
+          const absPath = await api.getFileAbsPath(project.id, path);
+          setTabs((prev) => [
+            ...prev,
+            {
+              path,
+              fileType,
+              content: "",
+              assetUrl: convertFileSrc(absPath),
+              meta: {
+                content: "",
+                encoding: "binary",
+                readonly: true,
+                size: 0,
+              },
+            },
+          ]);
+          setActivePath(path);
+        } else if (fileType === "binary") {
+          // 二进制文件：不读取文本内容，只展示大小提示
+          let size = 0;
+          try {
+            const meta = await api.readProjectFile(project.id, path);
+            size = meta.size;
+          } catch {
+            /* 二进制可能无法按文本读取，属正常情况 */
+          }
+          const absPath = await api.getFileAbsPath(project.id, path);
+          setTabs((prev) => [
+            ...prev,
+            {
+              path,
+              fileType,
+              content: "",
+              assetUrl: convertFileSrc(absPath),
+              meta: { content: "", encoding: "binary", readonly: true, size },
+            },
+          ]);
+          setActivePath(path);
+        } else {
+          // 文本文件
+          const meta = await api.readProjectFile(project.id, path);
+          setTabs((prev) => [
+            ...prev,
+            { path, fileType, content: meta.content, meta },
+          ]);
+          setActivePath(path);
+        }
+      } catch (e: any) {
+        setError(String(e));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [project.id, tabs]
+  );
+
+  /** 关闭标签：脏标签需确认放弃修改 */
+  const closeTab = useCallback(
+    (path: string) => {
+      const idx = tabs.findIndex((t) => t.path === path);
+      if (idx < 0) return;
+      const tab = tabs[idx]!;
+      const doClose = () => {
+        setTabs((prev) => prev.filter((t) => t.path !== path));
+        if (activePath === path) {
+          // 激活相邻标签（优先右侧，其次左侧）
+          const next =
+            tabs[idx + 1]?.path ?? tabs[idx - 1]?.path ?? null;
+          setActivePath(next);
+        }
+      };
+      if (tab.content !== tab.meta.content) {
         modal.confirm({
           title: "放弃未保存的修改？",
-          content: `${doc?.path} 有未保存的修改，切换后将丢失。`,
-          okText: "放弃并打开",
+          content: `${tab.path} 有未保存的修改，关闭后将丢失。`,
+          okText: "放弃并关闭",
+          okButtonProps: { danger: true },
           cancelText: "取消",
-          onOk: () => resolve(true),
-          onCancel: () => resolve(false),
+          onOk: doClose,
         });
-      });
-      if (!ok) return;
-    }
-    setLoading(true);
-    setError(null);
-    setSelectedPath(path);
-    setImageUrl(null);
-    setDoc(null);
-    setCurrentFileType(null);
-    setViewMode("view");
-
-    const filename = path.split("/").pop() ?? path;
-    const fileType = getFileType(filename);
-    setCurrentFileType(fileType);
-
-    try {
-      if (fileType === "image") {
-        // 图片：获取绝对路径后通过 Tauri asset 协议展示
-        const absPath = await api.getFileAbsPath(project.id, path);
-        const url = convertFileSrc(absPath);
-        setImageUrl(url);
-      } else if (fileType === "binary") {
-        // 二进制文件：不读取内容，直接显示提示
-        const absPath = await api.getFileAbsPath(project.id, path);
-        setImageUrl(convertFileSrc(absPath)); // 复用变量名但不会用于显示图片
-        // 获取文件大小
-        try {
-          const meta = await api.readProjectFile(project.id, path);
-          setDoc({ path, meta });
-        } catch {
-          // 二进制文件可能无法读取为文本，这是正常的
-          setDoc({ path, meta: { content: "", encoding: "binary", readonly: true, size: 0 } });
-        }
       } else {
-        // 文本文件：走原有的读取流程
-        const meta = await api.readProjectFile(project.id, path);
-        setDoc({ path, meta });
-        setContent(meta.content);
+        doClose();
       }
-    } catch (e: any) {
-      setError(String(e));
-      setDoc(null);
-      setContent("");
-    } finally {
-      setLoading(false);
-    }
-  };
+    },
+    [tabs, activePath, modal]
+  );
 
-  const handleSave = async () => {
-    if (!doc || doc.meta.readonly) return;
+  /** 更新当前激活标签的内容 */
+  const updateActiveContent = useCallback(
+    (content: string) => {
+      setTabs((prev) =>
+        prev.map((t) => (t.path === activePath ? { ...t, content } : t))
+      );
+    },
+    [activePath]
+  );
+
+  const handleSave = useCallback(async () => {
+    if (!activeTab || activeTab.meta.readonly) return;
     setSaving(true);
     try {
-      await api.writeProjectFile(project.id, doc.path, content);
-      setDoc({
-        path: doc.path,
-        meta: { ...doc.meta, content, size: new Blob([content]).size },
-      });
+      await api.writeProjectFile(project.id, activeTab.path, activeTab.content);
+      const size = new Blob([activeTab.content]).size;
+      setTabs((prev) =>
+        prev.map((t) =>
+          t.path === activeTab.path
+            ? { ...t, meta: { ...t.meta, content: t.content, size } }
+            : t
+        )
+      );
       message.success("已保存");
+      // 保存会改变工作区状态，刷新文件树 / 标签的 git 标记与行级 diff
+      scheduleGitRefresh();
+      setDiffRev((v) => v + 1);
     } catch (e: any) {
       message.error(`保存失败: ${e}`);
     } finally {
       setSaving(false);
     }
+  }, [activeTab, project.id, message, scheduleGitRefresh]);
+
+  const dirty = useMemo(
+    () => !!activeTab && activeTab.content !== activeTab.meta.content,
+    [activeTab]
+  );
+
+  // ================================================================
+  // 行级 diff 标记（HEAD 内容 vs 当前编辑器内容）
+  // 前端 LCS 直接对显示中的内容计算：标记位置永远与编辑器行号精确对齐，
+  // 不受未保存编辑 / 外部修改 / 暂存状态影响；忽略行尾 CR 与 Git 面板 diff 同口径
+  // ================================================================
+
+  useEffect(() => {
+    if (!activeTab || activeTab.fileType !== "text" || !project.git_available) {
+      setLineKinds(null);
+      return;
+    }
+    void diffRev;
+    let cancelled = false;
+    // 防抖：编辑时停止输入 400ms 后才计算
+    const timer = window.setTimeout(async () => {
+      try {
+        const lines = activeTab.content.split("\n");
+        if (activeTab.content.length > 400_000 || lines.length > 6000) {
+          setLineKinds(null);
+          return;
+        }
+        const head = await api.gitFileHead(project.id, activeTab.path);
+        if (cancelled) return;
+        if (head === null) {
+          // 未跟踪 / HEAD 中不存在：整个文件标记为新增
+          setLineKinds(lines.map(() => 2 as LineKind));
+          return;
+        }
+        const kinds = diffLineKinds(head, activeTab.content);
+        setLineKinds(kinds.some((k) => k !== 0) ? kinds : null);
+      } catch {
+        if (!cancelled) setLineKinds(null);
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+    // 仅依赖原始字段：activeTab 对象随输入每击重建，避免无谓的重跑
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    activeTab?.path,
+    activeTab?.content,
+    activeTab?.fileType,
+    project.id,
+    project.git_available,
+    diffRev,
+  ]);
+
+  // 滚动同步：diff 条随代码区滚动平移
+  const syncGutter = useCallback((top: number) => {
+    if (gutterInnerRef.current) {
+      gutterInnerRef.current.style.transform = `translateY(${-top}px)`;
+    }
+  }, []);
+
+  useEffect(() => {
+    syncGutter(0);
+  }, [activePath, lineKinds, syncGutter]);
+
+  /** 左缘 diff 条（绿=新增行，橙=修改行） */
+  const diffGutter = useMemo(() => {
+    if (!lineKinds || !lineKinds.some((k) => k !== 0)) return null;
+    const bars: React.ReactNode[] = [];
+    for (let idx = 0; idx < lineKinds.length; idx++) {
+      const k = lineKinds[idx]!;
+      if (k === 0) continue;
+      bars.push(
+        <div
+          key={idx}
+          className={`diff-bar ${k === 2 ? "add" : "mod"}`}
+          style={{ top: GUTTER_PAD + idx * LINE_H }}
+        />
+      );
+    }
+    return (
+      <div className="file-diff-gutter" aria-hidden>
+        <div className="file-diff-gutter-inner" ref={gutterInnerRef}>
+          {bars}
+        </div>
+      </div>
+    );
+  }, [lineKinds]);
+
+  /** 文件树节点 → git 状态查找 */
+  const statusFor = useCallback(
+    (node: FileTreeNode): { kind?: FileGitStatus; agg?: DirGitAgg } =>
+      node.isDir
+        ? { agg: dirAgg.get(node.path) }
+        : { kind: statusMap.get(node.path) },
+    [dirAgg, statusMap]
+  );
+
+  // ================================================================
+  // 文件操作：重命名 / 复制 / 剪切 / 粘贴 / 资源管理器 / 拖拽移动
+  // ================================================================
+
+  /** 重命名 / 移动后同步更新打开的标签路径（含子路径前缀改写） */
+  const remapTabPaths = useCallback(
+    (oldPath: string, newPath: string) => {
+      setTabs((prev) =>
+        prev.map((t) => {
+          if (t.path === oldPath) return { ...t, path: newPath };
+          if (t.path.startsWith(oldPath + "/")) {
+            return { ...t, path: newPath + t.path.slice(oldPath.length) };
+          }
+          return t;
+        })
+      );
+      setActivePath((cur) => {
+        if (cur === oldPath) return newPath;
+        if (cur && cur.startsWith(oldPath + "/")) {
+          return newPath + cur.slice(oldPath.length);
+        }
+        return cur;
+      });
+    },
+    []
+  );
+
+  const parentOf = (p: string) => {
+    const idx = p.lastIndexOf("/");
+    return idx < 0 ? "" : p.slice(0, idx);
   };
+
+  const doRename = useCallback(async () => {
+    if (!renaming) return;
+    const name = renaming.name.trim();
+    if (!name) return;
+    try {
+      const newPath = await api.fsRename(project.id, renaming.path, name);
+      const parent = parentOf(renaming.path);
+      await refreshDir(parent);
+      remapTabPaths(renaming.path, newPath);
+      scheduleGitRefresh();
+      message.success("已重命名");
+      setRenaming(null);
+    } catch (e: any) {
+      message.error(`重命名失败: ${e}`);
+    }
+  }, [renaming, project.id, refreshDir, remapTabPaths, message, scheduleGitRefresh]);
+
+  const handlePaste = useCallback(
+    async (targetDir: string) => {
+      if (!clipboard) return;
+      const src = clipboard.path;
+      // 目标不能是自身或其子目录（后端同样校验，前端提前拦截给友好提示）
+      if (targetDir === src || targetDir.startsWith(src + "/")) {
+        message.warning("不能粘贴到条目自身内部");
+        return;
+      }
+      const isCut = clipboard.mode === "cut";
+      try {
+        const newPath = isCut
+          ? await api.fsMoveEntry(project.id, src, targetDir)
+          : await api.fsCopyEntry(project.id, src, targetDir);
+        const targets = new Set<string>([targetDir]);
+        if (isCut) targets.add(parentOf(src));
+        for (const t of targets) void refreshDir(t);
+        if (isCut) {
+          remapTabPaths(src, newPath);
+          setClipboard(null);
+        }
+        scheduleGitRefresh();
+        message.success(isCut ? "已移动" : "已粘贴");
+      } catch (e: any) {
+        message.error(`${isCut ? "移动" : "粘贴"}失败: ${e}`);
+      }
+    },
+    [clipboard, project.id, refreshDir, remapTabPaths, message, scheduleGitRefresh]
+  );
+
+  /** 拖拽放下：把拖动条目移动到目标目录 */
+  const handleDropInto = useCallback(
+    async (targetDir: string) => {
+      const src = draggingPath;
+      setDraggingPath(null);
+      if (!src || src === targetDir) return;
+      if (targetDir.startsWith(src + "/")) {
+        message.warning("不能移动到自身内部");
+        return;
+      }
+      const sameParent = parentOf(src) === targetDir;
+      if (sameParent) return;
+      try {
+        const newPath = await api.fsMoveEntry(project.id, src, targetDir);
+        const targets = new Set<string>([targetDir, parentOf(src)]);
+        for (const t of targets) void refreshDir(t);
+        remapTabPaths(src, newPath);
+        scheduleGitRefresh();
+        message.success("已移动");
+      } catch (e: any) {
+        message.error(`移动失败: ${e}`);
+      }
+    },
+    [draggingPath, project.id, refreshDir, remapTabPaths, message, scheduleGitRefresh]
+  );
 
   // ---- 可拖拽分隔条 ----
   const startDrag = useCallback((e: React.MouseEvent) => {
@@ -458,12 +1189,26 @@ export default function FilePanel({ project, onClose, onOpenGit }: Props) {
     document.body.style.userSelect = "none";
   }, []);
 
+  // ---- 终端抽屉高度拖拽 ----
+  const startTermResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    termResizingRef.current = true;
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+  }, []);
+
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
-      if (!draggingRef.current || !panelBodyRef.current) return;
-      const rect = panelBodyRef.current.getBoundingClientRect();
-      const newWidth = Math.max(160, Math.min(600, e.clientX - rect.left));
-      setTreeWidth(newWidth);
+      if (draggingRef.current && panelBodyRef.current) {
+        const rect = panelBodyRef.current.getBoundingClientRect();
+        const newWidth = Math.max(160, Math.min(600, e.clientX - rect.left));
+        setTreeWidth(newWidth);
+      }
+      if (termResizingRef.current) {
+        const h = window.innerHeight - e.clientY - 40;
+        const next = Math.max(120, Math.min(window.innerHeight * 0.7, h));
+        setTermHeight(next);
+      }
     };
     const onUp = () => {
       if (draggingRef.current) {
@@ -475,6 +1220,15 @@ export default function FilePanel({ project, onClose, onOpenGit }: Props) {
           return w;
         });
       }
+      if (termResizingRef.current) {
+        termResizingRef.current = false;
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        setTermHeight((h) => {
+          localStorage.setItem("jb_term_height", String(h));
+          return h;
+        });
+      }
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -483,6 +1237,13 @@ export default function FilePanel({ project, onClose, onOpenGit }: Props) {
       window.removeEventListener("mouseup", onUp);
     };
   }, []);
+
+  const dnd: DndHandlers = {
+    draggingPath,
+    onDragStart: setDraggingPath,
+    onDragEnd: () => setDraggingPath(null),
+    onDropInto: (target) => void handleDropInto(target),
+  };
 
   return (
     <div className="file-panel">
@@ -504,17 +1265,17 @@ export default function FilePanel({ project, onClose, onOpenGit }: Props) {
               </button>
             </Tooltip>
           )}
-          {doc && currentFileType === "text" && (
+          {activeTab && activeTab.fileType === "text" && (
             <>
-              <span className="file-enc-badge">{doc.meta.encoding}</span>
-              {doc.meta.readonly && (
+              <span className="file-enc-badge">{activeTab.meta.encoding}</span>
+              {activeTab.meta.readonly && (
                 <span className="file-enc-badge readonly">只读</span>
               )}
               <Tooltip title="保存 (Ctrl+S)">
                 <button
                   className="icon-btn sm accent"
                   onClick={handleSave}
-                  disabled={!dirty || doc.meta.readonly}
+                  disabled={!dirty || activeTab.meta.readonly}
                   aria-label="保存"
                 >
                   <Save size={13} />
@@ -522,6 +1283,15 @@ export default function FilePanel({ project, onClose, onOpenGit }: Props) {
               </Tooltip>
             </>
           )}
+          <Tooltip title="终端">
+            <button
+              className={`icon-btn sm ${termOpen ? "accent" : ""}`}
+              onClick={() => setTermOpen((v) => !v)}
+              aria-label="终端"
+            >
+              <Terminal size={13} />
+            </button>
+          </Tooltip>
           <Tooltip title="返回日志">
             <button
               className="icon-btn sm"
@@ -535,16 +1305,23 @@ export default function FilePanel({ project, onClose, onOpenGit }: Props) {
       </div>
 
       <div className="file-panel-body" ref={panelBodyRef}>
-        {/* 左侧文件树（自定义，点击整行展开/折叠） */}
+        {/* 左侧文件树（自定义，点击整行展开/折叠；支持右键菜单与拖拽移动） */}
         <div className="file-tree" style={{ width: treeWidth, flexShrink: 0 }}>
           {treeData.map((node) => (
             <TreeRow
               key={node.path}
               node={node}
               depth={0}
-              selectedPath={selectedPath}
+              activePath={activePath}
               onSelect={openFile}
               onToggle={handleToggle}
+              onContextMenu={(e, path, isDir) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setCtxMenu({ x: e.clientX, y: e.clientY, path, isDir });
+              }}
+              dnd={dnd}
+              statusFor={statusFor}
             />
           ))}
         </div>
@@ -557,46 +1334,104 @@ export default function FilePanel({ project, onClose, onOpenGit }: Props) {
 
         {/* 右侧编辑器/预览区 */}
         <div className="file-editor">
+          {/* 已打开文件的标签栏 */}
+          {tabs.length > 0 && (
+            <div className="file-tabs">
+              {tabs.map((t) => {
+                const ft = getFileType(t.path.split("/").pop() ?? "");
+                const tabDirty = t.content !== t.meta.content;
+                const tKind = statusMap.get(t.path);
+                return (
+                  <div
+                    key={t.path}
+                    className={`file-tab ${t.path === activePath ? "active" : ""}`}
+                    onClick={() => setActivePath(t.path)}
+                    title={t.path}
+                  >
+                    <span
+                      className={`file-tree-icon file ${ft === "image" ? "file-type-image" : ft === "binary" ? "file-type-binary" : ""}`}
+                    >
+                      {ft === "image" ? (
+                        <ImageIcon size={12} />
+                      ) : ft === "binary" ? (
+                        <Binary size={12} />
+                      ) : (
+                        <File size={12} />
+                      )}
+                    </span>
+                    <span
+                      className={`file-tab-name ${tKind ? `gs-${tKind}` : ""}`}
+                    >
+                      {t.path.split("/").pop()}
+                    </span>
+                    {tabDirty ? (
+                      <span className="file-tab-dirty" />
+                    ) : tKind ? (
+                      <span
+                        className={`file-tree-dot dot-${tKind}`}
+                        title={statusLabel(tKind)}
+                      />
+                    ) : null}
+                    <button
+                      className="file-tab-close"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        closeTab(t.path);
+                      }}
+                      aria-label="关闭标签"
+                    >
+                      <X size={10} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           {loading ? (
             <div style={{ padding: 40, textAlign: "center" }}>
               <Spin />
             </div>
-          ) : currentFileType === "image" && imageUrl ? (
+          ) : activeTab && activeTab.fileType === "image" && activeTab.assetUrl ? (
             <>
               <div className="file-editor-toolbar">
-                <span className="file-editor-path">{selectedPath}</span>
+                <span className="file-editor-path">{activeTab.path}</span>
                 <span className="file-type-badge image">图片</span>
               </div>
               <div className="file-image-preview">
                 <img
-                  src={imageUrl}
-                  alt={selectedPath ?? ""}
+                  src={activeTab.assetUrl}
+                  alt={activeTab.path}
                   style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }}
                   onError={() => {
                     setError("图片加载失败");
-                    setImageUrl(null);
                   }}
                 />
               </div>
             </>
-          ) : currentFileType === "binary" ? (
+          ) : activeTab && activeTab.fileType === "binary" ? (
             <>
               <div className="file-editor-toolbar">
-                <span className="file-editor-path">{selectedPath}</span>
+                <span className="file-editor-path">{activeTab.path}</span>
                 <span className="file-type-badge binary">二进制</span>
               </div>
               <div className="file-binary-hint">
                 <Binary size={40} />
                 <div>这是一个二进制文件，不支持在线预览</div>
                 <div style={{ fontSize: 11, color: "var(--text-4)" }}>
-                  {doc?.meta.size.toLocaleString() ?? ""} B
+                  {activeTab.meta.size.toLocaleString()} B
                 </div>
               </div>
             </>
-          ) : doc ? (
+          ) : activeTab ? (
             <>
               <div className="file-editor-toolbar">
-                <span className="file-editor-path">{doc.path}</span>
+                <span className="file-editor-path">{activeTab.path}</span>
+                {activeGitKind && (
+                  <span className={`git-badge g-${activeGitKind}`}>
+                    {statusLabel(activeGitKind)}
+                  </span>
+                )}
                 <div
                   style={{
                     marginLeft: "auto",
@@ -605,87 +1440,80 @@ export default function FilePanel({ project, onClose, onOpenGit }: Props) {
                     alignItems: "center",
                   }}
                 >
-                  {currentFileType === "text" && (
-                    <Segmented
-                      size="small"
-                      value={viewMode}
-                      onChange={(v) => setViewMode(v as "view" | "edit")}
-                      options={
-                        doc.meta.readonly
-                          ? [
-                              {
-                                label: isMarkdown(doc.path) ? "预览" : "查看",
-                                value: "view",
-                              },
-                            ]
-                          : isMarkdown(doc.path)
-                            ? [
-                                { label: "预览", value: "view" },
-                                { label: "编辑", value: "edit" },
-                              ]
-                            : [
-                                { label: "查看", value: "view" },
-                                { label: "编辑", value: "edit" },
-                              ]
-                      }
-                    />
-                  )}
+                  {activeTab.fileType === "text" &&
+                    isMarkdown(activeTab.path) &&
+                    !activeTab.meta.readonly && (
+                      <Segmented
+                        size="small"
+                        value={viewMode}
+                        onChange={(v) => setViewMode(v as "view" | "edit")}
+                        options={[
+                          { label: "预览", value: "view" },
+                          { label: "编辑", value: "edit" },
+                        ]}
+                      />
+                    )}
                   <span className="file-editor-size">
-                    {doc.meta.size.toLocaleString()} B
+                    {activeTab.meta.size.toLocaleString()} B
                   </span>
                 </div>
               </div>
-              {doc.meta.readonly || viewMode === "view" ? (
-                isMarkdown(doc.path) ? (
-                  <div className="file-preview-scroll">
-                    <div className="file-preview-markdown">
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        components={{
-                          code({className, children, ...props}) {
-                            const match = /language-(\w+)/.exec(className ?? "");
-                            if (match) {
-                              const lang = match[1] ?? "";
-                              const grammar = Prism.languages[lang];
-                              const raw = Array.isArray(children)
-                                ? children.join("")
-                                : String(children ?? "");
-                              const html = grammar
-                                ? Prism.highlight(raw, grammar, lang)
-                                : escapeHtml(raw);
-                              return (
-                                <code
-                                  className={`${className ?? ""} file-md-code`}
-                                  dangerouslySetInnerHTML={{ __html: html }}
-                                  {...props}
-                                />
-                              );
-                            }
+              {isMarkdown(activeTab.path) &&
+              (activeTab.meta.readonly || viewMode === "view") ? (
+                <div className="file-preview-scroll">
+                  <div className="file-preview-markdown">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        code({className, children, ...props}) {
+                          const match = /language-(\w+)/.exec(className ?? "");
+                          if (match) {
+                            const lang = match[1] ?? "";
+                            const grammar = Prism.languages[lang];
+                            const raw = Array.isArray(children)
+                              ? children.join("")
+                              : String(children ?? "");
+                            const html = grammar
+                              ? Prism.highlight(raw, grammar, lang)
+                              : escapeHtml(raw);
                             return (
-                              <code className={className} {...props}>
-                                {children}
-                              </code>
+                              <code
+                                className={`${className ?? ""} file-md-code`}
+                                dangerouslySetInnerHTML={{ __html: html }}
+                                {...props}
+                              />
                             );
-                          },
-                        }}
-                      >
-                        {content}
-                      </ReactMarkdown>
-                    </div>
+                          }
+                          return (
+                            <code className={className} {...props}>
+                              {children}
+                            </code>
+                          );
+                        },
+                      }}
+                    >
+                      {activeTab.content}
+                    </ReactMarkdown>
                   </div>
-                ) : (
+                </div>
+              ) : activeTab.meta.readonly ? (
+                <div className="file-code-wrap">
+                  {diffGutter}
                   <pre
                     className="file-code-view"
+                    onScroll={(e) => syncGutter(e.currentTarget.scrollTop)}
                     dangerouslySetInnerHTML={{
                       __html: highlightCode(
-                        content,
-                        getPrismLang(doc.path)
+                        activeTab.content,
+                        getPrismLang(activeTab.path)
                       ),
                     }}
                   />
-                )
+                </div>
               ) : (
                 <div className="file-editor-overlay">
+                  {/* 左缘 git diff 标记条 */}
+                  {diffGutter}
                   {/* 高亮底层：随内容实时渲染语法颜色 */}
                   <pre
                     ref={editorUnderlayRef}
@@ -694,16 +1522,18 @@ export default function FilePanel({ project, onClose, onOpenGit }: Props) {
                     dangerouslySetInnerHTML={{
                       __html: highlightCode(
                         // 末尾换行时补一个空格，保证底层行数与输入层一致
-                        content.endsWith("\n") ? content + " " : content,
-                        getPrismLang(doc.path)
+                        activeTab.content.endsWith("\n")
+                          ? activeTab.content + " "
+                          : activeTab.content,
+                        getPrismLang(activeTab.path)
                       ),
                     }}
                   />
                   {/* 输入层：文字透明，仅显示光标与选区 */}
                   <textarea
                     className="file-editor-textarea file-editor-input"
-                    value={content}
-                    onChange={(e) => setContent(e.target.value)}
+                    value={activeTab.content}
+                    onChange={(e) => updateActiveContent(e.target.value)}
                     onScroll={(e) => {
                       const el = e.currentTarget;
                       const under = editorUnderlayRef.current;
@@ -711,6 +1541,7 @@ export default function FilePanel({ project, onClose, onOpenGit }: Props) {
                         under.scrollTop = el.scrollTop;
                         under.scrollLeft = el.scrollLeft;
                       }
+                      syncGutter(el.scrollTop);
                     }}
                     wrap="off"
                     spellCheck={false}
@@ -741,6 +1572,142 @@ export default function FilePanel({ project, onClose, onOpenGit }: Props) {
           )}
         </div>
       </div>
+
+      {/* 集成终端抽屉 */}
+      <div
+        className={`term-drawer ${termOpen ? "open" : ""}`}
+        style={{ height: termOpen ? termHeight : undefined }}
+      >
+        {termOpen && <div className="term-resizer" onMouseDown={startTermResize} />}
+        <button
+          className={`term-drawer-bar ${termOpen ? "open" : ""}`}
+          onClick={() => setTermOpen((v) => !v)}
+          aria-label="切换终端"
+        >
+          <CaretRight
+            size={11}
+            style={{
+              transform: termOpen ? "rotate(90deg)" : undefined,
+              transition: "transform 0.2s var(--ease)",
+            }}
+          />
+          <Terminal size={12} />
+          <span>终端</span>
+          <span className="term-cwd">{project.root_path}</span>
+        </button>
+        {termOpen && (
+          <div className="term-drawer-content">
+            <TerminalView projectId={project.id} />
+          </div>
+        )}
+      </div>
+
+      {/* 文件树右键菜单 */}
+      {ctxMenu && (
+        <Dropdown
+          open={true}
+          trigger={["contextMenu"]}
+          onOpenChange={(open) => {
+            if (!open) setCtxMenu(null);
+          }}
+          menu={{
+            items: [
+              {
+                key: "rename",
+                icon: <Edit size={13} />,
+                label: "重命名",
+                onClick: () => {
+                  const name = ctxMenu.path.split("/").pop() ?? "";
+                  setRenaming({ path: ctxMenu.path, name });
+                  setCtxMenu(null);
+                },
+              },
+              {
+                key: "copy",
+                icon: <Copy size={13} />,
+                label: "复制",
+                onClick: () => {
+                  setClipboard({ mode: "copy", path: ctxMenu.path });
+                  message.info("已复制，选择目录后粘贴");
+                  setCtxMenu(null);
+                },
+              },
+              {
+                key: "cut",
+                icon: <Scissors size={13} />,
+                label: "剪切",
+                onClick: () => {
+                  setClipboard({ mode: "cut", path: ctxMenu.path });
+                  message.info("已剪切，选择目录后粘贴");
+                  setCtxMenu(null);
+                },
+              },
+              {
+                key: "paste",
+                icon: <ClipboardPaste size={13} />,
+                label: ctxMenu.isDir ? "粘贴到该目录" : "粘贴到所在目录",
+                disabled:
+                  !clipboard ||
+                  (!ctxMenu.isDir && parentOf(ctxMenu.path) === clipboard.path),
+                onClick: () => {
+                  void handlePaste(
+                    ctxMenu.isDir ? ctxMenu.path : parentOf(ctxMenu.path)
+                  );
+                  setCtxMenu(null);
+                },
+              },
+              { type: "divider" as const },
+              {
+                key: "reveal",
+                icon: <FolderOpen size={13} />,
+                label: "在文件管理器中显示",
+                onClick: () => {
+                  api.revealInFileManager(project.id, ctxMenu.path).catch((e) =>
+                    message.error(`打开文件管理器失败: ${e}`)
+                  );
+                  setCtxMenu(null);
+                },
+              },
+            ],
+          }}
+        >
+          <div
+            style={{
+              position: "fixed",
+              left: ctxMenu.x,
+              top: ctxMenu.y,
+              // 锚点必须非 0 尺寸：0x0 的 fixed 元素会被 rc-trigger 判定为
+              // 不可见（offsetParent 为 null 且宽高为 0），导致弹层永不对齐
+              width: 1,
+              height: 1,
+              opacity: 0,
+              pointerEvents: "none",
+            }}
+          />
+        </Dropdown>
+      )}
+
+      {/* 重命名弹窗 */}
+      <Modal
+        open={!!renaming}
+        title="重命名"
+        okText="确定"
+        cancelText="取消"
+        width={380}
+        destroyOnClose
+        onOk={() => void doRename()}
+        onCancel={() => setRenaming(null)}
+      >
+        <Input
+          value={renaming?.name ?? ""}
+          autoFocus
+          placeholder="输入新名称"
+          onChange={(e) =>
+            setRenaming((r) => (r ? { ...r, name: e.target.value } : r))
+          }
+          onPressEnter={() => void doRename()}
+        />
+      </Modal>
     </div>
   );
 }

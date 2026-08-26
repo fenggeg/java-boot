@@ -158,6 +158,22 @@ export const writeProjectFile = (
 export const getFileAbsPath = (projectId: string, path: string) =>
   invoke<string>("get_file_abs_path", { projectId, path });
 
+/// 重命名文件 / 目录，返回新相对路径
+export const fsRename = (projectId: string, path: string, newName: string) =>
+  invoke<string>("fs_rename", { projectId, path, newName });
+
+/// 复制文件 / 目录到目标目录，返回新路径
+export const fsCopyEntry = (projectId: string, srcPath: string, destDir: string) =>
+  invoke<string>("fs_copy_entry", { projectId, srcPath, destDir });
+
+/// 移动文件 / 目录到目标目录，返回新路径
+export const fsMoveEntry = (projectId: string, srcPath: string, destDir: string) =>
+  invoke<string>("fs_move_entry", { projectId, srcPath, destDir });
+
+/// 在系统文件管理器中定位该条目
+export const revealInFileManager = (projectId: string, path: string) =>
+  invoke<void>("reveal_in_file_manager", { projectId, path });
+
 // ============================ Terminal（集成终端） ============================
 
 export const terminalCreate = (projectId: string) =>

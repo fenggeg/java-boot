@@ -2052,7 +2052,7 @@ body {
   padding: 12px;
   font-family: var(--font-mono);
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 22px;
   color: var(--text);
   background: var(--surface);
   tab-size: 2;
@@ -2076,7 +2076,9 @@ body {
   inset: 0;
   padding: 12px;
   font-size: 13px;
-  line-height: 1.6;
+  /* 必须与输入层(.file-editor-textarea)及 diff 标记定位(LINE_H=22)一致，
+     用 1.6 这类相对值会随行号线性漂移，长文件下 diff 条明显错位 */
+  line-height: 22px;
   overflow: hidden;
   pointer-events: none;
   z-index: 0;
@@ -2092,16 +2094,30 @@ body {
   overflow: auto;
 }
 
+/* 选区重影修复：浏览器默认 ::selection 会用不透明前景色绘制输入层文字，
+   与下方高亮底层的同一份文字叠加形成「重影」。强制选区内文字仍透明，
+   只显示半透明蓝色选区背景，可见文字始终只有底层一份。 */
+.file-editor-overlay .file-editor-input::selection {
+  color: transparent;
+  background: rgba(0, 113, 227, 0.32);
+}
+
+.file-editor-overlay .file-editor-input::-moz-selection {
+  color: transparent;
+  background: rgba(0, 113, 227, 0.32);
+}
+
 /* —— 语法高亮代码视图 —— */
+/* 行高固定 22px：与 FilePanel 的 diff 标记定位（LINE_H）保持一致 */
 .file-code-view {
   flex: 1;
   min-height: 0;
   overflow: auto;
   margin: 0;
-  padding: 14px 16px;
+  padding: 12px 16px;
   font-family: var(--font-mono);
   font-size: 13px;
-  line-height: 1.65;
+  line-height: 22px;
   color: var(--text);
   background: var(--surface);
   tab-size: 2;
@@ -2756,6 +2772,21 @@ body {
 [data-theme="dark"] .file-preview-markdown .token.variable {
   color: #ffd60a;
 }
+
+/* ========================================================
+   View slots：Git / 文件面板常驻挂载，仅切换可见性
+   （切走再切回保留目录展开、打开的标签等状态）
+   ======================================================== */
+.view-slot {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.view-slot.hidden {
+  display: none;
+}
+
 /* ========================================================
    文件树 Git 状态着色
    新增/未跟踪=绿 · 已修改=橙 · 已删除=红
@@ -2948,6 +2979,86 @@ body {
 .diff-bar.mod {
   background: var(--orange);
   opacity: 0.8;
+}
+
+/* ========================================================
+   文件标签栏（已打开文件快速切换）
+   ======================================================== */
+.file-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 6px 8px 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  overflow-x: auto;
+  flex-shrink: 0;
+  scrollbar-width: thin;
+}
+
+.file-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px 5px 10px;
+  font-size: 12px;
+  color: var(--text-3);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  max-width: 200px;
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+  border: 1px solid transparent;
+  border-bottom: none;
+  transition: background 0.15s var(--ease);
+}
+
+[data-theme="dark"] .file-tab:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.file-tab.active {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.file-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.file-tab-dirty {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--blue);
+  flex-shrink: 0;
+}
+
+.file-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-4);
+  cursor: pointer;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.file-tab-close:hover {
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--text);
+}
+
+[data-theme="dark"] .file-tab-close:hover {
+  background: rgba(255, 255, 255, 0.1);
 }
 
 /* ========================================================

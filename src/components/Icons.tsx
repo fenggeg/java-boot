@@ -486,6 +486,27 @@ export function Copy({ size, ...rest }: IconProps) {
   );
 }
 
+export function Scissors({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <circle cx="6" cy="6" r="2.4" />
+      <circle cx="6" cy="18" r="2.4" />
+      <path d="M8.2 7.6 L19 18" />
+      <path d="M8.2 16.4 L19 6" />
+    </Svg>
+  );
+}
+
+export function ClipboardPaste({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <rect x="5" y="4" width="14" height="17" rx="2" />
+      <path d="M9 4 V2.8 H15 V4" />
+      <path d="M9 11 H15 M9 15 H13" />
+    </Svg>
+  );
+}
+
 export function Image({ size, ...rest }: IconProps) {
   return (
     <Svg size={size} {...rest}>

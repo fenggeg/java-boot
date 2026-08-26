@@ -615,6 +615,58 @@ pub async fn get_file_abs_path(
         .map_err(|e| AppError::Other(format!("获取路径失败: {}", e)))?
 }
 
+/// 重命名项目内文件 / 目录，返回新相对路径
+#[tauri::command]
+pub async fn fs_rename(
+    project_id: String,
+    path: String,
+    new_name: String,
+) -> AppResult<String> {
+    tokio::task::spawn_blocking(move || {
+        crate::project_fs::rename_entry(&project_id, &path, &new_name)
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("重命名任务失败: {}", e)))?
+}
+
+/// 复制文件 / 目录到目标目录，返回新相对路径
+#[tauri::command]
+pub async fn fs_copy_entry(
+    project_id: String,
+    src_path: String,
+    dest_dir: String,
+) -> AppResult<String> {
+    tokio::task::spawn_blocking(move || {
+        crate::project_fs::copy_entry(&project_id, &src_path, &dest_dir)
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("复制任务失败: {}", e)))?
+}
+
+/// 移动文件 / 目录到目标目录，返回新相对路径
+#[tauri::command]
+pub async fn fs_move_entry(
+    project_id: String,
+    src_path: String,
+    dest_dir: String,
+) -> AppResult<String> {
+    tokio::task::spawn_blocking(move || {
+        crate::project_fs::move_entry(&project_id, &src_path, &dest_dir)
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("移动任务失败: {}", e)))?
+}
+
+/// 在系统文件管理器中定位显示该条目
+#[tauri::command]
+pub async fn reveal_in_file_manager(project_id: String, path: String) -> AppResult<()> {
+    tokio::task::spawn_blocking(move || {
+        crate::project_fs::reveal_in_file_manager(&project_id, &path)
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("打开文件管理器任务失败: {}", e)))?
+}
+
 // ============================ Terminal（集成终端） ============================
 
 /// 为项目创建交互式终端会话，返回会话 id

@@ -205,69 +205,80 @@ export default function App() {
         />
 
         <div className="log-panel">
-          {view === "git" && gitProjectId ? (
-            (() => {
-              const project = projects.find((p) => p.id === gitProjectId);
-              return project ? (
+          {view === "logs" ? (
+            services.length === 0 ? (
+              <div className="hero-empty">
+                <div className="hero-mark">
+                  <HeroLogo size={88} />
+                </div>
+                <div className="hero-title">JavaBoot Launcher</div>
+                <div className="hero-sub">
+                  轻量本地 Spring Boot 服务编排。点击左侧
+                  <span className="accent"> 添加项目</span> 开始
+                </div>
+              </div>
+            ) : openedTabs.length === 0 ? (
+              <div className="hero-empty">
+                <div className="hero-mark subtle">
+                  <Terminal size={56} />
+                </div>
+                <div className="hero-sub">
+                  从左侧服务列表选择一个服务，在此查看实时日志
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="log-tabs">
+                  <Tabs
+                    size="small"
+                    type="editable-card"
+                    hideAdd
+                    activeKey={selectedServiceId ?? undefined}
+                    onChange={(key) => selectService(key)}
+                    onEdit={(key, action) => {
+                      if (action === "remove" && typeof key === "string") {
+                        closeTab(key);
+                      }
+                    }}
+                    items={tabItems}
+                    tabBarStyle={{ margin: 0, padding: "4px 8px 0" }}
+                  />
+                </div>
+                <LogViewer serviceId={selectedServiceId} />
+              </>
+            )
+          ) : null}
+
+          {(() => {
+            // Git / 文件面板常驻挂载，仅切换可见性：
+            // 从文件面板切到 Git 再切回时保留目录展开、打开的文件标签等状态
+            const gitProject = projects.find((p) => p.id === gitProjectId);
+            if (!gitProject) return null;
+            return (
+              <div className={`view-slot ${view === "git" ? "" : "hidden"}`}>
                 <GitPanel
-                  project={project}
+                  project={gitProject}
                   onClose={() => setView("logs")}
                   onBackFiles={() => setView("files")}
                 />
-              ) : null;
-            })()
-          ) : view === "files" && fileProjectId ? (
-            (() => {
-              const project = projects.find((p) => p.id === fileProjectId);
-              return project ? (
+              </div>
+            );
+          })()}
+
+          {(() => {
+            const fileProject = projects.find((p) => p.id === fileProjectId);
+            if (!fileProject) return null;
+            return (
+              <div className={`view-slot ${view === "files" ? "" : "hidden"}`}>
                 <FilePanel
-                  project={project}
+                  project={fileProject}
+                  visible={view === "files"}
                   onClose={() => setView("logs")}
                   onOpenGit={handleOpenGit}
                 />
-              ) : null;
-            })()
-          ) : services.length === 0 ? (
-            <div className="hero-empty">
-              <div className="hero-mark">
-                <HeroLogo size={88} />
               </div>
-              <div className="hero-title">JavaBoot Launcher</div>
-              <div className="hero-sub">
-                轻量本地 Spring Boot 服务编排。点击左侧
-                <span className="accent"> 添加项目</span> 开始
-              </div>
-            </div>
-          ) : openedTabs.length === 0 ? (
-            <div className="hero-empty">
-              <div className="hero-mark subtle">
-                <Terminal size={56} />
-              </div>
-              <div className="hero-sub">
-                从左侧服务列表选择一个服务，在此查看实时日志
-              </div>
-            </div>
-          ) : (
-            <>
-              <div className="log-tabs">
-                <Tabs
-                  size="small"
-                  type="editable-card"
-                  hideAdd
-                  activeKey={selectedServiceId ?? undefined}
-                  onChange={(key) => selectService(key)}
-                  onEdit={(key, action) => {
-                    if (action === "remove" && typeof key === "string") {
-                      closeTab(key);
-                    }
-                  }}
-                  items={tabItems}
-                  tabBarStyle={{ margin: 0, padding: "4px 8px 0" }}
-                />
-              </div>
-              <LogViewer serviceId={selectedServiceId} />
-            </>
-          )}
+            );
+          })()}
         </div>
       </div>
 

@@ -182,6 +182,10 @@ pub fn run() {
             commands::read_project_file,
             commands::write_project_file,
             commands::get_file_abs_path,
+            commands::fs_rename,
+            commands::fs_copy_entry,
+            commands::fs_move_entry,
+            commands::reveal_in_file_manager,
             // terminal
             commands::terminal_create,
             commands::terminal_write,

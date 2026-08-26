@@ -222,3 +222,214 @@ pub fn get_file_abs_path(project_id: &str, path: &str) -> AppResult<String> {
     }
     Ok(full.to_string_lossy().to_string())
 }
+
+// ================================================================
+// 文件树右键菜单操作：重命名 / 复制 / 移动 / 在文件管理器中显示
+// ================================================================
+
+/// 校验新文件名：禁止路径分隔符与 Windows 非法字符，禁止保留名
+fn validate_name(name: &str) -> AppResult<()> {
+    let n = name.trim();
+    if n.is_empty() || n == "." || n == ".." {
+        return Err(AppError::Other("无效的名称".into()));
+    }
+    if n.contains('/') || n.contains('\\') || n.contains(':') {
+        return Err(AppError::Other(format!("名称不能包含分隔符: {}", n)));
+    }
+    for c in ['<', '>', '"', '|', '?', '*'] {
+        if n.contains(c) {
+            return Err(AppError::Other(format!("名称含非法字符: {}", c)));
+        }
+    }
+    // Windows 保留设备名（CON/PRN/AUX/NUL/COM1-9/LPT1-9）
+    let stem = n.split('.').next().unwrap_or("").to_ascii_uppercase();
+    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem[3..].bytes().all(|b| b.is_ascii_digit()))
+    {
+        return Err(AppError::Other(format!("Windows 保留名不可用: {}", n)));
+    }
+    Ok(())
+}
+
+/// 目标重名时生成不冲突名称："a.txt" → "a (2).txt"，目录 → "dir (2)"
+fn unique_name(parent: &Path, name: &str) -> String {
+    if !parent.join(name).exists() {
+        return name.to_string();
+    }
+    let stem_os = Path::new(name).file_stem().map(|s| s.to_string_lossy().to_string());
+    let ext = Path::new(name).extension().map(|e| e.to_string_lossy().to_string());
+    let stem = stem_os.unwrap_or_else(|| name.to_string());
+    for i in 2..10000u32 {
+        let candidate = match &ext {
+            Some(e) => format!("{} ({}).{}", stem, i, e),
+            None => format!("{} ({})", stem, i),
+        };
+        if !parent.join(&candidate).exists() {
+            return candidate;
+        }
+    }
+    // 极端兜底：加 uuid 后缀
+    format!("{}-{}", stem, uuid::Uuid::new_v4().simple())
+}
+
+/// 重命名项目内文件 / 目录，返回新相对路径
+pub fn rename_entry(project_id: &str, path: &str, new_name: &str) -> AppResult<String> {
+    validate_name(new_name)?;
+    let project = db::get_project(project_id)?;
+    let root = Path::new(&project.root_path);
+    let full = safe_join(root, path)?;
+    if !full.exists() {
+        return Err(AppError::NotFound(format!("文件不存在: {}", path)));
+    }
+    let parent = full.parent().ok_or_else(|| AppError::Other("无法获取父目录".into()))?;
+    let target = parent.join(new_name);
+    if target.exists() {
+        return Err(AppError::Other(format!("同名条目已存在: {}", new_name)));
+    }
+    std::fs::rename(&full, &target).map_err(|e| AppError::Other(format!("重命名失败: {}", e)))?;
+    let new_rel = join_rel(
+        Path::new(path)
+            .parent()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default()
+            .trim_end_matches('/'),
+        new_name,
+    );
+    Ok(new_rel)
+}
+
+/// 递归复制目录 / 文件（不含符号链接）
+fn copy_recursive(src: &Path, dst: &Path) -> AppResult<u64> {
+    let meta = std::fs::symlink_metadata(src)?;
+    if meta.is_dir() {
+        std::fs::create_dir_all(dst)?;
+        let mut total = 0u64;
+        for entry in std::fs::read_dir(src)?.flatten() {
+            let ft = entry.file_type()?;
+            if ft.is_symlink() {
+                continue;
+            }
+            total += copy_recursive(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+        Ok(total)
+    } else {
+        if let Some(p) = dst.parent() {
+            std::fs::create_dir_all(p)?;
+        }
+        std::fs::copy(src, dst)
+            .map_err(|e| AppError::Other(format!("复制 {} 失败: {}", src.display(), e)))
+    }
+}
+
+/// 检查 dest 是否为 src 自身或其子目录（防止把目录粘贴进自身）
+fn is_descendant(src_rel: &str, dest_rel: &str) -> bool {
+    let s = src_rel.trim_matches('/');
+    let d = dest_rel.trim_matches('/');
+    if s.is_empty() {
+        return true; // 项目根是所有路径祖先
+    }
+    d == s || d.starts_with(&format!("{}/", s))
+}
+
+/// 把源条目复制到目标目录（目标目录为空串表示项目根），返回新路径。
+/// 同名冲突自动生成 "name (2)" 序号。
+pub fn copy_entry(project_id: &str, src_path: &str, dest_dir: &str) -> AppResult<String> {
+    let project = db::get_project(project_id)?;
+    let root = Path::new(&project.root_path);
+    if is_descendant(src_path, dest_dir) {
+        return Err(AppError::Other("不能把条目复制到其自身内部".into()));
+    }
+    let src = safe_join(root, src_path)?;
+    if !src.exists() {
+        return Err(AppError::NotFound(format!("源不存在: {}", src_path)));
+    }
+    let dest_root_full = safe_join(root, dest_dir)?;
+    if !dest_root_full.is_dir() {
+        return Err(AppError::Other("目标不是目录".into()));
+    }
+    let name = src
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .ok_or_else(|| AppError::Other("无效的源路径".into()))?;
+    let final_name = unique_name(&dest_root_full, &name);
+    let target = dest_root_full.join(&final_name);
+    copy_recursive(&src, &target)?;
+    Ok(join_rel(dest_dir, &final_name))
+}
+
+/// 把源条目移动到目标目录（同盘 rename，跨场景回退复制+删除），返回新路径。
+pub fn move_entry(project_id: &str, src_path: &str, dest_dir: &str) -> AppResult<String> {
+    let project = db::get_project(project_id)?;
+    let root = Path::new(&project.root_path);
+    if is_descendant(src_path, dest_dir) {
+        return Err(AppError::Other("不能把条目移动到其自身内部".into()));
+    }
+    let src = safe_join(root, src_path)?;
+    if !src.exists() {
+        return Err(AppError::NotFound(format!("源不存在: {}", src_path)));
+    }
+    let parent_rel = Path::new(src_path)
+        .parent()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+    let same_parent = normalize_rel(&parent_rel) == normalize_rel(dest_dir);
+    if same_parent {
+        return Err(AppError::Other("源与目标在同一目录".into()));
+    }
+    let dest_root_full = safe_join(root, dest_dir)?;
+    if !dest_root_full.is_dir() {
+        return Err(AppError::Other("目标不是目录".into()));
+    }
+    let name = src
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .ok_or_else(|| AppError::Other("无效的源路径".into()))?;
+    let final_name = unique_name(&dest_root_full, &name);
+    let target = dest_root_full.join(&final_name);
+    if let Err(rename_err) = std::fs::rename(&src, &target) {
+        // 同卷 rename 失败（极少见）：回退为递归复制 + 删除源
+        copy_recursive(&src, &target)?;
+        std::fs::remove_dir_all(&src)
+            .or_else(|_| std::fs::remove_file(&src))
+            .map_err(|_| AppError::Other(format!("移动失败: {}", rename_err)))?;
+    }
+    Ok(join_rel(dest_dir, &final_name))
+}
+
+/// 归一化相对路径用于比较：统一斜杠、去掉首尾分隔符、压缩空段
+fn normalize_rel(rel: &str) -> String {
+    rel.replace('\\', "/")
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// 在系统文件管理器中显示条目：
+/// - 文件 / 目录均用 explorer /select 定位并高亮
+pub fn reveal_in_file_manager(project_id: &str, path: &str) -> AppResult<()> {
+    let project = db::get_project(project_id)?;
+    let full = safe_join(Path::new(&project.root_path), path)?;
+    if !full.exists() {
+        return Err(AppError::NotFound(format!("文件不存在: {}", path)));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("explorer")
+            .arg(format!("/select,{}", full.display()))
+            .creation_flags(0x08000000)
+            .spawn()
+            .map_err(|e| AppError::Other(format!("打开文件管理器失败: {}", e)))?;
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(full.parent().unwrap_or(&full))
+            .spawn()
+            .map_err(|e| AppError::Other(format!("打开文件管理器失败: {}", e)))?;
+    }
+    Ok(())
+}
