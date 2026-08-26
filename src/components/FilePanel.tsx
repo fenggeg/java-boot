@@ -140,7 +140,7 @@ function normLine(l: string): string {
  * 行级 LCS diff（HEAD 内容 → 当前编辑器内容），返回与编辑器行号精确对齐的标记。
  * 不再使用 git hunk 行号映射磁盘文件——那在缓冲区与磁盘不一致（未保存编辑、
  * 外部修改）时整体错位。这里直接对显示中的内容做 diff，位置永远正确。
- * 策略：公共前后缀裁剪 + 中间区 DP；中间区过大时降级为整段「修改」。
+ * 策略：公共前后缀裁剪 + 中间区 suffix-DP 正向贪心；中间区过大时降级为整段「修改」。
  */
 function diffLineKinds(head: string, buf: string): LineKind[] {
   const a = head.split("\n");
@@ -175,59 +175,59 @@ function diffLineKinds(head: string, buf: string): LineKind[] {
     for (let i = pre; i < pre + bm; i++) kinds[i] = 1;
     return kinds;
   }
-  // LCS DP（中间区），dir: 1=对角(相同) 2=上(HEAD侧删除) 3=左(缓冲区新增)
-  const w = bm + 1;
-  const dp = new Int32Array((am + 1) * w);
-  const dir = new Uint8Array((am + 1) * w);
-  for (let i = 1; i <= am; i++) {
-    const av = normLine(a[pre + i - 1]!);
-    for (let j = 1; j <= bm; j++) {
-      const idx = i * w + j;
-      if (av === normLine(b[pre + j - 1]!)) {
-        dp[idx] = dp[idx - w - 1]! + 1;
-        dir[idx] = 1;
-      } else {
-        const up = dp[idx - w]!;
-        const left = dp[idx - 1]!;
-        if (up >= left) {
-          dp[idx] = up;
-          dir[idx] = 2;
-        } else {
-          dp[idx] = left;
-          dir[idx] = 3;
-        }
-      }
+  // 中间区 suffix-DP（dp[i][j] = a[i..] 与 b[j..] 的 LCS 长度），
+  // 随后从左上角正向贪心走位。不能用「前向填表+箭头回溯」：
+  // 在重复行密集的配置文件里它会选中合法但劣质的最长公共子序列——
+  // 把分散的多处变更挤成一段连续块、行号整体漂移（实测 yml 三段变一段）。
+  // 正向走位每步优先消费相同行、并列时先删除后新增，分块与 git diff 一致。
+  const m = am;
+  const n = bm;
+  const dp: Uint32Array[] = Array.from({length: m + 1}, () => new Uint32Array(n + 1));
+  for (let i = m - 1; i >= 0; i--) {
+    const av = normLine(a[pre + i]!);
+    const row = dp[i]!;
+    const next = dp[i + 1]!;
+    for (let j = n - 1; j >= 0; j--) {
+      row[j] =
+        av === normLine(b[pre + j]!)
+          ? next[j + 1]! + 1
+          : Math.max(next[j]!, row[j + 1]!);
     }
   }
-  // 回溯收集操作序列（0=HEAD侧删除 1=缓冲区新增 2=相同），再按连续块正向分配：
+  // 正向收集操作序列（0=HEAD侧删除 1=缓冲区新增 2=相同），再按连续块正向分配：
   // 每个差异块内前 min(删,增) 个新增行标为「修改」，其余为「新增」（与 git hunk 口径一致）
   const ops: number[] = [];
-  let i2 = am;
-  let j2 = bm;
-  while (i2 > 0 && j2 > 0) {
-    const d = dir[i2 * w + j2]!;
-    if (d === 1) {
-      i2--;
-      j2--;
+  let i = 0;
+  let j = 0;
+  while (i < m && j < n) {
+    if (normLine(a[pre + i]!) === normLine(b[pre + j]!)) {
       ops.push(2);
-    } else if (d === 2) {
-      i2--;
+      i++;
+      j++;
+    } else if (dp[i + 1]![j]! >= dp[i]![j + 1]!) {
       ops.push(0);
+      i++;
     } else {
-      j2--;
       ops.push(1);
+      j++;
     }
   }
-  while (j2 > 0) {
-    j2--;
-    ops.push(1);
+  while (i < m) {
+    ops.push(0);
+    i++;
   }
-  ops.reverse();
+  while (j < n) {
+    ops.push(1);
+    j++;
+  }
+  // 正向走位得到的已是文档顺序，无需翻转（旧的箭头回溯从尾部出发才需要）
   let row = pre;
   let t = 0;
   while (t < ops.length) {
     const op = ops[t]!;
     if (op === 2) {
+      // 相同行占缓冲区一行，必须推进标记行号，否则后续差异块整体上移
+      row++;
       t++;
       continue;
     }
