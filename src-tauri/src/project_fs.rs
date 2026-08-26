@@ -415,11 +415,18 @@ pub fn reveal_in_file_manager(project_id: &str, path: &str) -> AppResult<()> {
     if !full.exists() {
         return Err(AppError::NotFound(format!("文件不存在: {}", path)));
     }
+    // repo root 来自 `git rev-parse --show-toplevel`（Git for Windows 输出正斜杠），
+    // 拼出的路径可能是混合分隔符；explorer /select 无法在含 `/` 的路径中定位选中项，
+    // 会打开资源管理器但不跳转——统一 canonicalize 成规范反斜杠绝对路径。
+    #[cfg(windows)]
+    let target = crate::util::canonicalize_clean(&full).unwrap_or(full);
+    #[cfg(not(windows))]
+    let target = full;
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         std::process::Command::new("explorer")
-            .arg(format!("/select,{}", full.display()))
+            .arg(format!("/select,{}", target.display()))
             .creation_flags(0x08000000)
             .spawn()
             .map_err(|e| AppError::Other(format!("打开文件管理器失败: {}", e)))?;
@@ -427,7 +434,7 @@ pub fn reveal_in_file_manager(project_id: &str, path: &str) -> AppResult<()> {
     #[cfg(not(windows))]
     {
         std::process::Command::new("xdg-open")
-            .arg(full.parent().unwrap_or(&full))
+            .arg(target.parent().unwrap_or(&target))
             .spawn()
             .map_err(|e| AppError::Other(format!("打开文件管理器失败: {}", e)))?;
     }
