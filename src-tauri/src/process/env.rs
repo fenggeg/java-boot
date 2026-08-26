@@ -326,6 +326,14 @@ pub fn inject_env<C: CmdEnv>(cmd: &mut C, cfg: &EnvConfig) {
         let cur_path = std::env::var("PATH").unwrap_or_default();
         cmd.set_env("PATH", &format!("{}{}", path_prefix, cur_path));
     }
+    // Maven 子进程堆与编码：大项目默认堆可能不足导致编译期频繁 GC。
+    // 仅对 mvn 生效（java 直启忽略 MAVEN_OPTS）；保留用户已设置的值， ours 追加在后优先
+    const MAVEN_OPTS_BASE: &str = "-Xmx1g -Dfile.encoding=UTF-8";
+    let merged = match std::env::var("MAVEN_OPTS") {
+        Ok(v) if !v.trim().is_empty() => format!("{} {}", v.trim(), MAVEN_OPTS_BASE),
+        _ => MAVEN_OPTS_BASE.to_string(),
+    };
+    cmd.set_env("MAVEN_OPTS", &merged);
 }
 
 // ================================================================

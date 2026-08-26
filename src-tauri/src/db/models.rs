@@ -108,6 +108,8 @@ pub struct AppConfig {
     pub auto_restart_debounce_secs: u64,
     pub log_buffer_lines: usize,
     pub stop_all_on_exit: bool,
+    /// dev_mode 下注入 -Dspring.main.lazy-initialization=true（加速 Spring 上下文启动）
+    pub dev_lazy_init: bool,
 }
 
 impl Default for AppConfig {
@@ -118,6 +120,7 @@ impl Default for AppConfig {
             auto_restart_debounce_secs: 3,
             log_buffer_lines: 10000,
             stop_all_on_exit: true,
+            dev_lazy_init: false,
         }
     }
 }

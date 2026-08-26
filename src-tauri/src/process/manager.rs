@@ -40,7 +40,8 @@ use crate::util::NoWindow;
 
 use super::build::{
     common_mvn_flags, decide_build_strategy, detect_main_class,
-    run_mvn_capture, strip_verbatim_prefix, BuildStrategy, ClasspathCache, CompilePidSlot,
+    run_mvn_offline_first, run_mvn_capture, strip_verbatim_prefix,
+    BuildStrategy, ClasspathCache, CompilePidSlot,
 };
 use super::env::{
     inject_env, preflight_check, resolve_env_config, resolve_java_home, resolve_maven_cmd,
@@ -632,17 +633,55 @@ impl ProcessManager {
             ),
         );
 
+        // 冷启动优化：编译与 classpath 解析合并为单次 Maven JVM，
+        // 省掉第二次 JVM 启动 + 依赖图重复解析（约 1.5~3.5s）；失败降级两段式
+        let mut merged_cp: Option<String> = None;
         if strategy != BuildStrategy::Skip {
-            try_cleanup!(
-                self.run_maven_build(
-                    &app, &service, &env_cfg, &working_dir, &program, &base_args,
-                    &compile_pid, strategy, false,
-                ).await
-            );
+            if cache_valid {
+                try_cleanup!(
+                    self.run_maven_build(
+                        &app, &service, &env_cfg, &working_dir, &program, &base_args,
+                        &compile_pid, strategy, false,
+                    ).await
+                );
+            } else {
+                match self
+                    .build_and_resolve_classpath(
+                        &app, &service, &env_cfg, &working_dir, &program, &base_args,
+                        &compile_pid, &strategy, &cache, &cache_key,
+                    )
+                    .await
+                {
+                    Ok(cp) => merged_cp = Some(cp),
+                    Err(e) => {
+                        Self::emit_log(
+                            &app,
+                            &service.id,
+                            LogSource::Mvn,
+                            &format!(
+                                "[javaboot] 合并编译+classpath 失败({})，降级为两段式...",
+                                e
+                            ),
+                        );
+                        try_cleanup!(
+                            self.run_maven_build(
+                                &app, &service, &env_cfg, &working_dir, &program, &base_args,
+                                &compile_pid, strategy, false,
+                            ).await
+                        );
+                    }
+                }
+            }
         }
         check_cancel!();
 
-        let classpath = if cache_valid {
+        // 编译已就绪：记录模块干净标记，后续启动可跳过全树 mtime 扫描
+        crate::watcher::get_watch_manager()
+            .mark_module_clean(&working_dir.to_string_lossy());
+
+        let classpath = if let Some(cp) = merged_cp {
+            Self::assemble_classpath(&working_dir, &env_cfg, &cp)
+        } else if cache_valid {
             match cache.load() {
                 Some(cp) => {
                     let jars = cp.split(CP_SEP).filter(|s| !s.is_empty()).count();
@@ -705,6 +744,20 @@ impl ProcessManager {
                 "-Dspring.output.ansi.enabled=never".into(),
                 "-Dspring.devtools.restart.enabled=false".into(),
             ]);
+            // 可选：Bean 懒加载，显著缩短 Spring 上下文启动（设置里开启）
+            // 注意：依赖 @PostConstruct 时序 / 启动期主动拉取 Bean 的应用可能有副作用
+            if db::load_config()
+                .map(|c| c.dev_lazy_init)
+                .unwrap_or(false)
+            {
+                args.push("-Dspring.main.lazy-initialization=true".into());
+                Self::emit_log(
+                    &app,
+                    &service.id,
+                    LogSource::Mvn,
+                    "[javaboot] 已启用 Spring 懒加载 (lazy-initialization)",
+                );
+            }
         }
         if let Some(pf) = &service.profiles {
             if !pf.trim().is_empty() {
@@ -996,7 +1049,6 @@ impl ProcessManager {
                 args.push("-am".into());
             }
         }
-
         let action_desc = if clean {
             if module_rel.is_empty() {
                 "清理并编译当前模块"
@@ -1028,7 +1080,7 @@ impl ProcessManager {
         let sid_clone = service.id.clone();
 
         let status = tokio::task::spawn_blocking(move || {
-            run_mvn_capture(
+            run_mvn_offline_first(
                 &program,
                 &args,
                 &cwd_clone,
@@ -1113,7 +1165,7 @@ impl ProcessManager {
         let sid_clone = service.id.clone();
 
         let status = tokio::task::spawn_blocking(move || {
-            run_mvn_capture(
+            run_mvn_offline_first(
                 &program,
                 &args,
                 &cwd,
@@ -1149,6 +1201,148 @@ impl ProcessManager {
                 &service.id,
                 LogSource::Mvn,
                 &format!("[javaboot] classpath 已缓存 ({} 字节)", dep_cp.len()),
+            );
+        }
+        Ok(dep_cp)
+    }
+
+    /// 冷启动合并执行：单次 Maven JVM 同时完成「编译 + classpath 解析」
+    ///
+    /// `mvn [-pl mod -am] compile dependency:build-classpath`：
+    /// 反应堆内每个模块按序先 compile 再写自己的 classpath 文件，
+    /// `-Dmdep.outputFile=${project.build.directory}/...` 使各模块写到各自的 target 下，
+    /// 只读当前服务模块那份，避免多模块互相覆盖。
+    /// 相比两段式省掉一次 JVM 启动 + 依赖图重复解析（约 1.5~3.5s）。
+    /// 任一环节失败由调用方降级为原两段式流程。
+    #[allow(clippy::too_many_arguments)]
+    async fn build_and_resolve_classpath(
+        &self,
+        app: &AppHandle,
+        service: &Service,
+        env_cfg: &EnvConfig,
+        working_dir: &std::path::Path,
+        program: &str,
+        base_args: &[String],
+        compile_pid: &CompilePidSlot,
+        strategy: &BuildStrategy,
+        cache: &ClasspathCache,
+        cache_key: &str,
+    ) -> AppResult<String> {
+        Self::emit_log(
+            app,
+            &service.id,
+            LogSource::Mvn,
+            "[javaboot] 合并模式：编译 + 解析 classpath（单次 Maven 调用）...",
+        );
+
+        // 计算执行目录和模块相对路径（与 run_maven_build 同逻辑）
+        let project_root = env_cfg.project_root.clone();
+        let (cwd, module_rel) = match &project_root {
+            Some(root)
+                if *strategy == BuildStrategy::CompileAll
+                    || *strategy == BuildStrategy::CompileCurrent =>
+            {
+                let root_path = std::path::Path::new(root);
+                let rel = match working_dir.strip_prefix(root_path) {
+                    Ok(r) => r
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                        .trim_matches('/')
+                        .to_string(),
+                    Err(_) => {
+                        let wd = working_dir.canonicalize().unwrap_or_default();
+                        let pr = root_path.canonicalize().unwrap_or_default();
+                        wd.strip_prefix(&pr)
+                            .map(|r| {
+                                r.to_string_lossy()
+                                    .replace('\\', "/")
+                                    .trim_matches('/')
+                                    .to_string()
+                            })
+                            .unwrap_or_default()
+                    }
+                };
+                if rel.is_empty() {
+                    (working_dir.to_path_buf(), String::new())
+                } else {
+                    (root_path.to_path_buf(), rel)
+                }
+            }
+            _ => (working_dir.to_path_buf(), String::new()),
+        };
+
+        let mut args: Vec<String> = base_args.to_vec();
+        args.extend(common_mvn_flags());
+        if !module_rel.is_empty() {
+            args.push("-pl".into());
+            args.push(module_rel.clone());
+            if *strategy == BuildStrategy::CompileAll {
+                args.push("-am".into());
+            }
+        }
+        args.push("compile".into());
+        args.push("dependency:build-classpath".into());
+        // 每个反应堆模块写各自 target 下的文件，最终只读当前模块那份
+        args.push(format!(
+            "-Dmdep.outputFile=${{project.build.directory}}/.javaboot-cp.txt"
+        ));
+        args.push("--batch-mode".into());
+        args.push("--no-transfer-progress".into());
+
+        Self::emit_log(
+            app,
+            &service.id,
+            LogSource::Mvn,
+            &format!("[javaboot] 合并构建: mvn {}", args.join(" ")),
+        );
+
+        let program = program.to_string();
+        let env_cfg_clone = env_cfg.clone();
+        let compile_pid_clone = compile_pid.clone();
+        let app_clone = app.clone();
+        let sid_clone = service.id.clone();
+
+        let status = tokio::task::spawn_blocking(move || {
+            run_mvn_offline_first(
+                &program,
+                &args,
+                &cwd,
+                &env_cfg_clone,
+                compile_pid_clone,
+                app_clone,
+                sid_clone,
+            )
+        })
+        .await
+        .map_err(|e| AppError::Process(format!("合并构建任务失败: {}", e)))?
+        .map_err(|e| AppError::Process(format!("合并构建执行失败: {}", e)))?;
+
+        if !status.success() {
+            return Err(AppError::Process(format!(
+                "合并构建失败（exit code: {:?}）",
+                status.code()
+            )));
+        }
+
+        let cp_file = working_dir.join("target").join(".javaboot-cp.txt");
+        let dep_cp = std::fs::read_to_string(&cp_file)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if dep_cp.is_empty() {
+            return Err(AppError::Process(
+                "合并模式下 classpath 输出为空（可能 Maven 版本不支持 outputFile 表达式）".into(),
+            ));
+        }
+        if let Err(e) = cache.save(&dep_cp, cache_key) {
+            log::warn!("写 classpath 缓存失败: {}", e);
+        } else {
+            let jars = dep_cp.split(CP_SEP).filter(|s| !s.is_empty()).count();
+            Self::emit_log(
+                app,
+                &service.id,
+                LogSource::Mvn,
+                &format!("[javaboot] classpath 已缓存 ({} 个依赖)", jars),
             );
         }
         Ok(dep_cp)

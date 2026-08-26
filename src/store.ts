@@ -120,6 +120,7 @@ export const useStore = create<Store>((set, get) => {
     auto_restart_debounce_secs: 3,
     log_buffer_lines: 10000,
     stop_all_on_exit: true,
+    dev_lazy_init: false,
   },
   selectedServiceId: null,
   openedTabs: loadOpenedTabs(),

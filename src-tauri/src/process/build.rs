@@ -49,14 +49,23 @@ pub fn strip_verbatim_prefix(p: &Path) -> PathBuf {
 // Maven 通用执行器
 // ================================================================
 
-/// 阻塞式跑 mvn，实时把 stdout/stderr 用 [mvn] 前缀推给前端
+/// 单次 Maven 执行结果：退出码 + 全量输出文本（用于离线失败识别）
+struct MvnRun {
+    status: std::process::ExitStatus,
+    /// stdout+stderr 按行累积的完整输出
+    output: String,
+}
+
+/// 阻塞式跑一次 mvn，实时把 stdout/stderr 用 [mvn] 前缀推给前端，
+/// 同时在内存累积输出供调用方做失败原因分析
 ///
 /// 相较原实现的改进：
 /// - 抽出单一入口，`prepare_dependencies` / `build_classpath` / `compile_and_start`
 ///   共用，不再各自重复 spawn+BufReader 代码
 /// - stdout 与 stderr **分别** 起线程读取，避免原 `build_classpath` 里先 stdout
 ///   收完再 stderr、导致混合输出乱序 & 阻塞的问题
-pub fn run_mvn_capture(
+#[allow(clippy::too_many_arguments)]
+fn run_mvn_once(
     program: &str,
     args: &[String],
     cwd: &Path,
@@ -64,7 +73,7 @@ pub fn run_mvn_capture(
     compile_pid: CompilePidSlot,
     app: AppHandle,
     service_id: String,
-) -> std::io::Result<std::process::ExitStatus> {
+) -> std::io::Result<MvnRun> {
     let mut cmd = std::process::Command::new(program);
     cmd.args(args);
     cmd.current_dir(cwd);
@@ -80,24 +89,31 @@ pub fn run_mvn_capture(
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
+    let collected = Arc::new(PMutex::new(String::new()));
 
     // 起两个后台线程分别读取 stdout / stderr
     let app_out = app.clone();
     let sid_out = service_id.clone();
+    let sink_out = collected.clone();
     let t_out = std::thread::spawn(move || {
         if let Some(out) = stdout {
             let reader = std::io::BufReader::new(out);
             for line in reader.lines().flatten() {
+                sink_out.lock().push_str(&line);
+                sink_out.lock().push('\n');
                 emit_log_raw(&app_out, &sid_out, "[mvn]", &line);
             }
         }
     });
     let app_err = app.clone();
     let sid_err = service_id.clone();
+    let sink_err = collected.clone();
     let t_err = std::thread::spawn(move || {
         if let Some(err) = stderr {
             let reader = std::io::BufReader::new(err);
             for line in reader.lines().flatten() {
+                sink_err.lock().push_str(&line);
+                sink_err.lock().push('\n');
                 emit_log_raw(&app_err, &sid_err, "[mvn]", &line);
             }
         }
@@ -108,7 +124,82 @@ pub fn run_mvn_capture(
     let _ = t_out.join();
     let _ = t_err.join();
     *compile_pid.lock() = None;
-    Ok(status)
+    // 线程已 join，独占取回缓冲
+    let output = Arc::try_unwrap(collected)
+        .map(|m| m.into_inner())
+        .unwrap_or_default();
+    Ok(MvnRun { status, output })
+}
+
+/// 阻塞式跑 mvn（兼容入口）：只关心退出码
+pub fn run_mvn_capture(
+    program: &str,
+    args: &[String],
+    cwd: &Path,
+    env_cfg: &EnvConfig,
+    compile_pid: CompilePidSlot,
+    app: AppHandle,
+    service_id: String,
+) -> std::io::Result<std::process::ExitStatus> {
+    Ok(
+        run_mvn_once(program, args, cwd, env_cfg, compile_pid, app, service_id)?
+            .status,
+    )
+}
+
+/// 离线失败的典型输出特征（小写匹配）：
+/// 命中才值得回退在线重试；普通编译错误（javac 报错）不重试避免重复刷屏
+const OFFLINE_FAILURE_MARKERS: &[&str] = &[
+    "cannot access",
+    "offline mode",
+    "failure to find",
+    "resolution will not be reattempted",
+    "was cached in the local repository",
+];
+
+fn looks_like_offline_failure(output: &str) -> bool {
+    let lower = output.to_lowercase();
+    OFFLINE_FAILURE_MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// 离线优先执行：先带 `-o` 跳过远程仓库元数据检查（弱网/公司 Nexus 慢时显著提速）；
+/// 仅当输出命中离线类错误特征时，自动去掉 `-o` 在线重试一次。
+pub fn run_mvn_offline_first(
+    program: &str,
+    args: &[String],
+    cwd: &Path,
+    env_cfg: &EnvConfig,
+    compile_pid: CompilePidSlot,
+    app: AppHandle,
+    service_id: String,
+) -> std::io::Result<std::process::ExitStatus> {
+    let mut offline_args: Vec<String> = Vec::with_capacity(args.len() + 1);
+    offline_args.push("-o".into());
+    offline_args.extend_from_slice(args);
+    let first = run_mvn_once(
+        program,
+        &offline_args,
+        cwd,
+        env_cfg,
+        compile_pid.clone(),
+        app.clone(),
+        service_id.clone(),
+    )?;
+    if first.status.success() {
+        return Ok(first.status);
+    }
+    if looks_like_offline_failure(&first.output) {
+        emit_log_raw(
+            &app,
+            &service_id,
+            "[mvn]",
+            "[javaboot] 离线模式失败（本地仓库缺构件/元数据），回退在线模式重试...",
+        );
+        let second =
+            run_mvn_once(program, args, cwd, env_cfg, compile_pid, app, service_id)?;
+        return Ok(second.status);
+    }
+    Ok(first.status)
 }
 
 /// 带超时的 child.wait()，超时则强杀进程防止线程泄漏
@@ -127,7 +218,8 @@ fn wait_with_timeout(child: &mut std::process::Child, pid: u32) -> std::io::Resu
                         format!("Maven 进程 {} 超时（600 秒），已强杀", pid),
                     ));
                 }
-                std::thread::sleep(Duration::from_millis(500));
+                // 100ms 粒度：mvn 退出后尽快继续启动链路（500ms 平均多等 ~250ms）
+                std::thread::sleep(Duration::from_millis(100));
             }
             Err(e) => return Err(e),
         }
@@ -332,8 +424,15 @@ fn walk<F: FnMut(&Path)>(dir: &Path, f: &mut F) -> std::io::Result<()> {
 
 /// 模块的 src/main（含 resources）是否比 target/classes 新
 ///
-/// 返回 true 表示 classes 已经是最新的、可跳过编译
+/// 返回 true 表示 classes 已经是最新的、可跳过编译。
+/// 快路径：自动重启服务的 watcher 明确报告"干净"时，直接跳过全树 mtime 扫描
+/// （大仓库数千文件的 metadata 遍历可省 100~300ms/次启动）
 pub fn is_module_up_to_date(module_dir: &Path) -> bool {
+    if !crate::watcher::get_watch_manager()
+        .module_possibly_dirty(&module_dir.to_string_lossy())
+    {
+        return true;
+    }
     let classes = module_dir.join("target").join("classes");
     if !classes.exists() {
         return false;

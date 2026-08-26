@@ -130,6 +130,20 @@ export default function SettingsDrawer({ open, onClose }: Props) {
               : "编译失败时保留旧进程，服务不中断"}
           </Text>
         </Form.Item>
+        <Form.Item
+          label="开发模式懒加载（实验性）"
+          tooltip="dev_mode 启动时注入 -Dspring.main.lazy-initialization=true，Bean 按需初始化，显著缩短 Spring 上下文启动时间；依赖 @PostConstruct 时序的应用可能出现初始化顺序问题"
+        >
+          <Switch
+            checked={local.dev_lazy_init}
+            onChange={(v) => save({ dev_lazy_init: v })}
+          />
+          <Text type="secondary" style={{ marginLeft: 12 }}>
+            {local.dev_lazy_init
+              ? "dev_mode 启动时启用 Spring 懒加载"
+              : "关闭（默认），完整初始化所有 Bean"}
+          </Text>
+        </Form.Item>
 
         <Divider orientation="left">日志</Divider>
         <Form.Item

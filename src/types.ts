@@ -77,6 +77,8 @@ export interface AppConfig {
   auto_restart_debounce_secs: number;
   log_buffer_lines: number;
   stop_all_on_exit: boolean;
+  /** dev_mode 下注入 -Dspring.main.lazy-initialization=true 加速启动 */
+  dev_lazy_init: boolean;
 }
 
 export interface ScannedModule {

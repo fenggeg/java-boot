@@ -467,6 +467,7 @@ pub fn load_config() -> AppResult<AppConfig> {
                 }
                 "log_buffer_lines" => cfg.log_buffer_lines = v.parse().unwrap_or(10000),
                 "stop_all_on_exit" => cfg.stop_all_on_exit = v == "true",
+                "dev_lazy_init" => cfg.dev_lazy_init = v == "true",
                 _ => {}
             }
         }
@@ -484,6 +485,7 @@ pub fn save_config(cfg: &AppConfig) -> AppResult<()> {
             ("auto_restart_debounce_secs", cfg.auto_restart_debounce_secs.to_string()),
             ("log_buffer_lines", cfg.log_buffer_lines.to_string()),
             ("stop_all_on_exit", cfg.stop_all_on_exit.to_string()),
+            ("dev_lazy_init", cfg.dev_lazy_init.to_string()),
         ];
         for (k, v) in pairs {
             tx.execute(

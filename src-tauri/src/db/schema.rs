@@ -106,6 +106,7 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
         ("auto_restart_debounce_secs", "3"),
         ("log_buffer_lines", "10000"),
         ("stop_all_on_exit", "true"),
+        ("dev_lazy_init", "false"),
     ];
     for (k, v) in defaults {
         conn.execute(

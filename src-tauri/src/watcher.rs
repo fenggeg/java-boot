@@ -25,16 +25,24 @@ struct WatchState {
     _cancel: Arc<AtomicBool>,
     /// worker 线程 handle，unwatch 时 join 确保线程退出
     _worker: Option<std::thread::JoinHandle<()>>,
+    /// 该服务监听的模块目录（与 manager 的 working_dir 字符串一致，作 dirty 表 key）
+    module_dir: String,
 }
 
 pub struct WatchManager {
     watchers: Mutex<HashMap<String, WatchState>>,
+    /// 模块源码脏标记：true=有未消费的变更事件。
+    /// 供启动策略跳过全树 mtime 扫描（watcher 明确报告干净时）。
+    /// key 为 strip 后的 working_dir；无监听（非自动重启服务）时无条目=未知。
+    /// Arc 包装：事件回调闭包需要持有引用（'static）
+    dirty: std::sync::Arc<Mutex<HashMap<String, bool>>>,
 }
 
 impl WatchManager {
     pub fn new() -> Self {
         Self {
             watchers: Mutex::new(HashMap::new()),
+            dirty: std::sync::Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -47,6 +55,11 @@ impl WatchManager {
 
         let cfg = crate::db::load_config().unwrap_or_default();
         let debounce = cfg.auto_restart_debounce_secs;
+        // 模块目录 key：与 manager.start() 的 working_dir 处理保持一致（剥 verbatim 前缀）
+        let module_dir =
+            crate::process::build::strip_verbatim_prefix(&PathBuf::from(&service.working_dir))
+                .to_string_lossy()
+                .to_string();
         let src_main = PathBuf::from(&service.working_dir).join("src").join("main");
         if !src_main.exists() {
             return Err(crate::error::AppError::Other(format!(
@@ -54,6 +67,9 @@ impl WatchManager {
                 src_main.display()
             )));
         }
+
+        // 注册即视为脏：下次启动先做一次真实 mtime 校验，之后由 mark_clean 短路
+        self.dirty.lock().insert(module_dir.clone(), true);
 
         // 每服务一个信号 channel：事件只做 try_send，worker 做防抖
         let (tx, rx) = std::sync::mpsc::channel::<()>();
@@ -97,12 +113,16 @@ impl WatchManager {
         };
 
         let tx_for_cb = tx.clone();
+        let dir_for_cb = module_dir.clone();
+        let dirty_for_cb = std::sync::Arc::clone(&self.dirty);
         let mut watcher = RecommendedWatcher::new(
             move |res: Result<notify::Event, notify::Error>| {
                 if let Ok(event) = res {
                     if !is_relevant_event(&event) {
                         return;
                     }
+                    // 源码变更：标记模块脏，供启动策略跳过 mtime 全树扫描
+                    dirty_for_cb.lock().insert(dir_for_cb.clone(), true);
                     // 只发信号，不 spawn 线程；channel 满或已关闭则忽略
                     let _ = tx_for_cb.send(());
                 }
@@ -121,6 +141,7 @@ impl WatchManager {
                 _watcher: watcher,
                 _cancel: cancel,
                 _worker: Some(worker),
+                module_dir,
             },
         );
         // tx 在此 drop，但 watcher 回调持有 tx_for_cb（克隆），channel 保持 open。
@@ -132,6 +153,8 @@ impl WatchManager {
     pub fn unwatch(&self, service_id: &str) {
         let state = self.watchers.lock().remove(service_id);
         if let Some(mut s) = state {
+            // 同步清理该模块的脏标记：无监听后状态未知，下次启动回退真实扫描
+            self.dirty.lock().remove(&s.module_dir);
             // 先 signal cancel，让 worker 尽快退出
             s._cancel.store(true, Ordering::Relaxed);
             // drop watcher 关闭 channel（worker 的 recv 会返回 Disconnected）
@@ -139,6 +162,20 @@ impl WatchManager {
             if let Some(handle) = s._worker.take() {
                 let _ = handle.join();
             }
+        }
+    }
+
+    /// 模块是否可能存在未编译的源码变更：
+    /// - 有 watcher 且明确干净（false）→ 返回 false（可跳过 mtime 扫描）
+    /// - 无 watcher / 有未消费事件 → true（走真实校验）
+    pub fn module_possibly_dirty(&self, module_dir: &str) -> bool {
+        !matches!(self.dirty.lock().get(module_dir), Some(false))
+    }
+
+    /// 标记模块已构建干净（启动链路确认 classes 就绪后调用）
+    pub fn mark_module_clean(&self, module_dir: &str) {
+        if self.watchers.lock().values().any(|s| s.module_dir == module_dir) {
+            self.dirty.lock().insert(module_dir.to_string(), false);
         }
     }
 
