@@ -158,6 +158,15 @@ export const writeProjectFile = (
 export const getFileAbsPath = (projectId: string, path: string) =>
   invoke<string>("get_file_abs_path", { projectId, path });
 
+// ============================ Terminal（集成终端） ============================
+
+export const terminalCreate = (projectId: string) =>
+  invoke<string>("terminal_create", { projectId });
+export const terminalWrite = (sessionId: string, data: string) =>
+  invoke<void>("terminal_write", { sessionId, data });
+export const terminalKill = (sessionId: string) =>
+  invoke<void>("terminal_kill", { sessionId });
+
 // ============================ Config ============================
 
 export const getConfig = () => invoke<AppConfig>("get_config");

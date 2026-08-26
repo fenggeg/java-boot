@@ -615,6 +615,26 @@ pub async fn get_file_abs_path(
         .map_err(|e| AppError::Other(format!("获取路径失败: {}", e)))?
 }
 
+// ============================ Terminal（集成终端） ============================
+
+/// 为项目创建交互式终端会话，返回会话 id
+#[tauri::command]
+pub async fn terminal_create(project_id: String, app: AppHandle) -> AppResult<String> {
+    crate::terminal::create(app, &project_id).await
+}
+
+/// 向终端会话写入输入数据（命令行 + 换行）
+#[tauri::command]
+pub async fn terminal_write(session_id: String, data: String) -> AppResult<()> {
+    crate::terminal::write(&session_id, &data).await
+}
+
+/// 终止终端会话
+#[tauri::command]
+pub async fn terminal_kill(session_id: String) -> AppResult<()> {
+    crate::terminal::kill(&session_id).await
+}
+
 // ============================ Config ============================
 
 #[tauri::command]

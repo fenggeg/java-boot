@@ -2950,3 +2950,185 @@ body {
   opacity: 0.8;
 }
 
+/* ========================================================
+   集成终端抽屉
+   ======================================================== */
+.term-drawer {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 30px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.term-resizer {
+  height: 4px;
+  flex-shrink: 0;
+  cursor: row-resize;
+  background: transparent;
+  transition: background 0.15s var(--ease);
+}
+
+.term-resizer:hover,
+.term-resizer:active {
+  background: rgba(0, 113, 227, 0.3);
+}
+
+.term-drawer-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: none;
+  background: transparent;
+  font-size: 11.5px;
+  color: var(--text-3);
+  cursor: pointer;
+  text-align: left;
+  flex-shrink: 0;
+}
+
+.term-drawer-bar:hover {
+  color: var(--text-2);
+}
+
+.term-cwd {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-4);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 45%;
+}
+
+.term-drawer-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.term-view {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.term-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 4px;
+  font-size: 11px;
+  color: var(--text-4);
+  flex-shrink: 0;
+}
+
+.term-status::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 5px;
+  background: currentColor;
+}
+
+.term-status.on {
+  color: var(--green);
+}
+
+.term-status.off {
+  color: var(--text-4);
+}
+
+.term-output {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 14px;
+  background: var(--surface-2);
+}
+
+.term-text {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text);
+  user-select: text;
+}
+
+.term-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+
+.term-prompt {
+  color: var(--green);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.term-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+.term-input::placeholder {
+  color: var(--text-4);
+}
+
+.term-boot {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 16px;
+}
+
+.term-boot-btn {
+  padding: 5px 16px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border-2);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s var(--ease);
+}
+
+.term-boot-btn:hover:not(:disabled) {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+.term-boot-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.term-boot-hint {
+  font-size: 11px;
+  color: var(--text-4);
+}
