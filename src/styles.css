@@ -2756,3 +2756,197 @@ body {
 [data-theme="dark"] .file-preview-markdown .token.variable {
   color: #ffd60a;
 }
+/* ========================================================
+   文件树 Git 状态着色
+   新增/未跟踪=绿 · 已修改=橙 · 已删除=红
+   ======================================================== */
+.gs-added,
+.gs-untracked {
+  color: var(--green);
+}
+
+.gs-modified {
+  color: var(--orange);
+}
+
+.gs-deleted {
+  color: var(--red);
+}
+
+.gs-renamed {
+  color: #7a3ed0;
+}
+
+.gs-conflict {
+  color: #c50f1f;
+}
+
+/* 文件行右侧状态圆点 */
+.file-tree-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.file-tree-dot.dot-added,
+.file-tree-dot.dot-untracked {
+  background: var(--green);
+}
+
+.file-tree-dot.dot-modified {
+  background: var(--orange);
+}
+
+.file-tree-dot.dot-deleted {
+  background: var(--red);
+}
+
+.file-tree-dot.dot-renamed {
+  background: #7a3ed0;
+}
+
+.file-tree-dot.dot-conflict {
+  background: #c50f1f;
+}
+
+/* 目录行的改动计数徽标 */
+.file-tree-badge {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-3);
+}
+
+.file-tree-badge.gs-added,
+.file-tree-badge.gs-untracked {
+  color: var(--green);
+  border-color: var(--green-glow);
+  background: rgba(52, 199, 89, 0.08);
+}
+
+.file-tree-badge.gs-modified {
+  color: var(--orange);
+  border-color: var(--orange-glow);
+  background: rgba(255, 149, 0, 0.08);
+}
+
+.file-tree-badge.gs-deleted {
+  color: var(--red);
+  border-color: var(--red-glow);
+  background: rgba(255, 59, 48, 0.08);
+}
+
+.file-tree-badge.gs-renamed {
+  color: #7a3ed0;
+  border-color: rgba(122, 62, 208, 0.4);
+  background: rgba(122, 62, 208, 0.08);
+}
+
+.file-tree-badge.gs-conflict {
+  color: #c50f1f;
+  border-color: rgba(197, 15, 31, 0.4);
+  background: rgba(197, 15, 31, 0.08);
+}
+
+/* 拖拽移动目标高亮 */
+.file-tree-row.drop-target {
+  outline: 1.5px dashed var(--blue);
+  outline-offset: -2px;
+  background: rgba(0, 113, 227, 0.1);
+}
+
+/* 编辑器工具栏 git 状态徽标 */
+.git-badge {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  border: 1px solid transparent;
+}
+
+.git-badge.g-modified {
+  color: var(--orange);
+  border-color: var(--orange-glow);
+  background: rgba(255, 149, 0, 0.08);
+}
+
+.git-badge.g-added,
+.git-badge.g-untracked {
+  color: var(--green);
+  border-color: var(--green-glow);
+  background: rgba(52, 199, 89, 0.08);
+}
+
+.git-badge.g-deleted {
+  color: var(--red);
+  border-color: var(--red-glow);
+  background: rgba(255, 59, 48, 0.08);
+}
+
+.git-badge.g-renamed {
+  color: #7a3ed0;
+  border-color: rgba(122, 62, 208, 0.4);
+  background: rgba(122, 62, 208, 0.08);
+}
+
+.git-badge.g-conflict {
+  color: #c50f1f;
+  border-color: rgba(197, 15, 31, 0.4);
+  background: rgba(197, 15, 31, 0.08);
+}
+
+/* ========================================================
+   行级 diff 标记条（代码区左缘）
+   与 LINE_H=22 / GUTTER_PAD=12 保持一致
+   ======================================================== */
+.file-code-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.file-diff-gutter {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  z-index: 3;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.file-diff-gutter-inner {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  will-change: transform;
+}
+
+.diff-bar {
+  position: absolute;
+  left: 1px;
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+}
+
+.diff-bar.add {
+  background: var(--green);
+  opacity: 0.75;
+}
+
+.diff-bar.mod {
+  background: var(--orange);
+  opacity: 0.8;
+}
+

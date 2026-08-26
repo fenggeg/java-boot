@@ -555,6 +555,22 @@ pub async fn git_write_file(
         .map_err(|e| AppError::Other(format!("写入文件任务失败: {}", e)))?
 }
 
+/// 读取 HEAD 中某文件内容（未跟踪 / 不存在返回 null），用于行级 diff 标记
+#[tauri::command]
+pub async fn git_file_head(project_id: String, path: String) -> AppResult<Option<String>> {
+    tokio::task::spawn_blocking(move || git::file_at_head(&project_id, &path))
+        .await
+        .map_err(|e| AppError::Other(format!("读取 HEAD 文件任务失败: {}", e)))?
+}
+
+/// 工作区 vs HEAD 的 diff hunk（unified=0），与 Git 面板同一引擎保证行位置一致
+#[tauri::command]
+pub async fn git_diff_hunks(project_id: String, path: String) -> AppResult<Vec<crate::git::DiffHunk>> {
+    tokio::task::spawn_blocking(move || git::diff_hunks(&project_id, &path))
+        .await
+        .map_err(|e| AppError::Other(format!("diff hunk 任务失败: {}", e)))?
+}
+
 // ============================ Files（项目文件浏览/编辑） ============================
 
 /// 列出项目根下某目录（单层，惰性加载用）

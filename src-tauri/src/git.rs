@@ -1,8 +1,9 @@
 use parking_lot::Mutex as SMutex;
+use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use tauri::AppHandle;
 
@@ -24,8 +25,16 @@ pub fn git_available() -> bool {
     resolve_git().is_some()
 }
 
-/// 定位 git 可执行文件：PATH 优先，fallback 到 scoop shims
-fn resolve_git() -> Option<String> {
+/// git 可执行文件路径缓存：PATH 扫描 + `git --version` 探测要 spawn 多个子进程，
+/// 每次 status/diff/log 重复执行会让文件树 git 标记明显延迟，进程生命周期内只解析一次
+static GIT_EXE: OnceLock<Option<String>> = OnceLock::new();
+
+/// 定位 git 可执行文件（带缓存）：PATH 优先，fallback 到 scoop shims
+pub fn resolve_git() -> Option<String> {
+    GIT_EXE.get_or_init(resolve_git_uncached).clone()
+}
+
+fn resolve_git_uncached() -> Option<String> {
     // 1. 在 PATH 中逐目录查找 git.exe（比 Command::new("git") 更可靠，
     //    避免 Tauri 进程 PATH 搜索行为差异）
     if let Some(path) = std::env::var_os("PATH") {
@@ -355,8 +364,21 @@ fn run_git(root: &Path, args: &[&str]) -> AppResult<std::process::Output> {
     Ok(out)
 }
 
+/// 项目 → 真实 repo root 缓存：省去每次 `git rev-parse --show-toplevel` 的进程 spawn，
+/// 命中后仅做一次 `.git` 存在性检查（文件/目录均适用，覆盖 worktree），仓库被移除时自动失效
+static REPO_ROOTS: LazyLock<SMutex<HashMap<String, PathBuf>>> =
+    LazyLock::new(|| SMutex::new(HashMap::new()));
+
 /// 项目根 → 真实 repo root（`git rev-parse --show-toplevel`，跟随 worktree/submodule）
 fn repo_root(project_id: &str) -> AppResult<PathBuf> {
+    {
+        let cache = REPO_ROOTS.lock();
+        if let Some(p) = cache.get(project_id) {
+            if p.join(".git").exists() {
+                return Ok(p.clone());
+            }
+        }
+    }
     let project = db::get_project(project_id)?;
     let root = Path::new(&project.root_path);
     if !is_git_repo(root) {
@@ -367,7 +389,11 @@ fn repo_root(project_id: &str) -> AppResult<PathBuf> {
     if p.is_empty() {
         return Err(AppError::Git("无法解析 Git 仓库根目录".to_string()));
     }
-    Ok(PathBuf::from(p))
+    let resolved = PathBuf::from(p);
+    REPO_ROOTS
+        .lock()
+        .insert(project_id.to_string(), resolved.clone());
+    Ok(resolved)
 }
 
 /// 将相对路径安全解析为 repo root 下的绝对路径，阻止绝对路径 / `..` 穿越
@@ -508,17 +534,60 @@ pub fn status(project_id: &str) -> AppResult<GitStatus> {
     })
 }
 
-/// 单文件 diff：`staged=true` 取暂存区 vs HEAD，否则取工作区 vs 暂存区
+/// 单文件 diff：
+/// - `staged=true`：暂存区 vs HEAD（本次将提交的内容）
+/// - `staged=false`：工作区 vs HEAD（全部未提交改动，与 diff_hunks /
+///   文件树行级标记完全同基准，保证 Git 面板与编辑器的新增行数一致）
+/// 两种模式都忽略行尾 CR（抵消 core.autocrlf 的换行符噪声）；
+/// 空仓库尚无 HEAD 提交时，工作区模式回退为 vs 暂存区。
 pub fn diff(project_id: &str, path: &str, staged: bool) -> AppResult<String> {
     let root = repo_root(project_id)?;
     safe_join(&root, path)?; // 仅校验路径合法性
-    let args: &[&str] = if staged {
-        &["diff", "--cached", "--no-color", "--unified=3", "--", path]
-    } else {
-        &["diff", "--no-color", "--unified=3", "--", path]
-    };
-    let out = run_git(&root, args)?;
-    Ok(crate::util::decode_output(&out.stdout))
+    if staged {
+        let out = run_git(
+            &root,
+            &[
+                "diff",
+                "--cached",
+                "--no-color",
+                "--unified=3",
+                "--ignore-cr-at-eol",
+                "--",
+                path,
+            ],
+        )?;
+        return Ok(crate::util::decode_output(&out.stdout));
+    }
+    let out = run_git(
+        &root,
+        &[
+            "diff",
+            "HEAD",
+            "--no-color",
+            "--unified=3",
+            "--ignore-cr-at-eol",
+            "--",
+            path,
+        ],
+    );
+    match out {
+        Ok(out) => Ok(crate::util::decode_output(&out.stdout)),
+        Err(_) => {
+            // 多半是无提交历史的空仓库（bad revision HEAD），回退 vs 暂存区
+            let out = run_git(
+                &root,
+                &[
+                    "diff",
+                    "--no-color",
+                    "--unified=3",
+                    "--ignore-cr-at-eol",
+                    "--",
+                    path,
+                ],
+            )?;
+            Ok(crate::util::decode_output(&out.stdout))
+        }
+    }
 }
 
 /// 暂存指定文件
@@ -623,4 +692,88 @@ pub fn write_file(project_id: &str, path: &str, content: &str) -> AppResult<()> 
             .map_err(|e| AppError::Git(format!("创建目录失败: {}", e)))?;
     }
     std::fs::write(&full, content).map_err(|e| AppError::Git(format!("写入失败: {}", e)))
+}
+
+/// 读取 HEAD 中某文件的内容（用于前端做工作区 vs HEAD 的行级 diff 标记）。
+/// 文件不在 HEAD（未跟踪 / 新增）或读取失败时返回 None。
+pub fn file_at_head(project_id: &str, path: &str) -> AppResult<Option<String>> {
+    let root = repo_root(project_id)?;
+    safe_join(&root, path)?;
+    match run_git(&root, &["show", &format!("HEAD:{}", path)]) {
+        Ok(out) => Ok(Some(crate::util::decode_output(&out.stdout))),
+        Err(_) => Ok(None),
+    }
+}
+
+/// 单个 diff 块（unified=0）：新文件中起始于 new_start（1 基）共 new_lines 行，
+/// 对应旧文件删除了 del_lines 行；min(del,new) 行视为「修改」，其余新增为「新增」。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DiffHunk {
+    pub new_start: u32,
+    pub new_lines: u32,
+    pub del_lines: u32,
+}
+
+/// 解析 unified=0 diff 文本的 hunk 头与 +/- 行计数。
+/// 注意：头部 `+start,count` 的 count 与 body 的 +/- 行数相同，
+/// 这里只从头取起始位置，行数一律由 body 实际计数，避免重复累加。
+fn parse_diff_hunks(text: &str) -> Vec<DiffHunk> {
+    fn parse_new_start(rest: &str) -> Option<u32> {
+        // rest 形如 " -66,0 +67,4 @@ ctx..."
+        for tok in rest.split_whitespace() {
+            if let Some(stripped) = tok.strip_prefix('+') {
+                return stripped.split(',').next()?.parse().ok();
+            }
+        }
+        None
+    }
+
+    let mut hunks: Vec<DiffHunk> = vec![];
+    let mut cur: Option<DiffHunk> = None;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("@@") {
+            if let Some(h) = cur.take() {
+                hunks.push(h);
+            }
+            cur = parse_new_start(rest).map(|new_start| DiffHunk {
+                new_start,
+                new_lines: 0,
+                del_lines: 0,
+            });
+            continue;
+        }
+        if let Some(h) = cur.as_mut() {
+            if line.starts_with('+') {
+                h.new_lines += 1;
+            } else if line.starts_with('-') {
+                h.del_lines += 1;
+            }
+            // "\ No newline at end of file" 以 \ 开头，忽略
+        }
+    }
+    if let Some(h) = cur.take() {
+        hunks.push(h);
+    }
+    hunks
+}
+
+/// 工作区 vs HEAD 的 diff hunk 列表（与 Git 面板同一 diff 引擎，保证一致）。
+/// `--ignore-cr-at-eol` 抵消 core.autocrlf 造成的 CRLF/LF 差异；
+/// 未跟踪文件 git diff 输出为空，由前端按「整文件新增」处理。
+pub fn diff_hunks(project_id: &str, path: &str) -> AppResult<Vec<DiffHunk>> {
+    let root = repo_root(project_id)?;
+    safe_join(&root, path)?;
+    let out = run_git(
+        &root,
+        &[
+            "diff",
+            "HEAD",
+            "--no-color",
+            "--unified=0",
+            "--ignore-cr-at-eol",
+            "--",
+            path,
+        ],
+    )?;
+    Ok(parse_diff_hunks(&crate::util::decode_output(&out.stdout)))
 }

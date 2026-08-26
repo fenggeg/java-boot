@@ -59,6 +59,13 @@ export default function GitPanel({ project, onClose, onBackFiles }: Props) {
     refresh();
   }, [refresh]);
 
+  // 窗口重新聚焦时刷新：覆盖在 IDE / 命令行等外部工具中暂存、提交、改文件后切回的场景
+  useEffect(() => {
+    const onFocus = () => void refresh();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [refresh]);
+
   const stagedChanges = useMemo(
     () => (status?.changes ?? []).filter((c) => c.staged),
     [status]

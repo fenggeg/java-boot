@@ -63,8 +63,15 @@ export default function GitDiffModal({
       setError(null);
       try {
         if (gitChangeKind(target) === "untracked") {
+          // 未跟踪文件：合成「整文件新增」diff，与文件树行级标记（全部绿行）一致
           const c = await api.gitReadFile(projectId, target.path);
-          setDiffText(c);
+          const lines = c.split("\n");
+          if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+          setDiffText(
+            [`diff --git a/${target.path} b/${target.path}`, `+++ b/${target.path}`]
+              .concat(lines.map((l) => `+${l}`))
+              .join("\n")
+          );
         } else {
           const d = await api.gitDiff(projectId, target.path, useStaged);
           setDiffText(d || "(无差异)");
@@ -161,7 +168,7 @@ export default function GitDiffModal({
                 value={staged ? "staged" : "worktree"}
                 onChange={toggleStaged}
                 options={[
-                  { label: "工作区改动", value: "worktree" },
+                  { label: "全部改动(相对上次提交)", value: "worktree" },
                   { label: "已暂存改动", value: "staged" },
                 ]}
               />

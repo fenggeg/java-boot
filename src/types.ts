@@ -173,6 +173,23 @@ export function gitChangeKind(c: GitChange): GitChangeKind {
   return "modified";
 }
 
+// ============================ 文件树 / 编辑器 Git 状态标记 ============================
+
+/** 文件树与编辑器使用的归一化 git 状态：与 GitChangeKind 完全同源，
+ *  保证文件树标记与 Git 面板徽标归类一致 */
+export type FileGitStatus = GitChangeKind;
+
+/** 目录聚合状态（含子孙所有改动的并集） */
+export interface DirGitAgg {
+  modified: boolean;
+  added: boolean;
+  deleted: boolean;
+  renamed: boolean;
+  conflict: boolean;
+  /** 该目录下改动条目总数 */
+  count: number;
+}
+
 export interface LogLine {
   service_id: string;
   source: string; // [app] [mvn] [git]

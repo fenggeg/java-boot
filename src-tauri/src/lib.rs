@@ -164,6 +164,8 @@ pub fn run() {
             commands::git_show,
             commands::git_read_file,
             commands::git_write_file,
+            commands::git_file_head,
+            commands::git_diff_hunks,
             // files
             commands::list_files,
             commands::read_project_file,

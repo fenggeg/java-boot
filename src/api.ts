@@ -132,6 +132,15 @@ export const gitWriteFile = (
   content: string,
 ) =>
   invoke<void>("git_write_file", { projectId, path, content });
+/// 读取 HEAD 中某文件内容（未跟踪 / 不存在返回 null），用于行级 diff
+export const gitFileHead = (projectId: string, path: string) =>
+  invoke<string | null>("git_file_head", { projectId, path });
+/// 工作区 vs HEAD 的 diff hunk（unified=0，与 Git 面板同引擎）
+export const gitDiffHunks = (projectId: string, path: string) =>
+  invoke<{new_start: number; new_lines: number; del_lines: number}[]>(
+    "git_diff_hunks",
+    { projectId, path }
+  );
 
 // ============================ Files（项目文件浏览/编辑） ============================
 
