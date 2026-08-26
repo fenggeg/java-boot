@@ -5,7 +5,7 @@
 //! - `check_started` / `check_failed` 用真实关键字判断 Spring Boot 启动结果
 //!   （原实现里的 `Started .* in .* seconds` 是当作字符串 `contains`，永远不会命中）
 
-use chrono::Utc;
+use chrono::Local;
 use tauri::{AppHandle, Emitter};
 
 /// 日志来源标签：[app]（Java 子进程）/ [mvn]（Maven 编译期）
@@ -39,7 +39,9 @@ pub fn emit_log_raw(app: &AppHandle, service_id: &str, tag: &str, line: &str) {
         service_id: service_id.to_string(),
         source: tag.to_string(),
         line: cleaned,
-        ts: Utc::now().to_rfc3339(),
+        // 本地时间（RFC3339 带偏移）：前端按字符串截取 HH:mm:ss 展示，
+        // 用 UTC 会导致日志时间比本地慢一个时区
+        ts: Local::now().to_rfc3339(),
     };
     let _ = app.emit("service://log", payload);
 }
