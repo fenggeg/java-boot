@@ -479,6 +479,66 @@ pub async fn git_pull_and_restart(
     git::pull_and_restart(app, &project_id).await
 }
 
+/// 推送本地提交到远程
+#[tauri::command]
+pub async fn git_push(project_id: String, app: AppHandle) -> AppResult<git::PushResult> {
+    git::push(app, &project_id).await
+}
+
+/// 冲突文件三方内容（base / ours / theirs）
+#[tauri::command]
+pub async fn git_conflict_versions(
+    project_id: String,
+    path: String,
+) -> AppResult<git::ConflictVersions> {
+    tokio::task::spawn_blocking(move || git::conflict_versions(&project_id, &path))
+        .await
+        .map_err(|e| AppError::Other(format!("读取冲突版本任务失败: {}", e)))?
+}
+
+/// 快捷采用某侧解决冲突（ours / theirs / both）
+#[tauri::command]
+pub async fn git_resolve_side(
+    project_id: String,
+    path: String,
+    side: String,
+) -> AppResult<()> {
+    tokio::task::spawn_blocking(move || git::resolve_side(&project_id, &path, &side))
+        .await
+        .map_err(|e| AppError::Other(format!("解决冲突任务失败: {}", e)))?
+}
+
+/// 标记冲突已解决：写回编辑后的内容并 git add
+#[tauri::command]
+pub async fn git_mark_resolved(
+    project_id: String,
+    path: String,
+    content: String,
+) -> AppResult<()> {
+    tokio::task::spawn_blocking(move || git::mark_resolved(&project_id, &path, &content))
+        .await
+        .map_err(|e| AppError::Other(format!("标记已解决任务失败: {}", e)))?
+}
+
+/// 全部冲突解决后提交完成合并（message 为空时用默认合并信息）
+#[tauri::command]
+pub async fn git_complete_merge(
+    project_id: String,
+    message: Option<String>,
+) -> AppResult<()> {
+    tokio::task::spawn_blocking(move || git::complete_merge(&project_id, message.as_deref()))
+        .await
+        .map_err(|e| AppError::Other(format!("完成合并任务失败: {}", e)))?
+}
+
+/// 中止本次合并，恢复合并前工作区
+#[tauri::command]
+pub async fn git_abort_merge(project_id: String) -> AppResult<()> {
+    tokio::task::spawn_blocking(move || git::abort_merge(&project_id))
+        .await
+        .map_err(|e| AppError::Other(format!("中止合并任务失败: {}", e)))?
+}
+
 /// 工作区状态（分支 / 改动文件列表）
 #[tauri::command]
 pub async fn git_status(project_id: String) -> AppResult<git::GitStatus> {
@@ -675,10 +735,20 @@ pub async fn terminal_create(project_id: String, app: AppHandle) -> AppResult<St
     crate::terminal::create(app, &project_id).await
 }
 
-/// 向终端会话写入输入数据（命令行 + 换行）
+/// 向终端会话写入输入数据（xterm.js 键盘原始数据透传）
 #[tauri::command]
 pub async fn terminal_write(session_id: String, data: String) -> AppResult<()> {
     crate::terminal::write(&session_id, &data).await
+}
+
+/// 调整伪终端尺寸（前端 xterm.js fit 后调用）
+#[tauri::command]
+pub async fn terminal_resize(
+    session_id: String,
+    cols: u16,
+    rows: u16,
+) -> AppResult<()> {
+    crate::terminal::resize(&session_id, cols, rows).await
 }
 
 /// 终止终端会话

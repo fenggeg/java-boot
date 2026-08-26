@@ -326,6 +326,133 @@ pub async fn pull_and_restart(app: AppHandle, project_id: &str) -> AppResult<Pul
     Ok(result)
 }
 
+/// 推送结果（复用 PullResult 结构：success/message；up_to_date 恒为 false）
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PushResult {
+    pub project_id: String,
+    pub success: bool,
+    pub message: String,
+}
+
+/// 执行 git push
+///
+/// push 不改动工作区，无需切换服务状态；但可能因认证挂起，
+/// 与 pull 相同采用 60 秒超时 + 超时强杀进程树。
+pub async fn push(app: AppHandle, project_id: &str) -> AppResult<PushResult> {
+    let project = db::get_project(project_id)?;
+    let root = Path::new(&project.root_path);
+
+    if !is_git_repo(root) {
+        return Err(AppError::Git(format!(
+            "{} 不是 Git 仓库",
+            root.display()
+        )));
+    }
+
+    let git_exe = resolve_git().ok_or_else(|| {
+        AppError::Git("未找到 git 命令，请安装 Git 并加入 PATH".to_string())
+    })?;
+
+    let root_clone = root.to_path_buf();
+    let project_id_owned = project_id.to_string();
+
+    // 共享输出缓冲与 PID 槽，超时后强杀
+    let stdout_shared: Arc<SMutex<String>> = Arc::new(SMutex::new(String::new()));
+    let stderr_shared: Arc<SMutex<String>> = Arc::new(SMutex::new(String::new()));
+    let pid_slot: Arc<SMutex<Option<u32>>> = Arc::new(SMutex::new(None));
+    let stdout_b = stdout_shared.clone();
+    let stderr_b = stderr_shared.clone();
+    let pid_slot_b = pid_slot.clone();
+
+    let join_result = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        tokio::task::spawn_blocking(move || {
+            let mut cmd = Command::new(&git_exe);
+            cmd.arg("push")
+                .arg("--no-progress")
+                .arg("--porcelain")
+                .current_dir(&root_clone)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GIT_ASKPASS", "")
+                .env("SSH_ASKPASS", "");
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
+            cmd.stdin(std::process::Stdio::null());
+            cmd.creation_flags_no_window();
+            let mut child = cmd.spawn()?;
+            *pid_slot_b.lock() = Some(child.id());
+            let out = child.stdout.take();
+            let err = child.stderr.take();
+            let t_out = std::thread::spawn(move || {
+                if let Some(o) = out {
+                    let reader = std::io::BufReader::new(o);
+                    for line in reader.lines().flatten() {
+                        stdout_b.lock().push_str(&line);
+                        stdout_b.lock().push('\n');
+                    }
+                }
+            });
+            let t_err = std::thread::spawn(move || {
+                if let Some(e) = err {
+                    let reader = std::io::BufReader::new(e);
+                    for line in reader.lines().flatten() {
+                        stderr_b.lock().push_str(&line);
+                        stderr_b.lock().push('\n');
+                    }
+                }
+            });
+            let status = child.wait();
+            let _ = t_out.join();
+            let _ = t_err.join();
+            status
+        }),
+    )
+    .await;
+
+    let result = match join_result {
+        Ok(Ok(output)) => output.map_err(|e| AppError::Git(format!("git push 执行失败: {}", e)))?,
+        Ok(Err(e)) => return Err(AppError::Git(format!("git push 任务失败: {}", e))),
+        Err(_) => {
+            if let Some(pid) = pid_slot.lock().take() {
+                crate::process::manager::kill_process_tree_by_pid(pid);
+                log::warn!("git push 超时，已强杀 git 进程 PID {}", pid);
+            }
+            return Err(AppError::Git(
+                "git push 超时（60 秒），可能需要认证或网络异常".to_string(),
+            ));
+        }
+    };
+
+    let _ = app; // 预留：后续推送进度事件
+    let stdout = stdout_shared.lock().clone();
+    let stderr = stderr_shared.lock().clone();
+    let success = result.success();
+
+    // 失败信息归类：非快进 / 无上游 / 认证失败等给出可操作提示
+    let message = if success {
+        "推送成功".to_string()
+    } else {
+        let combined = format!("{}\n{}", stdout, stderr);
+        if combined.contains("(non-fast-forward)") || combined.contains("fetch first") {
+            "推送被拒绝（远程有新提交），请先拉取合并后再推送".to_string()
+        } else if combined.contains("No configured push destination")
+            || combined.contains("does not have an upstream")
+        {
+            "当前分支未设置上游分支，请在 IDEA/命令行配置后重试".to_string()
+        } else if combined.contains("Authentication") || combined.contains("403") {
+            "推送认证失败，请检查凭据或令牌权限".to_string()
+        } else {
+            format!("{}\n{}", stdout.trim(), stderr.trim())
+        }
+    };
+
+    Ok(PushResult {
+        project_id: project_id_owned,
+        success,
+        message,
+    })
+}
+
 // ================================================================
 // 工作区状态 / 提交 / 历史（按项目隔离）
 //
@@ -438,6 +565,8 @@ pub struct GitStatus {
     pub branch: Option<String>,
     pub ahead: u32,
     pub behind: u32,
+    /// 是否处于合并中（存在 MERGE_HEAD，即 pull/merge 产生待解决的冲突）
+    pub merging: bool,
     pub changes: Vec<GitChange>,
 }
 
@@ -530,8 +659,25 @@ pub fn status(project_id: &str) -> AppResult<GitStatus> {
         branch,
         ahead,
         behind,
+        merging: merge_in_progress(&root),
         changes,
     })
+}
+
+/// 是否处于合并中：`git rev-parse --git-path MERGE_HEAD` 存在
+/// （跟随 worktree/submodule 的真实 git 目录）
+fn merge_in_progress(root: &Path) -> bool {
+    let out = match run_git(root, &["rev-parse", "--git-path", "MERGE_HEAD"]) {
+        Ok(o) => o,
+        Err(_) => return false,
+    };
+    let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if p.is_empty() {
+        return false;
+    }
+    let p = PathBuf::from(&p);
+    let full = if p.is_absolute() { p } else { root.join(p) };
+    full.exists()
 }
 
 /// 单文件 diff：
@@ -776,4 +922,127 @@ pub fn diff_hunks(project_id: &str, path: &str) -> AppResult<Vec<DiffHunk>> {
         ],
     )?;
     Ok(parse_diff_hunks(&crate::util::decode_output(&out.stdout)))
+}
+
+// ================================================================
+// 冲突合并（pull/merge 产生冲突后的解决流程）
+//
+// git 在合并冲突时把文件的三个版本存入 index：
+//   :1:path = 共同祖先(base)  :2:path = 本地(ours)  :3:path = 远程(theirs)
+// 前端据此渲染三栏对比，用户逐个文件解决后 `git add` 标记，
+// 全部解决后 `git commit` 完成合并。
+// ================================================================
+
+/// 判断某改动记录是否为冲突状态（porcelain v1 的冲突码对）
+pub fn change_is_conflict(x: &str, y: &str) -> bool {
+    matches!(
+        (x, y),
+        ("U", "U") | // UU 双方修改
+        ("A", "A") | // AA 双方新增
+        ("D", "D") | // DD 双方删除
+        ("A", "U") | ("U", "A") | // AU / UA
+        ("D", "U") | ("U", "D") // DU / UD
+    )
+}
+
+/// 冲突文件的三个版本内容
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ConflictVersions {
+    /// 共同祖先版本（双方都新增时为 None）
+    pub base: Option<String>,
+    /// 本地版本（stage 2）
+    pub ours: String,
+    /// 远程版本（stage 3）
+    pub theirs: String,
+}
+
+/// 项目当前全部冲突文件路径
+pub fn conflicted_files(project_id: &str) -> AppResult<Vec<String>> {
+    let st = status(project_id)?;
+    Ok(st
+        .changes
+        .into_iter()
+        .filter(|c| change_is_conflict(&c.x, &c.y))
+        .map(|c| c.path)
+        .collect())
+}
+
+/// 读取冲突文件的 base / ours / theirs 三方内容
+pub fn conflict_versions(project_id: &str, path: &str) -> AppResult<ConflictVersions> {
+    let root = repo_root(project_id)?;
+    safe_join(&root, path)?;
+    let stage = |n: u32| -> Option<String> {
+        let out = run_git(&root, &["show", &format!(":{}:{}", n, path)]).ok()?;
+        Some(crate::util::decode_output(&out.stdout))
+    };
+    Ok(ConflictVersions {
+        base: stage(1),
+        ours: stage(2).unwrap_or_default(),
+        theirs: stage(3).unwrap_or_default(),
+    })
+}
+
+/// 快捷采用某一侧并标记已解决：
+/// - ours：`git checkout --ours` 后 add
+/// - theirs:`git checkout --theirs` 后 add
+/// - both：先本地后远程拼接写入后 add（IDEA 的「采用双侧」语义）
+pub fn resolve_side(project_id: &str, path: &str, side: &str) -> AppResult<()> {
+    let root = repo_root(project_id)?;
+    safe_join(&root, path)?;
+    match side {
+        "ours" => {
+            run_git(&root, &["checkout", "--ours", "--", path])?;
+        }
+        "theirs" => {
+            run_git(&root, &["checkout", "--theirs", "--", path])?;
+        }
+        "both" => {
+            let versions = conflict_versions(project_id, path)?;
+            let mut merged = versions.ours;
+            if !merged.ends_with('\n') && !merged.is_empty() {
+                merged.push('\n');
+            }
+            merged.push_str(&versions.theirs);
+            write_file(project_id, path, &merged)?;
+        }
+        _ => return Err(AppError::Git(format!("未知的解决方向: {}", side))),
+    }
+    stage(project_id, &[path.to_string()])
+}
+
+/// 标记冲突已解决（前端编辑完中间栏结果后调用）：写回内容 + git add
+pub fn mark_resolved(project_id: &str, path: &str, content: &str) -> AppResult<()> {
+    write_file(project_id, path, content)?;
+    let root = repo_root(project_id)?;
+    safe_join(&root, path)?;
+    run_git(&root, &["add", "--", path])?;
+    Ok(())
+}
+
+/// 全部冲突解决后提交完成合并：
+/// 有自定义信息用 `-m`，否则 `--no-edit` 沿用 git 生成的默认合并信息
+pub fn complete_merge(project_id: &str, message: Option<&str>) -> AppResult<()> {
+    let root = repo_root(project_id)?;
+    if !merge_in_progress(&root) {
+        return Err(AppError::Git("当前没有进行中的合并".to_string()));
+    }
+    match message.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(m) => {
+            run_git(&root, &["commit", "-m", m])?;
+        }
+        None => {
+            run_git(&root, &["commit", "--no-edit"])?;
+        }
+    }
+    Ok(())
+}
+
+/// 中止本次合并，工作区回到合并前状态
+pub fn abort_merge(project_id: &str) -> AppResult<()> {
+    let root = repo_root(project_id)?;
+    if !merge_in_progress(&root) {
+        return Err(AppError::Git("当前没有进行中的合并".to_string()));
+    }
+    run_git(&root, &["merge", "--abort"])?;
+    Ok(())
 }

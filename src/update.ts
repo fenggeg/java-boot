@@ -105,6 +105,20 @@ function formatSize(bytes: number): string {
   return `${bytes} B`;
 }
 
+export {formatSize};
+
+/** 后端 download_update 推送的下载进度（update://progress 事件） */
+export interface UpdateDownloadProgress {
+  /** 百分比 0-100（total 未知时为 0） */
+  percent: number;
+  /** 已下载字节数 */
+  downloaded: number;
+  /** 总字节数（未知为 0） */
+  total: number;
+  /** 实时速度（字节/秒，后端 EMA 平滑） */
+  speed: number;
+}
+
 function formatDate(iso: string): string {
   return iso ? iso.slice(0, 10) : "";
 }
@@ -150,19 +164,20 @@ export async function checkForUpdate(): Promise<UpdateInfo> {
 }
 
 /**
- * 下载更新包：后端流式下载，进度经 update://progress 事件上报（0-100），
+ * 下载更新包：后端流式下载，进度经 update://progress 事件上报
+ * （百分比 / 已下载字节 / 总大小 / 实时速度），
  * 返回安装包落盘路径（供 install_update 使用）
  */
 export async function downloadAndInstall(
   downloadUrl: string,
-  onProgress: (percent: number) => void
+  onProgress: (p: UpdateDownloadProgress) => void
 ): Promise<string> {
   if (!downloadUrl) {
     throw new Error("更新包下载地址为空");
   }
-  const unlisten: UnlistenFn = await listen<{percent: number}>(
+  const unlisten: UnlistenFn = await listen<UpdateDownloadProgress>(
     "update://progress",
-    (event) => onProgress(event.payload.percent)
+    (event) => onProgress(event.payload)
   );
   try {
     return await invoke<string>("download_update", {url: downloadUrl});

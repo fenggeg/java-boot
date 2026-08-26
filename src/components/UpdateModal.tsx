@@ -3,7 +3,7 @@ import {App, Button, Modal, Progress, Spin} from "antd";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {ArrowDown, Check, Download, Refresh, Warning} from "./Icons";
-import {checkForUpdate, downloadAndInstall, relaunchAndInstall, type UpdateInfo,} from "../update";
+import {checkForUpdate, downloadAndInstall, formatSize, relaunchAndInstall, type UpdateInfo,} from "../update";
 import {Prism} from "../prism-langs";
 
 interface Props {
@@ -35,6 +35,11 @@ export default function UpdateModal({open, onClose}: Props) {
   const [error, setError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState(0);
+  /** 实时速度（字节/秒） */
+  const [speed, setSpeed] = useState(0);
+  /** 已下载 / 总字节数 */
+  const [dlBytes, setDlBytes] = useState(0);
+  const [totalBytes, setTotalBytes] = useState(0);
   const [downloaded, setDownloaded] = useState(false);
   // 已下载的安装包路径（重启安装用）
   const installerPathRef = useRef<string | null>(null);
@@ -61,6 +66,9 @@ export default function UpdateModal({open, onClose}: Props) {
     if (!open) return;
     setDownloading(false);
     setProgress(0);
+    setSpeed(0);
+    setDlBytes(0);
+    setTotalBytes(0);
     setDownloaded(false);
     installerPathRef.current = null;
     const cancelledRef = {value: false};
@@ -75,10 +83,17 @@ export default function UpdateModal({open, onClose}: Props) {
     if (!info) return;
     setDownloading(true);
     setProgress(0);
+    setSpeed(0);
+    setDlBytes(0);
     try {
       installerPathRef.current = await downloadAndInstall(
         info.download_url,
-        (p) => setProgress(p)
+        (p) => {
+          setProgress(p.percent);
+          setSpeed(p.speed);
+          setDlBytes(p.downloaded);
+          setTotalBytes(p.total);
+        }
       );
       setDownloaded(true);
     } catch (e: any) {
@@ -211,6 +226,13 @@ export default function UpdateModal({open, onClose}: Props) {
                 size="small"
                 strokeColor="var(--blue)"
               />
+              <span className="update-meta update-speed" title="实时下载速度">
+                {totalBytes > 0
+                  ? `${formatSize(dlBytes)} / ${formatSize(totalBytes)}`
+                  : formatSize(dlBytes)}
+                {" · "}
+                {formatSize(speed)}/s
+              </span>
             </div>
           )}
           {downloaded && (
@@ -226,6 +248,7 @@ export default function UpdateModal({open, onClose}: Props) {
   }
 
   // ---- 底部按钮 ----
+  // 下载中不显示任何按钮：进度条 + 速度信息已足够
   let footer: React.ReactNode = null;
   if (phase === "available" && info) {
     if (downloaded) {
@@ -237,13 +260,7 @@ export default function UpdateModal({open, onClose}: Props) {
           </Button>
         </>
       );
-    } else if (downloading) {
-      footer = (
-        <Button disabled>
-          下载中 {progress}%
-        </Button>
-      );
-    } else {
+    } else if (!downloading) {
       footer = (
         <>
           <Button onClick={onClose}>取消</Button>

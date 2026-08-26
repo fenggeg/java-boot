@@ -1,11 +1,23 @@
 import {useCallback, useEffect, useMemo, useState} from "react";
 import {App, Button, Empty, Input, Segmented, Spin, Tooltip} from "antd";
 import dayjs from "dayjs";
-import {Check, ChevronLeft, Commit, Folder, GitBranch, GitPull, Plus, Refresh,} from "./Icons";
+import {
+  Check,
+  ChevronLeft,
+  Commit,
+  Folder,
+  GitBranch,
+  GitPull,
+  GitPush,
+  Plus,
+  Refresh,
+  Warning,
+} from "./Icons";
 import * as api from "../api";
 import type {GitChange, GitCommitInfo, GitStatus, Project} from "../types";
-import {gitChangeKind} from "../types";
+import {gitChangeKind, isConflictChange} from "../types";
 import GitDiffModal from "./GitDiffModal";
+import GitConflictModal from "./GitConflictModal";
 
 interface Props {
   project: Project;
@@ -30,7 +42,10 @@ export default function GitPanel({ project, onClose, onBackFiles }: Props) {
   const [commits, setCommits] = useState<GitCommitInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [pulling, setPulling] = useState(false);
+  const [pushing, setPushing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 冲突合并弹窗
+  const [conflictOpen, setConflictOpen] = useState(false);
   const [commitMsg, setCommitMsg] = useState("");
   const [committing, setCommitting] = useState(false);
   const [diffTarget, setDiffTarget] = useState<GitChange | null>(null);
@@ -72,6 +87,12 @@ export default function GitPanel({ project, onClose, onBackFiles }: Props) {
   );
   const unstagedChanges = useMemo(
     () => (status?.changes ?? []).filter((c) => !c.staged),
+    [status]
+  );
+
+  /** 冲突文件列表（UU/AA/DD/AU/UA/DU/UD） */
+  const conflictFiles = useMemo(
+    () => (status?.changes ?? []).filter(isConflictChange).map((c) => c.path),
     [status]
   );
 
@@ -133,11 +154,33 @@ export default function GitPanel({ project, onClose, onBackFiles }: Props) {
       } else {
         message.error(`拉取失败: ${r.message}`);
       }
-      await refresh();
     } catch (e: any) {
       message.error(`拉取失败: ${e}`);
     } finally {
       setPulling(false);
+      await refresh();
+      // 拉取产生合并冲突时自动打开冲突解决面板
+      const st = await api.gitStatus(project.id).catch(() => null);
+      if (st && (st.merging || st.changes.some(isConflictChange))) {
+        setConflictOpen(true);
+      }
+    }
+  };
+
+  const handlePush = async () => {
+    setPushing(true);
+    try {
+      const r = await api.gitPush(project.id);
+      if (r.success) {
+        message.success(r.message || "推送成功");
+      } else {
+        message.error(`推送失败: ${r.message}`);
+      }
+      await refresh();
+    } catch (e: any) {
+      message.error(`推送失败: ${e}`);
+    } finally {
+      setPushing(false);
     }
   };
 
@@ -269,6 +312,16 @@ export default function GitPanel({ project, onClose, onBackFiles }: Props) {
               <GitPull size={13} />
             </button>
           </Tooltip>
+          <Tooltip title="推送本地提交到远程">
+            <button
+              className="icon-btn sm accent"
+              onClick={handlePush}
+              disabled={pushing}
+              aria-label="推送"
+            >
+              <GitPush size={13} />
+            </button>
+          </Tooltip>
           <Tooltip title="刷新">
             <button
               className="icon-btn sm"
@@ -310,7 +363,25 @@ export default function GitPanel({ project, onClose, onBackFiles }: Props) {
         <div style={{ padding: 40 }}>
           <Empty description={error} />
         </div>
-      ) : tab === "changes" ? (
+      ) : (
+        <>
+          {(status?.merging || conflictFiles.length > 0) && (
+            <div className="git-conflict-banner">
+              <Warning size={13} />
+              <span className="git-conflict-banner-text">
+                合并进行中，{conflictFiles.length} 个文件存在冲突
+              </span>
+              <Button
+                size="small"
+                type="primary"
+                danger
+                onClick={() => setConflictOpen(true)}
+              >
+                解决冲突
+              </Button>
+            </div>
+          )}
+          {tab === "changes" ? (
         <div className="git-changes">
           <div className="git-changes-actions">
             <span className="toolbar-count">
@@ -409,28 +480,39 @@ export default function GitPanel({ project, onClose, onBackFiles }: Props) {
                   )}
                 </div>
                 {expandedHash === c.hash && (
-                  <div className="git-history-diff">
-                    {diffError ? (
-                      <div style={{ padding: 16, color: "#ff3b30", fontSize: 12 }}>
-                        加载 diff 失败: {diffError}
-                      </div>
-                    ) : showDiff ? (
-                      <pre className="git-history-diff-pre">{showDiff}</pre>
-                    ) : (
-                      <Spin size="small" />
-                    )}
-                  </div>
-                )}
-              </div>
-            ))
-          )}
-        </div>
+                   <div className="git-history-diff">
+                     {diffError ? (
+                       <div style={{ padding: 16, color: "#ff3b30", fontSize: 12 }}>
+                         加载 diff 失败: {diffError}
+                       </div>
+                     ) : showDiff ? (
+                       <pre className="git-history-diff-pre">{showDiff}</pre>
+                     ) : (
+                       <Spin size="small" />
+                     )}
+                   </div>
+                 )}
+               </div>
+             ))
+           )}
+         </div>
+       )}
+        </>
       )}
 
       <GitDiffModal
         projectId={project.id}
         change={diffTarget}
         onClose={() => setDiffTarget(null)}
+        onChanged={refresh}
+      />
+
+      <GitConflictModal
+        projectId={project.id}
+        paths={conflictFiles}
+        merging={!!status?.merging}
+        open={conflictOpen}
+        onClose={() => setConflictOpen(false)}
         onChanged={refresh}
       />
     </div>

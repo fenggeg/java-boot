@@ -171,6 +171,19 @@ export function GitPull({ size, ...rest }: IconProps) {
   );
 }
 
+export function GitPush({ size, ...rest }: IconProps) {
+  // upward arrow out of a tray — "push"
+  return (
+    <Svg size={size} {...rest}>
+      <path d="M12 16 V5" />
+      <path d="M7 9 L12 4 L17 9" />
+      <path d="M4 20 H20" />
+      <circle cx="5" cy="18" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="19" cy="18" r="1.4" fill="currentColor" stroke="none" />
+    </Svg>
+  );
+}
+
 export function GitPullRestart({ size, ...rest }: IconProps) {
   return (
     <Svg size={size} {...rest}>

@@ -1,6 +1,9 @@
 import {useCallback, useEffect, useRef, useState} from "react";
 import {Tooltip} from "antd";
 import {listen, type UnlistenFn} from "@tauri-apps/api/event";
+import {Terminal, type ITheme} from "@xterm/xterm";
+import {FitAddon} from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 import * as api from "../api";
 import {Clear, Restart, X} from "./Icons";
 
@@ -14,66 +17,122 @@ interface TerminalChunk {
   closed: boolean;
 }
 
-/** 输出缓冲上限（字符），超出丢弃头部，防止长会话内存膨胀 */
-const MAX_BUFFER = 200_000;
+/** xterm 实例 + 会话 id 的模块级注册表：
+ * 面板切换 / 组件重挂载后终端实例与滚动回看均保留（DOM 元素搬移复用） */
+const registry = new Map<
+  string,
+  {term: Terminal; fit: FitAddon; sessionId: string | null}
+>();
 
-// ================================================================
-// 会话与输出缓冲注册表（模块级）：面板切换 / 组件重挂载后仍保留
-// projectId → sessionId / 输出文本
-// ================================================================
-const sessionByProject = new Map<string, string>();
-const bufferByProject = new Map<string, string>();
+const FONT_FAMILY =
+  'Consolas, "Cascadia Mono", "Courier New", monospace';
+
+function termTheme(dark: boolean): ITheme {
+  return dark
+    ? {
+        background: "#161618",
+        foreground: "#d4d4d4",
+        cursor: "#d4d4d4",
+        selectionBackground: "#3a3d41",
+      }
+    : {
+        background: "#ffffff",
+        foreground: "#1f2328",
+        cursor: "#1f2328",
+        selectionBackground: "#cfe3ff",
+      };
+}
 
 /**
- * 项目集成终端（cmd.exe 管道模式）。
- * 输出区只读 + 底部输入行；命令回显由前端本地补齐（无 PTY 时 shell 不回显输入）。
+ * 项目集成终端（ConPTY 全功能模式）。
+ * 前端 xterm.js 与后端伪终端直连：键盘输入原样透传（含 Ctrl+C、方向键、
+ * PSReadLine 历史），输出按 VT 序列渲染，彩色/交互式程序完整可用；
+ * 无独立输入行，点击终端区域即可直接输入。
  */
 export default function TerminalView({projectId}: Props) {
-  // 惰性创建会话：首次展开抽屉时才拉起 cmd 进程
-  const [booted, setBooted] = useState(
-    () => sessionByProject.has(projectId) || bufferByProject.has(projectId)
-  );
-  const [sessionId, setSessionId] = useState<string | null>(
-    () => sessionByProject.get(projectId) ?? null
-  );
+  // 惰性创建会话：首次展开抽屉时才拉起 shell 进程
+  const [booted, setBooted] = useState(() => registry.has(projectId));
   const [closed, setClosed] = useState(false);
-  const [text, setText] = useState<string>(() => bufferByProject.get(projectId) ?? "");
-  const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const sessionIdRef = useRef<string | null>(sessionId);
-  const pendingRef = useRef("");
-  const flushScheduledRef = useRef(false);
-  const outputRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const stickBottomRef = useRef(true);
-  const historyRef = useRef<string[]>([]);
-  const historyIdxRef = useRef(-1);
+  const hostRef = useRef<HTMLDivElement>(null);
+  const sessionIdRef = useRef<string | null>(
+    registry.get(projectId)?.sessionId ?? null
+  );
+  const unlistenRef = useRef<UnlistenFn | null>(null);
 
-  const appendBuffer = useCallback(
-    (chunk: string) => {
-      pendingRef.current += chunk;
-      if (flushScheduledRef.current) return;
-      flushScheduledRef.current = true;
-      requestAnimationFrame(() => {
-        flushScheduledRef.current = false;
-        const next = (bufferByProject.get(projectId) ?? "") + pendingRef.current;
-        pendingRef.current = "";
-        const capped =
-          next.length > MAX_BUFFER ? next.slice(next.length - MAX_BUFFER) : next;
-        bufferByProject.set(projectId, capped);
-        setText(capped);
-      });
+  const isDark = () =>
+    document.documentElement.getAttribute("data-theme") === "dark";
+
+  /** 创建或复用 xterm 实例并挂载到容器，返回注册表条目 */
+  const ensureTerm = useCallback(
+    (): {term: Terminal; fit: FitAddon; sessionId: string | null} => {
+      let entry = registry.get(projectId);
+      if (!entry) {
+        const term = new Terminal({
+          fontSize: 12.5,
+          lineHeight: 1.3,
+          fontFamily: FONT_FAMILY,
+          cursorBlink: true,
+          scrollback: 5000,
+          theme: termTheme(isDark()),
+        });
+        const fit = new FitAddon();
+        term.loadAddon(fit);
+        entry = {term, fit, sessionId: null};
+        registry.set(projectId, entry);
+
+        // 键盘输入原样透传到 PTY —— 终端内直接打字，无需独立输入行
+        term.onData((data) => {
+          const sid = registry.get(projectId)?.sessionId;
+          if (sid) void api.terminalWrite(sid, data).catch(() => {});
+        });
+        // 尺寸变化同步到 ConPTY
+        term.onResize(({cols, rows}) => {
+          const sid = registry.get(projectId)?.sessionId;
+          if (sid) void api.terminalResize(sid, cols, rows).catch(() => {});
+        });
+      }
+      const host = hostRef.current;
+      if (host && !entry.term.element?.isConnected) {
+        // 重挂载：把保留的 xterm DOM 搬回当前容器
+        if (entry.term.element) host.appendChild(entry.term.element);
+        else entry.term.open(host);
+      }
+      return entry;
     },
     [projectId]
   );
 
-  // 创建会话（首次展开时）
+  /** 订阅输出事件并写入 xterm */
+  const attachListener = useCallback(() => {
+    unlistenRef.current?.();
+    let unlisten: UnlistenFn | undefined;
+    (async () => {
+      unlisten = await listen<TerminalChunk>("terminal://out", (e) => {
+        const {id, chunk, closed: isClosed} = e.payload;
+        const entry = registry.get(projectId);
+        if (!entry || id !== entry.sessionId) return;
+        entry.term.write(chunk);
+        if (isClosed && id === entry.sessionId) {
+          entry.sessionId = null;
+          sessionIdRef.current = null;
+          setClosed(true);
+        }
+      });
+      unlistenRef.current = unlisten;
+    })();
+  }, [projectId]);
+
+  /** 创建后端会话并绑定到 xterm 实例 */
   const boot = useCallback(async () => {
-    if (sessionByProject.has(projectId)) {
+    const entry = ensureTerm();
+    if (entry.term.element) {
+      entry.fit.fit();
+    }
+    attachListener();
+    if (entry.sessionId) {
       // 已有活会话：直接复用
-      const sid = sessionByProject.get(projectId)!;
-      sessionIdRef.current = sid;
-      setSessionId(sid);
+      sessionIdRef.current = entry.sessionId;
       setBooted(true);
       setClosed(false);
       return;
@@ -81,25 +140,26 @@ export default function TerminalView({projectId}: Props) {
     setBusy(true);
     try {
       const sid = await api.terminalCreate(projectId);
-      sessionByProject.set(projectId, sid);
-      bufferByProject.delete(projectId);
+      entry.sessionId = sid;
       sessionIdRef.current = sid;
-      setSessionId(sid);
-      setText("");
       setClosed(false);
       setBooted(true);
+      entry.term.reset();
+      entry.term.focus();
+      entry.fit.fit();
+      await api.terminalResize(sid, entry.term.cols, entry.term.rows).catch(() => {});
     } catch (e) {
-      appendBuffer(`[终端启动失败] ${String(e)}\r\n`);
+      entry.term.write(`\x1b[31m[终端启动失败] ${String(e)}\x1b[0m\r\n`);
+      setClosed(true);
     } finally {
       setBusy(false);
     }
-  }, [projectId, appendBuffer]);
+  }, [projectId, ensureTerm, attachListener]);
 
   // 重启：杀掉旧会话（含进程树）再新建
   const restart = useCallback(async () => {
-    const old = sessionByProject.get(projectId);
+    const old = registry.get(projectId)?.sessionId;
     if (old) {
-      sessionByProject.delete(projectId);
       try {
         await api.terminalKill(old);
       } catch {
@@ -111,110 +171,77 @@ export default function TerminalView({projectId}: Props) {
 
   // 关闭终端：终止会话进程并回到「启动终端」待机界面
   const closeTerminal = useCallback(async () => {
-    const sid = sessionByProject.get(projectId);
-    sessionByProject.delete(projectId);
-    bufferByProject.delete(projectId);
+    const entry = registry.get(projectId);
+    const sid = entry?.sessionId ?? null;
+    if (entry) {
+      entry.sessionId = null;
+      entry.term.reset();
+    }
     sessionIdRef.current = null;
-    pendingRef.current = "";
     if (sid) {
       try {
-        // 后端经 Job Object 终止整棵进程树（shell 里跑的 mvn 等一并结束）
+        // 后端杀整棵进程树（shell 里跑的 mvn 等一并结束）
         await api.terminalKill(sid);
       } catch {
         /* 会话可能已自行退出 */
       }
     }
-    setText("");
-    setInput("");
     setClosed(false);
     setBusy(false);
     setBooted(false);
   }, [projectId]);
 
-  // 订阅输出事件（组件级过滤本会话）
+  // 首次挂载：恢复既有实例或等待用户手动启动；窗口聚焦时聚焦终端
   useEffect(() => {
-    let unlisten: UnlistenFn | undefined;
-    (async () => {
-      unlisten = await listen<TerminalChunk>("terminal://out", (e) => {
-        const {id, chunk, closed: isClosed} = e.payload;
-        if (id !== sessionIdRef.current) return;
-        appendBuffer(chunk);
-        if (isClosed && id === sessionByProject.get(projectId)) {
-          sessionByProject.delete(projectId);
-          setClosed(true);
-          sessionIdRef.current = null;
-        }
-      });
-    })();
-    return () => unlisten?.();
-  }, [projectId, appendBuffer]);
+    const entry = registry.get(projectId);
+    if (entry?.sessionId) {
+      ensureTerm();
+      attachListener();
+      setClosed(false);
+      setBooted(true);
+      entry.fit.fit();
+    }
+    return () => {
+      unlistenRef.current?.();
+      unlistenRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
 
-  // 自动滚动到底部（用户上滚时暂停跟随）
+  // 容器尺寸变化时自适应行列数
   useEffect(() => {
-    const el = outputRef.current;
-    if (el && stickBottomRef.current) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [text]);
-
-  const handleOutputScroll = useCallback(() => {
-    const el = outputRef.current;
-    if (!el) return;
-    stickBottomRef.current =
-      el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-  }, []);
-
-  const submit = useCallback(async () => {
-    const cmd = input;
-    if (!cmd.trim()) return;
-    const sid = sessionByProject.get(projectId);
-    if (!sid) {
-      await boot();
-      return;
-    }
-    // 本地回显命令行（shell 无 PTY 不回显输入）
-    appendBuffer(`${cmd}\n`);
-    historyRef.current.push(cmd);
-    if (historyRef.current.length > 100) historyRef.current.shift();
-    historyIdxRef.current = -1;
-    setInput("");
-    try {
-      await api.terminalWrite(sid, `${cmd}\r\n`);
-    } catch {
-      appendBuffer("[写入失败，会话可能已退出]\r\n");
-      setClosed(true);
-    }
-  }, [input, projectId, boot, appendBuffer]);
-
-  const handleInputKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLInputElement>) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        void submit();
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        const hist = historyRef.current;
-        if (hist.length === 0) return;
-        historyIdxRef.current =
-          historyIdxRef.current < 0
-            ? hist.length - 1
-            : Math.max(0, historyIdxRef.current - 1);
-        setInput(hist[historyIdxRef.current]!);
-      } else if (e.key === "ArrowDown") {
-        e.preventDefault();
-        const hist = historyRef.current;
-        if (historyIdxRef.current < 0) return;
-        historyIdxRef.current += 1;
-        if (historyIdxRef.current >= hist.length) {
-          historyIdxRef.current = -1;
-          setInput("");
-        } else {
-          setInput(hist[historyIdxRef.current]!);
-        }
+    const host = hostRef.current;
+    if (!host || !booted) return;
+    const ro = new ResizeObserver(() => {
+      const entry = registry.get(projectId);
+      if (!entry) return;
+      try {
+        entry.fit.fit();
+      } catch {
+        /* 容器不可见时跳过 */
       }
-    },
-    [submit]
-  );
+    });
+    ro.observe(host);
+    return () => ro.disconnect();
+  }, [projectId, booted]);
+
+  // 跟随应用明暗主题
+  useEffect(() => {
+    const ob = new MutationObserver(() => {
+      const entry = registry.get(projectId);
+      if (entry) entry.term.options.theme = termTheme(isDark());
+    });
+    ob.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+    return () => ob.disconnect();
+  }, [projectId]);
+
+  // 点击终端区域获得焦点，直接开始输入
+  const focusTerm = useCallback(() => {
+    registry.get(projectId)?.term.focus();
+  }, [projectId]);
 
   if (!booted) {
     return (
@@ -237,11 +264,7 @@ export default function TerminalView({projectId}: Props) {
           <Tooltip title="清屏">
             <button
               className="icon-btn sm"
-              onClick={() => {
-                bufferByProject.delete(projectId);
-                pendingRef.current = "";
-                setText("");
-              }}
+              onClick={() => registry.get(projectId)?.term.clear()}
               aria-label="清屏"
             >
               <Clear size={13} />
@@ -268,29 +291,18 @@ export default function TerminalView({projectId}: Props) {
         </div>
       </div>
       <div
-        className="term-output"
-        ref={outputRef}
-        onScroll={handleOutputScroll}
-        onMouseUp={() => {
-          // 未选中文本时点击输出区聚焦输入行
-          if (!window.getSelection()?.toString()) inputRef.current?.focus();
-        }}
+        className={`term-host ${closed ? "off" : ""}`}
+        ref={hostRef}
+        onMouseUp={focusTerm}
       >
-        <pre className="term-text">{text || "正在连接...\n"}</pre>
-      </div>
-      <div className="term-input-row">
-        <span className="term-prompt">&gt;</span>
-        <input
-          ref={inputRef}
-          className="term-input"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleInputKeyDown}
-          placeholder={closed ? "会话已退出，点击 ↻ 重启" : "输入命令，Enter 执行"}
-          disabled={closed}
-          spellCheck={false}
-          autoComplete="off"
-        />
+        {closed && (
+          <div className="term-exit-overlay">
+            <span>会话已退出</span>
+            <button className="term-boot-btn" onClick={() => void restart()}>
+              重新启动
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

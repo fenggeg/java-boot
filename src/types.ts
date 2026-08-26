@@ -142,6 +142,8 @@ export interface GitStatus {
   branch: string | null;
   ahead: number;
   behind: number;
+  /** 是否处于合并中（存在待解决的冲突） */
+  merging: boolean;
   changes: GitChange[];
 }
 
@@ -171,6 +173,21 @@ export function gitChangeKind(c: GitChange): GitChangeKind {
   if (code === "R" || code === "C") return "renamed";
   if (code === "U") return "conflict";
   return "modified";
+}
+
+/**
+ * 判定改动是否为合并冲突状态（porcelain v1 冲突码对）：
+ * UU 双方修改、AA 双方新增、DD 双方删除、AU/UA/DU/UD 单侧删除或新增
+ */
+export function isConflictChange(c: GitChange): boolean {
+  const x = c.x;
+  const y = c.y;
+  return (
+    x === "U" ||
+    y === "U" ||
+    (x === "A" && y === "A") ||
+    (x === "D" && y === "D")
+  );
 }
 
 // ============================ 文件树 / 编辑器 Git 状态标记 ============================

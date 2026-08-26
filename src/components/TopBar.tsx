@@ -1,12 +1,13 @@
-import {useEffect, useMemo, useState} from "react";
+import {useCallback, useEffect, useMemo, useState} from "react";
 import type {UnlistenFn} from "@tauri-apps/api/event";
 import {getCurrentWindow} from "@tauri-apps/api/window";
-import {App, Button, Popconfirm, Tooltip} from "antd";
+import {App, Badge, Button, Popconfirm, Tooltip} from "antd";
 import {Copy, Download, GitPull, Minus, Moon, Settings, Square, Stop, Sun, Warning, X} from "./Icons";
 import {useStore} from "../store";
 import * as api from "../api";
 import {STATUS_META} from "../types";
 import {useThemeStore} from "../theme";
+import {checkForUpdate} from "../update";
 import UpdateModal from "./UpdateModal";
 
 interface Props {
@@ -24,6 +25,27 @@ export default function TopBar({ onOpenSettings }: Props) {
   const [hoverTheme, setHoverTheme] = useState(false);
   // 检查更新弹窗
   const [updateOpen, setUpdateOpen] = useState(false);
+  // 自动检测到的新版本（小红点）
+  const [hasUpdate, setHasUpdate] = useState(false);
+
+  // ---- 自动检查更新：启动 3 秒后首查，之后每 4 小时复查；失败静默忽略 ----
+  const silentCheck = useCallback(async () => {
+    try {
+      const r = await checkForUpdate();
+      setHasUpdate(r.available);
+    } catch {
+      /* 网络异常静默忽略，不打扰用户 */
+    }
+  }, []);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => void silentCheck(), 3000);
+    const iv = window.setInterval(() => void silentCheck(), 4 * 60 * 60 * 1000);
+    return () => {
+      window.clearTimeout(t);
+      window.clearInterval(iv);
+    };
+  }, [silentCheck]);
 
   // 自定义窗口控制：最小化 / 最大化还原 / 关闭
   const appWindow = useMemo(() => getCurrentWindow(), []);
@@ -153,14 +175,16 @@ export default function TopBar({ onOpenSettings }: Props) {
           </button>
         </Tooltip>
 
-        <Tooltip title="检查更新">
-          <button
-            className="icon-btn"
-            onClick={() => setUpdateOpen(true)}
-            aria-label="检查更新"
-          >
-            <Download size={15} />
-          </button>
+        <Tooltip title={hasUpdate ? "发现新版本，点击查看" : "检查更新"}>
+          <Badge dot={hasUpdate} size="small" offset={[-2, 4]}>
+            <button
+              className="icon-btn"
+              onClick={() => setUpdateOpen(true)}
+              aria-label="检查更新"
+            >
+              <Download size={15} />
+            </button>
+          </Badge>
         </Tooltip>
 
         <Tooltip title="设置">
@@ -195,7 +219,14 @@ export default function TopBar({ onOpenSettings }: Props) {
         </div>
       </div>
 
-      <UpdateModal open={updateOpen} onClose={() => setUpdateOpen(false)} />
+      {/* 关闭弹窗后静默复查一次，同步小红点状态（已更新/新版本上线） */}
+      <UpdateModal
+        open={updateOpen}
+        onClose={() => {
+          setUpdateOpen(false);
+          void silentCheck();
+        }}
+      />
     </div>
   );
 }

@@ -1,39 +1,36 @@
-//! 集成命令终端
+//! 集成命令终端（ConPTY 全功能模式）
 //!
-//! 每个项目维护一个交互式 shell 会话（管道模式）：
-//! - 优先使用 PowerShell 7+（pwsh.exe，PATH 中存在时），回退系统自带的
-//!   Windows PowerShell（powershell.exe）
-//! - [`terminal_create`]：以项目根目录为 cwd 启动 shell，返回会话 id
-//! - [`terminal_write`]：向 shell stdin 写入数据（命令行 + `\r\n`）
-//! - [`terminal_kill`]：终止会话并回收资源
+//! 每个项目维护一个交互式 shell 会话，基于 [portable-pty]（Windows 上走
+//! ConPTY 伪控制台）：
+//! - 完整终端能力：ANSI/VT 序列、彩色输出、光标控制、交互式程序
+//!   （python REPL、ssh、需要密码输入的命令均可正常使用）
+//! - 前端 xterm.js 直连：键盘输入经 `terminal_write` 原样写入 PTY，
+//!   回显/行编辑/历史（PSReadLine）由 shell 自身完成
+//! - [`terminal_resize`]：跟随前端窗口尺寸调整伪终端行列数
 //!
-//! shell 的 stdout/stderr 以块为单位解码后经 `terminal://out` 事件推送到前端：
+//! 输出以块为单位做增量 UTF-8 解码后经 `terminal://out` 事件推送前端：
 //! `{id, chunk, closed}`。进程退出时 `closed=true`。
-//!
-//! 说明：未使用 ConPTY（避免引入平台依赖），交互式程序（如需要密码输入的）
-//! 不受支持；常规 mvn/git/dir 等命令可正常执行。命令回显由前端本地补齐。
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use once_cell::sync::Lazy;
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
-use tokio::io::AsyncReadExt;
-use tokio::process::{Child, ChildStdin};
 use tokio::sync::Mutex;
 
 use crate::db;
 use crate::error::{AppError, AppResult};
-use crate::util::NoWindow;
 
 /// 终端输出事件载荷
 #[derive(Clone, Serialize)]
 pub struct TerminalChunk {
     /// 会话 id
     pub id: String,
-    /// 本次输出的文本块
+    /// 本次输出的文本块（已解码 UTF-8）
     pub chunk: String,
     /// 进程是否已退出
     pub closed: bool,
@@ -41,27 +38,13 @@ pub struct TerminalChunk {
 
 struct TerminalSession {
     project_id: String,
-    stdin: Arc<Mutex<Option<ChildStdin>>>,
-    child: Arc<Mutex<Option<Child>>>,
-    /// Windows Job Object：终止会话时连带杀掉 shell 启动的整个进程树
-    /// （如 shell 里跑着的 mvn / java），避免孤儿进程
-    #[allow(dead_code)]
-    job: Arc<Mutex<Option<crate::process::job::JobObject>>>,
+    master: Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>,
+    writer: Arc<Mutex<Option<Box<dyn std::io::Write + Send>>>>,
+    child: Arc<Mutex<Option<Box<dyn Child + Send + Sync>>>>,
 }
 
 static SESSIONS: Lazy<Mutex<HashMap<String, TerminalSession>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
-
-/// 解码控制台输出：UTF-8 优先，失败按 GBK 宽容解码（中文 Windows 常见 cp936）
-fn decode_console(bytes: &[u8]) -> String {
-    match std::str::from_utf8(bytes) {
-        Ok(s) => s.to_string(),
-        Err(_) => {
-            let (cow, _, _) = encoding_rs::GBK.decode(bytes);
-            cow.into_owned()
-        }
-    }
-}
 
 /// 在 PATH 中查找可执行文件（跟随 junction）
 fn find_in_path(exe: &str) -> Option<String> {
@@ -101,47 +84,44 @@ pub async fn create(app: AppHandle, project_id: &str) -> AppResult<String> {
         )));
     }
 
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| AppError::Other(format!("创建伪终端失败: {}", e)))?;
+
     let (shell_prog, shell_args) = resolve_shell();
-    let mut child = tokio::process::Command::new(&shell_prog)
-        .args(&shell_args)
-        .current_dir(&cwd)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .creation_flags_no_window()
-        .spawn()
+    let mut cmd = CommandBuilder::new(&shell_prog);
+    cmd.cwd(&cwd);
+    cmd.args(shell_args.iter().map(|s| s.as_str()));
+    let child = pair
+        .slave
+        .spawn_command(cmd)
         .map_err(|e| AppError::Other(format!("启动终端失败: {}", e)))?;
 
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| AppError::Other("无法获取终端 stdin".into()))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| AppError::Other("无法获取终端 stdout".into()))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| AppError::Other("无法获取终端 stderr".into()))?;
+    // slave 句柄用完即弃：父进程持有会导致 ConPTY 输出异常
+    drop(pair.slave);
+
+    let reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| AppError::Other(format!("获取终端输出流失败: {}", e)))?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| AppError::Other(format!("获取终端输入流失败: {}", e)))?;
 
     let id = uuid::Uuid::new_v4().to_string();
 
-    // 进程树托管：把 shell 挂进 Job Object，kill 时整棵树一起终止
-    let job = crate::process::job::JobObject::new().ok();
-    #[cfg(windows)]
-    if let Some(job) = job.as_ref() {
-        use windows::Win32::Foundation::HANDLE;
-        if let Some(h) = child.raw_handle() {
-            let _ = job.assign(HANDLE(h));
-        }
-    }
-
     let session = TerminalSession {
         project_id: project_id.to_string(),
-        stdin: Arc::new(Mutex::new(Some(stdin))),
+        master: Arc::new(Mutex::new(Some(pair.master))),
+        writer: Arc::new(Mutex::new(Some(writer))),
         child: Arc::new(Mutex::new(Some(child))),
-        job: Arc::new(Mutex::new(job)),
     };
 
     // 同项目已有旧会话先清理，保持每项目单会话语义
@@ -149,31 +129,34 @@ pub async fn create(app: AppHandle, project_id: &str) -> AppResult<String> {
 
     SESSIONS.lock().await.insert(id.clone(), session);
 
-    // 进程退出标记：两个读流任务共用，EOF 时只发一次 closed 事件
-    let exited = Arc::new(AtomicBool::new(false));
-    spawn_reader(app.clone(), &id, stdout, exited.clone());
-    spawn_reader(app.clone(), &id, stderr, exited);
+    spawn_reader(app, &id, reader);
     Ok(id)
 }
 
-/// 启动读流任务：持续读取子进程输出并以事件推送前端
+/// 启动读线程：持续读取 PTY 输出并推送到前端。
+///
+/// ConPTY 输出恒为 UTF-8；多字节字符可能被拆在两次读取中，
+/// 使用有状态解码器保证不产生乱码。EOF 时发送 closed 事件并清理会话。
 fn spawn_reader(
     app: AppHandle,
     session_id: &str,
-    mut stream: impl tokio::io::AsyncRead + Unpin + Send + 'static,
-    exited: Arc<AtomicBool>,
+    mut reader: Box<dyn Read + Send>,
 ) {
     let sid = session_id.to_string();
-    tauri::async_runtime::spawn(async move {
-        let mut buf = [0u8; 4096];
+    let exited = Arc::new(AtomicBool::new(false));
+    let exited_clone = exited.clone();
+    std::thread::spawn(move || {
+        let mut dec = encoding_rs::UTF_8.new_decoder();
+        let mut buf = [0u8; 8192];
         loop {
-            match stream.read(&mut buf).await {
+            match reader.read(&mut buf) {
                 Ok(0) => break, // EOF
                 Ok(n) => {
                     if exited.load(Ordering::SeqCst) {
                         break;
                     }
-                    let chunk = decode_console(&buf[..n]);
+                    let mut chunk = String::with_capacity(n * 2);
+                    let _ = dec.decode_to_string(&buf[..n], &mut chunk, false);
                     if !chunk.is_empty() {
                         let _ = app.emit(
                             "terminal://out",
@@ -188,12 +171,16 @@ fn spawn_reader(
                 Err(_) => break,
             }
         }
-        if exited.swap(true, Ordering::SeqCst) {
-            return; // 另一个流已触发收尾
+        if exited_clone.swap(true, Ordering::SeqCst) {
+            return; // 已收尾
         }
-        // 收尾：清空 stdin 句柄、从会话表移除、通知前端
-        if let Some(s) = SESSIONS.lock().await.remove(&sid) {
-            *s.stdin.lock().await = None;
+        // 收尾：从会话表移除、关闭句柄、通知前端
+        if let Some(s) = SESSIONS.blocking_lock().remove(&sid) {
+            *s.writer.blocking_lock() = None;
+            *s.master.blocking_lock() = None;
+            if let Some(mut c) = s.child.blocking_lock().take() {
+                let _ = c.wait();
+            }
         }
         let _ = app.emit(
             "terminal://out",
@@ -206,26 +193,44 @@ fn spawn_reader(
     });
 }
 
-/// 向会话写入数据（用户输入的命令行）
+/// 向会话写入原始输入（xterm.js 键盘数据原样透传）
 pub async fn write(session_id: &str, data: &str) -> AppResult<()> {
     let sessions = SESSIONS.lock().await;
     let s = sessions
         .get(session_id)
         .ok_or_else(|| AppError::NotFound("终端会话不存在或已退出".into()))?;
-    let mut guard = s.stdin.lock().await;
+    let mut guard = s.writer.lock().await;
     match guard.as_mut() {
-        Some(stdin) => {
-            use tokio::io::AsyncWriteExt;
-            stdin
+        Some(writer) => {
+            use std::io::Write;
+            writer
                 .write_all(data.as_bytes())
-                .await
                 .map_err(|e| AppError::Other(format!("写入终端失败: {}", e)))?;
-            stdin
+            writer
                 .flush()
-                .await
                 .map_err(|e| AppError::Other(format!("写入终端失败: {}", e)))?;
             Ok(())
         }
+        None => Err(AppError::Other("终端已退出".into())),
+    }
+}
+
+/// 调整伪终端尺寸（前端 xterm.js fit 后调用）
+pub async fn resize(session_id: &str, cols: u16, rows: u16) -> AppResult<()> {
+    let sessions = SESSIONS.lock().await;
+    let s = sessions
+        .get(session_id)
+        .ok_or_else(|| AppError::NotFound("终端会话不存在或已退出".into()))?;
+    let guard = s.master.lock().await;
+    match guard.as_ref() {
+        Some(master) => master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| AppError::Other(format!("调整终端尺寸失败: {}", e))),
         None => Err(AppError::Other("终端已退出".into())),
     }
 }
@@ -237,14 +242,14 @@ pub async fn kill(session_id: &str) -> AppResult<()> {
         .await
         .remove(session_id)
         .ok_or_else(|| AppError::NotFound("终端会话不存在".into()))?;
-    *s.stdin.lock().await = None;
-    if let Some(mut j) = s.job.lock().await.take() {
-        // 先终止整个进程树（含 cmd 的子孙进程），再收尾 cmd 句柄
-        j.kill();
-    }
+    *s.writer.lock().await = None;
+    *s.master.lock().await = None;
     if let Some(mut c) = s.child.lock().await.take() {
-        let _ = c.start_kill();
-        let _ = c.wait().await;
+        // 先按 PID 杀整棵进程树（shell 里跑的 mvn/java 一并结束），再回收句柄
+        if let Some(pid) = c.process_id() {
+            crate::process::manager::kill_process_tree_by_pid(pid);
+        }
+        let _ = c.kill();
     }
     Ok(())
 }
@@ -263,7 +268,7 @@ async fn cleanup_project(project_id: &str) {
     }
 }
 
-/// 应用退出时终止所有终端会话，防止残留 cmd.exe 进程
+/// 应用退出时终止所有终端会话，防止残留 shell 进程
 pub async fn kill_all() {
     let ids: Vec<String> = SESSIONS.lock().await.keys().cloned().collect();
     for id in ids {

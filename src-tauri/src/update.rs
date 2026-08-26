@@ -48,6 +48,12 @@ fn file_name_from_url(url: &str) -> Option<String> {
 struct UpdateProgress {
     /// 百分比 0-100（total 未知时保持 0，由前端按 downloaded 展示）
     percent: u32,
+    /// 已下载字节数
+    downloaded: u64,
+    /// 总字节数（未知为 0）
+    total: u64,
+    /// 实时下载速度（字节/秒，EMA 平滑）
+    speed: u64,
 }
 
 /// 清理更新目录中的历史安装包（上次升级遗留），失败忽略
@@ -64,8 +70,9 @@ fn clean_stale_installers(keep: &std::path::Path) {
 
 /// 流式下载安装包，返回落盘路径
 ///
-/// 进度经 `update://progress` 事件推送 `{ percent: 0-100 }`，
-/// 按整数百分比变化节流，避免事件风暴。
+/// 进度经 `update://progress` 事件推送 `{ percent, downloaded, total, speed }`，
+/// speed 为 EMA 平滑后的实时速度（字节/秒）。
+/// 按整数百分比变化节流；百分比不变但超过 500ms 时也推送（速度持续刷新）。
 #[tauri::command]
 pub async fn download_update(app: AppHandle, url: String) -> AppResult<String> {
     if url.is_empty() {
@@ -106,9 +113,13 @@ pub async fn download_update(app: AppHandle, url: String) -> AppResult<String> {
         .map_err(|e| AppError::Io(std::io::Error::new(e.kind(), format!("创建文件失败: {}", e))))?;
     let mut writer = std::io::BufWriter::with_capacity(1024 * 1024, file);
 
+    // 速度统计窗口：两次上报间的瞬时速度做 EMA 平滑，避免抖动
     let mut stream = res.bytes_stream();
     let mut downloaded: u64 = 0;
     let mut last_percent: i64 = -1;
+    let mut last_tick = std::time::Instant::now();
+    let mut last_bytes: u64 = 0;
+    let mut speed_ema = 0f64;
 
     use futures_util::StreamExt;
     while let Some(chunk) = stream.next().await {
@@ -116,16 +127,49 @@ pub async fn download_update(app: AppHandle, url: String) -> AppResult<String> {
             chunk.map_err(|e| AppError::Process(format!("下载数据流中断: {}", e)))?;
         writer.write_all(&chunk).map_err(AppError::Io)?;
         downloaded += chunk.len() as u64;
-        if total > 0 {
-            let percent = ((downloaded as f64 / total as f64) * 100.0).round() as i64;
-            let percent = percent.clamp(0, 100);
-            if percent != last_percent {
-                last_percent = percent;
-                let _ = app.emit(PROGRESS_EVENT, UpdateProgress { percent: percent as u32 });
+
+        let percent = if total > 0 {
+            (((downloaded as f64 / total as f64) * 100.0).round() as i64).clamp(0, 100)
+        } else {
+            -1
+        };
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(last_tick).as_secs_f64();
+        // 上报时机：百分比变化（原有行为），或 500ms 无变化时刷新速度
+        if percent != last_percent || dt >= 0.5 {
+            if dt > 0f64 {
+                let inst = (downloaded - last_bytes) as f64 / dt;
+                speed_ema = if speed_ema == 0f64 {
+                    inst
+                } else {
+                    speed_ema * 0.7 + inst * 0.3
+                };
+                last_tick = now;
+                last_bytes = downloaded;
             }
+            if percent >= 0 {
+                last_percent = percent;
+            }
+            let _ = app.emit(
+                PROGRESS_EVENT,
+                UpdateProgress {
+                    percent: percent.max(0) as u32,
+                    downloaded,
+                    total,
+                    speed: speed_ema as u64,
+                },
+            );
         }
     }
     writer.flush().map_err(AppError::Io)?;
+
+    // 收尾：确保前端收到 100% 终态（速度归零）
+    if total > 0 {
+        let _ = app.emit(
+            PROGRESS_EVENT,
+            UpdateProgress { percent: 100, downloaded, total, speed: 0 },
+        );
+    }
 
     log::info!("更新包下载完成: {} ({} bytes)", target.display(), downloaded);
     Ok(target.to_string_lossy().to_string())

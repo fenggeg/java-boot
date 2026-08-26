@@ -110,6 +110,8 @@ export const gitPull = (projectId: string) =>
   invoke<PullResult>("git_pull", { projectId });
 export const gitPullAndRestart = (projectId: string) =>
   invoke<PullResult>("git_pull_and_restart", { projectId });
+export const gitPush = (projectId: string) =>
+  invoke<PullResult>("git_push", { projectId });
 export const gitStatus = (projectId: string) =>
   invoke<GitStatus>("git_status", { projectId });
 export const gitDiff = (projectId: string, path: string, staged: boolean) =>
@@ -141,6 +143,44 @@ export const gitDiffHunks = (projectId: string, path: string) =>
     "git_diff_hunks",
     { projectId, path }
   );
+
+// ---- 冲突合并 ----
+
+/** 冲突文件三方版本 */
+export interface ConflictVersions {
+  /** 共同祖先（双方新增时为 null） */
+  base: string | null;
+  /** 本地版本 */
+  ours: string;
+  /** 远程版本 */
+  theirs: string;
+}
+
+/** 冲突文件三方内容（base / ours / theirs） */
+export const gitConflictVersions = (projectId: string, path: string) =>
+  invoke<ConflictVersions>("git_conflict_versions", { projectId, path });
+
+/** 快捷采用某侧解决冲突：ours / theirs / both */
+export const gitResolveSide = (
+  projectId: string,
+  path: string,
+  side: "ours" | "theirs" | "both"
+) => invoke<void>("git_resolve_side", { projectId, path, side });
+
+/** 标记冲突已解决：写回编辑后的内容并暂存 */
+export const gitMarkResolved = (
+  projectId: string,
+  path: string,
+  content: string
+) => invoke<void>("git_mark_resolved", { projectId, path, content });
+
+/** 全部冲突解决后完成合并提交（message 为空用默认合并信息） */
+export const gitCompleteMerge = (projectId: string, message?: string | null) =>
+  invoke<void>("git_complete_merge", { projectId, message: message ?? null });
+
+/** 中止本次合并，恢复合并前状态 */
+export const gitAbortMerge = (projectId: string) =>
+  invoke<void>("git_abort_merge", { projectId });
 
 // ============================ Files（项目文件浏览/编辑） ============================
 
@@ -180,6 +220,11 @@ export const terminalCreate = (projectId: string) =>
   invoke<string>("terminal_create", { projectId });
 export const terminalWrite = (sessionId: string, data: string) =>
   invoke<void>("terminal_write", { sessionId, data });
+export const terminalResize = (
+  sessionId: string,
+  cols: number,
+  rows: number
+) => invoke<void>("terminal_resize", { sessionId, cols, rows });
 export const terminalKill = (sessionId: string) =>
   invoke<void>("terminal_kill", { sessionId });
 

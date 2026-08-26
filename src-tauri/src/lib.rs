@@ -166,6 +166,7 @@ pub fn run() {
             commands::git_available,
             commands::git_pull,
             commands::git_pull_and_restart,
+            commands::git_push,
             commands::git_status,
             commands::git_diff,
             commands::git_stage,
@@ -177,6 +178,11 @@ pub fn run() {
             commands::git_write_file,
             commands::git_file_head,
             commands::git_diff_hunks,
+            commands::git_conflict_versions,
+            commands::git_resolve_side,
+            commands::git_mark_resolved,
+            commands::git_complete_merge,
+            commands::git_abort_merge,
             // files
             commands::list_files,
             commands::read_project_file,
@@ -189,6 +195,7 @@ pub fn run() {
             // terminal
             commands::terminal_create,
             commands::terminal_write,
+            commands::terminal_resize,
             commands::terminal_kill,
             // config
             commands::get_config,
