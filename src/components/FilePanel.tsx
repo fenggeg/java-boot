@@ -411,6 +411,7 @@ function TreeRow({
   onContextMenu,
   dnd,
   statusFor,
+  statsFor,
 }: {
   node: FileTreeNode;
   depth: number;
@@ -421,6 +422,8 @@ function TreeRow({
   dnd: DndHandlers;
   /** 节点 → git 状态查找（文件返回 kind，目录返回聚合 agg） */
   statusFor: (node: FileTreeNode) => { kind?: FileGitStatus; agg?: DirGitAgg };
+  /** 路径 → ±行数统计（git diff 聚合，异步到达） */
+  statsFor?: (path: string) => {a: number; d: number} | undefined;
 }) {
   const gs = statusFor(node);
   const [dropHover, setDropHover] = useState(false);
@@ -507,6 +510,7 @@ function TreeRow({
                 onContextMenu={onContextMenu}
                 dnd={dnd}
                 statusFor={statusFor}
+                statsFor={statsFor}
               />
             ))}
           </div>
@@ -547,12 +551,27 @@ function TreeRow({
       <span className={`file-tree-name ${gs.kind ? `gs-${gs.kind}` : ""}`}>
         {node.name}
       </span>
-      {gs.kind && (
-        <span
-          className={`file-tree-dot dot-${gs.kind}`}
-          title={statusLabel(gs.kind)}
-        />
-      )}
+      {gs.kind &&
+        (() => {
+          const s = statsFor?.(node.path);
+          if (s && (s.a > 0 || s.d > 0)) {
+            return (
+              <span
+                className="tree-lines"
+                title={`${statusLabel(gs.kind)}：+${s.a} / -${s.d} 行`}
+              >
+                {s.a > 0 && <b className="la">+{s.a}</b>}
+                {s.d > 0 && <b className="ld">-{s.d}</b>}
+              </span>
+            );
+          }
+          return (
+            <span
+              className={`file-tree-dot dot-${gs.kind}`}
+              title={statusLabel(gs.kind)}
+            />
+          );
+        })()}
     </div>
   );
 }
@@ -591,6 +610,20 @@ export default function FilePanel({
   // 其他文本文件无需切换，直接在单页内编辑（只读文件静态展示）
   const [viewMode, setViewMode] = useState<"view" | "edit">("view");
 
+  // ---- 行号栏 ----
+  /** 等宽字符实测宽度（画布测量），供行号宽与搜索高亮定位使用 */
+  const [charW, setCharW] = useState(7.8);
+  const lnGutterRef = useRef<HTMLDivElement>(null);
+  const editorInputRef = useRef<HTMLTextAreaElement>(null);
+  const readonlyPreRef = useRef<HTMLPreElement>(null);
+
+  // ---- 编辑器内搜索 ----
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [matchIdx, setMatchIdx] = useState(0);
+  const matchLayerRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
   // 右键菜单 / 剪贴板 / 重命名弹窗 / 拖拽
   const [ctxMenu, setCtxMenu] = useState<{
     x: number;
@@ -610,6 +643,11 @@ export default function FilePanel({
   );
   const [dirAgg, setDirAgg] = useState<Map<string, DirGitAgg>>(new Map());
   const gitTimerRef = useRef<number | undefined>(undefined);
+  // 变更文件 ± 行数统计（git diff hunks 聚合）：路径 → {新增, 删除}
+  const [lineStats, setLineStats] = useState<
+    Map<string, {a: number; d: number}>
+  >(new Map());
+  const lineStatSeqRef = useRef(0);
 
   // 行级 diff 标记（工作区内容 vs HEAD）：与激活文件行号对齐
   const [lineKinds, setLineKinds] = useState<LineKind[] | null>(null);
@@ -722,6 +760,47 @@ export default function FilePanel({
       300
     );
   }, [refreshGitStatus]);
+
+  // 变更文件 ± 行数聚合：对每个已跟踪改动文件取 unified=0 hunks 求和。
+  // 并发分批拉取，序号失效防止状态刷新竞态；未跟踪文件无 diff（整文件新增）
+  // 不参与统计。上限 300 个文件防请求风暴。
+  useEffect(() => {
+    if (!project.git_available || statusMap.size === 0) {
+      setLineStats((prev) => (prev.size ? new Map() : prev));
+      return;
+    }
+    const seq = ++lineStatSeqRef.current;
+    const paths = [...statusMap.entries()]
+      .filter(([, k]) => k !== "untracked")
+      .map(([p]) => p)
+      .slice(0, 300);
+    (async () => {
+      const out = new Map<string, {a: number; d: number}>();
+      const CH = 8;
+      for (let i = 0; i < paths.length; i += CH) {
+        const part = await Promise.all(
+          paths.slice(i, i + CH).map(async (p) => {
+            try {
+              const hs = await api.gitDiffHunks(project.id, p);
+              let a = 0;
+              let d = 0;
+              for (const h of hs) {
+                a += h.new_lines;
+                d += h.del_lines;
+              }
+              return [p, {a, d}] as const;
+            } catch {
+              return null;
+            }
+          })
+        );
+        for (const it of part) if (it) out.set(it[0], it[1]);
+        if (seq !== lineStatSeqRef.current) return; // 已有更新的刷新
+      }
+      if (seq !== lineStatSeqRef.current) return;
+      setLineStats(out);
+    })();
+  }, [statusMap, project.id, project.git_available]);
 
   /**
    * 外部修改同步：把无未保存编辑的文本标签页从磁盘静默重读。
@@ -1070,10 +1149,19 @@ export default function FilePanel({
     diffRev,
   ]);
 
-  // 滚动同步：diff 条随代码区滚动平移
+  // 滚动同步：diff 条 / 行号栏随代码区垂直滚动平移
   const syncGutter = useCallback((top: number) => {
     if (gutterInnerRef.current) {
       gutterInnerRef.current.style.transform = `translateY(${-top}px)`;
+    }
+    if (lnGutterRef.current) {
+      lnGutterRef.current.style.transform = `translateY(${-top}px)`;
+    }
+    // 搜索命中层需双向平移，由 syncGutter 处理（含水平方向）
+    if (matchLayerRef.current) {
+      const sc = editorInputRef.current ?? readonlyPreRef.current;
+      const sl = sc ? sc.scrollLeft : 0;
+      matchLayerRef.current.style.transform = `translate(${-sl}px, ${-top}px)`;
     }
   }, []);
 
@@ -1081,8 +1169,8 @@ export default function FilePanel({
     syncGutter(0);
   }, [activePath, lineKinds, syncGutter]);
 
-  /** 左缘 diff 条（绿=新增行，橙=修改行） */
-  const diffGutter = useMemo(() => {
+  /** 左缘 diff 条（绿=新增行，橙=修改行）；left 为行号栏宽度偏移 */
+  const renderDiffGutter = (left: number) => {
     if (!lineKinds || !lineKinds.some((k) => k !== 0)) return null;
     const bars: React.ReactNode[] = [];
     for (let idx = 0; idx < lineKinds.length; idx++) {
@@ -1097,13 +1185,191 @@ export default function FilePanel({
       );
     }
     return (
-      <div className="file-diff-gutter" aria-hidden>
+      <div className="file-diff-gutter" aria-hidden style={{ left }}>
         <div className="file-diff-gutter-inner" ref={gutterInnerRef}>
           {bars}
         </div>
       </div>
     );
-  }, [lineKinds]);
+  };
+
+  // ================================================================
+  // 行号栏 / 编辑器内搜索
+  // ================================================================
+
+  /** 活动文本文件总行数 */
+  const activeLines = useMemo(
+    () =>
+      activeTab && activeTab.fileType === "text"
+        ? activeTab.content.split("\n").length
+        : 0,
+    [activeTab?.content, activeTab?.fileType]
+  );
+
+  const isMdPreview =
+    !!activeTab &&
+    activeTab.fileType === "text" &&
+    isMarkdown(activeTab.path) &&
+    (activeTab.meta.readonly || viewMode === "view");
+
+  /** 行号栏显示条件：文本文件、≤1 万行、非 Markdown 预览 */
+  const showLineNumbers =
+    !!activeTab &&
+    activeTab.fileType === "text" &&
+    activeLines > 0 &&
+    activeLines <= 10000 &&
+    !isMdPreview;
+
+  /** 行号栏宽度（右对齐数字 + 右侧间距） */
+  const lnWidth = showLineNumbers
+    ? Math.max(2, String(activeLines).length) * charW + 18
+    : 0;
+
+  // 等宽字符宽实测：行号宽与搜索高亮 x 定位都依赖它
+  useEffect(() => {
+    const el = editorInputRef.current ?? readonlyPreRef.current;
+    if (!el) return;
+    try {
+      const cs = getComputedStyle(el);
+      const ctx = document.createElement("canvas").getContext("2d");
+      if (!ctx) return;
+      ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+      const w = ctx.measureText("0").width;
+      if (w > 0) setCharW(w);
+    } catch {
+      /* 测量失败沿用默认值 */
+    }
+  }, [activePath, viewMode, activeTab?.meta.readonly]);
+
+  interface SearchHit {
+    line: number;
+    visCol: number;
+    len: number;
+  }
+
+  const searchHits = useMemo<SearchHit[]>(() => {
+    const src = searchOpen ? activeTab?.content : undefined;
+    if (!src || !searchQuery || src.length > 400_000) return [];
+    const hay = src.toLowerCase();
+    const needle = searchQuery.toLowerCase();
+    const lineStarts: number[] = [0];
+    for (let i = 0; i < src.length; i++) {
+      if (src[i] === "\n") lineStarts.push(i + 1);
+    }
+    const res: SearchHit[] = [];
+    let from = 0;
+    while (res.length < 2000) {
+      const at = hay.indexOf(needle, from);
+      if (at < 0) break;
+      let lo = 0;
+      let hi = lineStarts.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (lineStarts[mid]! <= at) lo = mid;
+        else hi = mid - 1;
+      }
+      // 可视列号：制表符按 tab-size=2 展开，保证高亮框对齐等宽渲染
+      const segStart = lineStarts[lo]!;
+      let v = 0;
+      for (let k = segStart; k < at; k++) {
+        v += src.charCodeAt(k) === 9 ? 2 - (v % 2) : 1;
+      }
+      res.push({line: lo, visCol: v, len: needle.length});
+      from = at + Math.max(needle.length, 1);
+    }
+    return res;
+  }, [searchOpen, searchQuery, activeTab?.content]);
+
+  // 命中列表变化时收敛当前索引
+  useEffect(() => {
+    setMatchIdx((i) => (searchHits.length ? i % searchHits.length : 0));
+  }, [searchHits.length]);
+
+  /** 滚动到指定命中（垂直取最近可视位置，水平按需露出） */
+  const gotoHit = useCallback(
+    (idx: number) => {
+      const m = searchHits[idx];
+      const sc = editorInputRef.current ?? readonlyPreRef.current;
+      if (!m || !sc) return;
+      const top = GUTTER_PAD + m.line * LINE_H;
+      const left = lnWidth + m.visCol * charW;
+      const ch = sc.clientHeight;
+      const cw = sc.clientWidth;
+      let st = sc.scrollTop;
+      if (top < st + GUTTER_PAD) st = Math.max(0, top - GUTTER_PAD);
+      else if (top + LINE_H > st + ch - GUTTER_PAD)
+        st = top - ch + LINE_H + GUTTER_PAD;
+      sc.scrollTop = st;
+      let sl = sc.scrollLeft;
+      if (left < sl + GUTTER_PAD) sl = Math.max(0, left - GUTTER_PAD);
+      else if (left + m.len * charW > sl + cw - GUTTER_PAD)
+        sl = left - cw + m.len * charW + GUTTER_PAD;
+      sc.scrollLeft = sl;
+    },
+    [searchHits, lnWidth, charW]
+  );
+
+  useEffect(() => {
+    gotoHit(matchIdx);
+  }, [matchIdx, gotoHit]);
+
+  const stepHit = useCallback(
+    (dir: number) => {
+      if (!searchHits.length) return;
+      setMatchIdx(
+        (i) => (i + dir + searchHits.length) % searchHits.length
+      );
+    },
+    [searchHits.length]
+  );
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearchQuery("");
+    setMatchIdx(0);
+    editorInputRef.current?.focus();
+  }, []);
+
+  // Ctrl+F 打开编辑器搜索（全局默认查找已在 main.tsx 拦截）；Esc 关闭
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "f") {
+        if (
+          activeTab &&
+          activeTab.fileType === "text" &&
+          !isMdPreview
+        ) {
+          e.preventDefault();
+          setSearchOpen(true);
+          requestAnimationFrame(() => searchInputRef.current?.select());
+        }
+      } else if (e.key === "Escape" && searchOpen) {
+        closeSearch();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [activeTab, isMdPreview, searchOpen, closeSearch]);
+
+  /** 搜索命中高亮层（绝对定位半透明色块；padLeft = 行号栏宽 + 内容左 padding） */
+  const renderHitLayer = (padLeft: number) => {
+    if (!searchOpen || searchHits.length === 0) return null;
+    return (
+      <div className="search-hit-layer" ref={matchLayerRef} aria-hidden>
+        {searchHits.map((m, i) => (
+          <span
+            key={i}
+            className={`search-hit${i === matchIdx ? " cur" : ""}`}
+            style={{
+              top: GUTTER_PAD + m.line * LINE_H + 3,
+              left: padLeft + m.visCol * charW,
+              width: Math.max(4, m.len * charW),
+            }}
+          />
+        ))}
+      </div>
+    );
+  };
 
   /** 文件树节点 → git 状态查找 */
   const statusFor = useCallback(
@@ -1112,6 +1378,11 @@ export default function FilePanel({
         ? { agg: dirAgg.get(node.path) }
         : { kind: statusMap.get(node.path) },
     [dirAgg, statusMap]
+  );
+
+  const statsFor = useCallback(
+    (path: string) => lineStats.get(path),
+    [lineStats]
   );
 
   // ================================================================
@@ -1360,6 +1631,7 @@ export default function FilePanel({
               }}
               dnd={dnd}
               statusFor={statusFor}
+              statsFor={statsFor}
             />
           ))}
         </div>
@@ -1470,6 +1742,20 @@ export default function FilePanel({
                     {statusLabel(activeGitKind)}
                   </span>
                 )}
+                {(() => {
+                  const s = activeTab
+                    ? lineStats.get(activeTab.path)
+                    : undefined;
+                  return s && (s.a > 0 || s.d > 0) ? (
+                    <span
+                      className="tree-lines editor-lines"
+                      title={`新增 ${s.a} 行 / 删除 ${s.d} 行`}
+                    >
+                      {s.a > 0 && <b className="la">+{s.a}</b>}
+                      {s.d > 0 && <b className="ld">-{s.d}</b>}
+                    </span>
+                  ) : null;
+                })()}
                 <div
                   style={{
                     marginLeft: "auto",
@@ -1536,9 +1822,20 @@ export default function FilePanel({
                 </div>
               ) : activeTab.meta.readonly ? (
                 <div className="file-code-wrap">
-                  {diffGutter}
+                  {renderDiffGutter(lnWidth)}
+                  {showLineNumbers && (
+                    <div className="file-ln-gutter" aria-hidden style={{width: lnWidth}}>
+                      <div className="file-ln-inner" ref={lnGutterRef} style={{paddingTop: GUTTER_PAD}}>
+                        {Array.from({length: activeLines}, (_, i) => (
+                          <div key={i} className="file-ln">{i + 1}</div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   <pre
+                    ref={readonlyPreRef}
                     className="file-code-view"
+                    style={{paddingLeft: 16 + lnWidth}}
                     onScroll={(e) => syncGutter(e.currentTarget.scrollTop)}
                     dangerouslySetInnerHTML={{
                       __html: highlightCode(
@@ -1547,16 +1844,27 @@ export default function FilePanel({
                       ),
                     }}
                   />
+                  {renderHitLayer(16 + lnWidth)}
                 </div>
               ) : (
                 <div className="file-editor-overlay">
                   {/* 左缘 git diff 标记条 */}
-                  {diffGutter}
+                  {renderDiffGutter(lnWidth)}
+                  {showLineNumbers && (
+                    <div className="file-ln-gutter" aria-hidden style={{width: lnWidth}}>
+                      <div className="file-ln-inner" ref={lnGutterRef} style={{paddingTop: GUTTER_PAD}}>
+                        {Array.from({length: activeLines}, (_, i) => (
+                          <div key={i} className="file-ln">{i + 1}</div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   {/* 高亮底层：随内容实时渲染语法颜色 */}
                   <pre
                     ref={editorUnderlayRef}
                     className="file-code-view file-code-underlay"
                     aria-hidden
+                    style={{paddingLeft: 12 + lnWidth}}
                     dangerouslySetInnerHTML={{
                       __html: highlightCode(
                         // 末尾换行时补一个空格，保证底层行数与输入层一致
@@ -1567,10 +1875,13 @@ export default function FilePanel({
                       ),
                     }}
                   />
+                  {renderHitLayer(12 + lnWidth)}
                   {/* 输入层：文字透明，仅显示光标与选区 */}
                   <textarea
+                    ref={editorInputRef}
                     className="file-editor-textarea file-editor-input"
                     value={activeTab.content}
+                    style={{paddingLeft: 12 + lnWidth}}
                     onChange={(e) => updateActiveContent(e.target.value)}
                     onScroll={(e) => {
                       const el = e.currentTarget;
@@ -1601,6 +1912,61 @@ export default function FilePanel({
             <div className="file-editor-empty">
               <File size={40} />
               <div>从左侧文件树选择文件进行预览 / 编辑</div>
+            </div>
+          )}
+          {searchOpen && activeTab?.fileType === "text" && !isMdPreview && (
+            <div className="editor-search">
+              <input
+                ref={searchInputRef}
+                className="editor-search-input"
+                value={searchQuery}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setMatchIdx(0);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    stepHit(e.shiftKey ? -1 : 1);
+                  } else if (e.key === "Escape") {
+                    e.stopPropagation();
+                    closeSearch();
+                  }
+                }}
+                placeholder="搜索内容…"
+                spellCheck={false}
+                autoComplete="off"
+              />
+              <span className={`editor-search-count ${searchQuery && !searchHits.length ? "none" : ""}`}>
+                {searchQuery
+                  ? searchHits.length
+                    ? `${matchIdx + 1}/${searchHits.length}`
+                    : "无匹配"
+                  : ""}
+              </span>
+              <button
+                className="icon-btn sm"
+                onClick={() => stepHit(-1)}
+                disabled={!searchHits.length}
+                aria-label="上一个匹配"
+              >
+                <CaretDown size={12} style={{transform: "rotate(180deg)"}} />
+              </button>
+              <button
+                className="icon-btn sm"
+                onClick={() => stepHit(1)}
+                disabled={!searchHits.length}
+                aria-label="下一个匹配"
+              >
+                <CaretDown size={12} />
+              </button>
+              <button
+                className="icon-btn sm"
+                onClick={closeSearch}
+                aria-label="关闭搜索"
+              >
+                <X size={12} />
+              </button>
             </div>
           )}
           {saving && (

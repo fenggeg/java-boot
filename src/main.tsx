@@ -9,6 +9,18 @@ import "./styles.css";
 // 禁用 webview 内容区右键菜单（打包后不暴露浏览器上下文菜单）
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
+// 关闭浏览器默认的全局查找（Ctrl+F / Cmd+F）：由文件编辑器内置搜索替代。
+// 仅 preventDefault 不阻断传播——FilePanel 的监听器仍可收到并打开编辑器搜索。
+window.addEventListener(
+  "keydown",
+  (e) => {
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "f") {
+      e.preventDefault();
+    }
+  },
+  true
+);
+
 const lightTokens = {
   colorPrimary: "#0071e3",
   colorBgContainer: "#ffffff",

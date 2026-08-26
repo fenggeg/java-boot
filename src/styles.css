@@ -3239,6 +3239,134 @@ body {
   cursor: default;
 }
 
+.file-editor {
+  position: relative;
+}
+
+/* ── 行号栏（编辑器 / 只读视图共用） ── */
+.file-ln-gutter {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  overflow: hidden;
+  z-index: 1;
+  pointer-events: none;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+
+.file-ln-inner {
+  will-change: transform;
+}
+
+.file-ln {
+  height: 22px;
+  line-height: 22px;
+  text-align: right;
+  padding-right: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-4);
+  user-select: none;
+}
+
+/* ── 编辑器内搜索 ── */
+.editor-search {
+  position: absolute;
+  top: 40px;
+  right: 18px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 7px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border-2);
+  background: var(--surface);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
+}
+
+.editor-search-input {
+  width: 190px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.editor-search-input::placeholder {
+  color: var(--text-4);
+}
+
+.editor-search-count {
+  min-width: 46px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.editor-search-count.none {
+  color: #ff9500;
+}
+
+.search-hit-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.search-hit {
+  position: absolute;
+  height: 17px;
+  border-radius: 2px;
+  background: rgba(255, 214, 10, 0.28);
+  border: 1px solid rgba(255, 149, 0, 0.35);
+}
+
+.search-hit.cur {
+  background: rgba(255, 160, 0, 0.45);
+  border-color: rgba(255, 120, 0, 0.8);
+  box-shadow: 0 0 0 1px rgba(255, 149, 0, 0.35);
+}
+
+/* 输入层抬升到命中层之上，保证光标/选区可见 */
+.file-editor-overlay .file-editor-input {
+  z-index: 3;
+}
+
+/* ── 变更文件 ± 行数标识 ── */
+.tree-lines {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1;
+}
+
+.tree-lines b {
+  font-weight: 600;
+}
+
+.tree-lines .la {
+  color: #34c759;
+}
+
+.tree-lines .ld {
+  color: #ff3b30;
+}
+
+.tree-lines.editor-lines {
+  margin-left: 0;
+}
+
 .term-boot-hint {
   font-size: 11px;
   color: var(--text-4);
