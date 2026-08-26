@@ -78,8 +78,6 @@ export default function LogViewer({ serviceId }: Props) {
   } | null>(null);
   const { message } = App.useApp();
   const containerRef = useRef<HTMLDivElement>(null);
-  // 切换服务时标记需要跳到底部（内容渲染后再执行真正滚动）
-  const pendingJumpBottom = useRef(false);
 
   // 日志右键菜单处理
   const handleLogContextMenu = useCallback((e: React.MouseEvent) => {
@@ -225,32 +223,40 @@ export default function LogViewer({ serviceId }: Props) {
     return () => ro.disconnect();
   }, []);
 
-  // 自动滚动到底部 / 切换服务后跳转到底部
+  // 自动滚动到底部（新日志到达时）
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    if (pendingJumpBottom.current) {
-      requestAnimationFrame(() => {
-        if (containerRef.current) {
-          containerRef.current.scrollTop = containerRef.current.scrollHeight;
-          setScrollTop(containerRef.current.scrollTop);
-        }
-        pendingJumpBottom.current = false;
-      });
-    } else if (autoScroll) {
+    if (autoScroll) {
       el.scrollTop = el.scrollHeight;
       setScrollTop(el.scrollTop);
     }
-  }, [filtered.length, autoScroll, serviceId]);
+  }, [filtered.length, autoScroll]);
 
-  // 切换服务时重置状态并标记需要跳到底部
+  // 切换服务时重置状态，并主动跳到最底部
+  // （不能依赖上面的滚动 effect：若新旧服务行数相同且 autoScroll 已为 true，
+  //   依赖不变不会触发，会停留在上一个服务的滚动位置）
   useEffect(() => {
     setAutoScroll(true);
     setLevel("all");
     setSearch("");
     setUseRegex(false);
     setMatchIdx(0);
-    pendingJumpBottom.current = true;
+    // 双 rAF：等待新服务的虚拟列表按新数据完成布局后再滚动到底
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        const el = containerRef.current;
+        if (el) {
+          el.scrollTop = el.scrollHeight;
+          setScrollTop(el.scrollTop);
+        }
+      });
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
   }, [serviceId]);
 
   if (!serviceId) {
