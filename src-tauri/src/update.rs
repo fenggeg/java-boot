@@ -20,6 +20,10 @@ use crate::util::NoWindow;
 /// 下载进度事件名
 const PROGRESS_EVENT: &str = "update://progress";
 
+/// 进度上报与速度采样的固定间隔：
+/// 固定时间窗保证 speed = 窗口内实际字节数 ÷ 实际耗时，与真实吞吐一致
+const SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
+
 /// 更新包存放目录：%LOCALAPPDATA%\javaboot-launcher\updates
 fn update_dir() -> PathBuf {
     let base = dirs::data_local_dir()
@@ -71,8 +75,8 @@ fn clean_stale_installers(keep: &std::path::Path) {
 /// 流式下载安装包，返回落盘路径
 ///
 /// 进度经 `update://progress` 事件推送 `{ percent, downloaded, total, speed }`，
-/// speed 为 EMA 平滑后的实时速度（字节/秒）。
-/// 按整数百分比变化节流；百分比不变但超过 500ms 时也推送（速度持续刷新）。
+/// speed 为固定 250ms 窗口实测（Δ字节 ÷ Δ耗时）并轻度 EMA 平滑的速度（字节/秒）。
+/// 按固定间隔节流上报，避免高频事件刷爆前端；空闲超时也会采样，停滞时速度能回落到 0。
 #[tauri::command]
 pub async fn download_update(app: AppHandle, url: String) -> AppResult<String> {
     if url.is_empty() {
@@ -113,53 +117,57 @@ pub async fn download_update(app: AppHandle, url: String) -> AppResult<String> {
         .map_err(|e| AppError::Io(std::io::Error::new(e.kind(), format!("创建文件失败: {}", e))))?;
     let mut writer = std::io::BufWriter::with_capacity(1024 * 1024, file);
 
-    // 速度统计窗口：两次上报间的瞬时速度做 EMA 平滑，避免抖动
+    // 速度统计：固定 250ms 时间窗采样，瞬时速度 = 窗口内新增字节 ÷ 实际耗时，
+    // 再做轻度 EMA 平滑。窗口时长恒定，数值与真实网络吞吐一致，
+    // 不会像按百分比事件驱动的可变窗口那样被突发/停顿扭曲。
     let mut stream = res.bytes_stream();
     let mut downloaded: u64 = 0;
-    let mut last_percent: i64 = -1;
     let mut last_tick = std::time::Instant::now();
     let mut last_bytes: u64 = 0;
     let mut speed_ema = 0f64;
 
     use futures_util::StreamExt;
-    while let Some(chunk) = stream.next().await {
-        let chunk =
-            chunk.map_err(|e| AppError::Process(format!("下载数据流中断: {}", e)))?;
-        writer.write_all(&chunk).map_err(AppError::Io)?;
-        downloaded += chunk.len() as u64;
+    loop {
+        // 空闲超时也走一轮采样：停滞时速度能及时回落到 0，而不是停留在旧值
+        match tokio::time::timeout(SAMPLE_INTERVAL, stream.next()).await {
+            Ok(Some(chunk)) => {
+                let chunk = chunk
+                    .map_err(|e| AppError::Process(format!("下载数据流中断: {}", e)))?;
+                writer.write_all(&chunk).map_err(AppError::Io)?;
+                downloaded += chunk.len() as u64;
+            }
+            Ok(None) => break,
+            Err(_) => {}
+        }
+
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(last_tick).as_secs_f64();
+        if dt < SAMPLE_INTERVAL.as_secs_f64() {
+            continue;
+        }
+        let inst = (downloaded - last_bytes) as f64 / dt;
+        speed_ema = if speed_ema == 0f64 {
+            inst
+        } else {
+            speed_ema * 0.6 + inst * 0.4
+        };
+        last_tick = now;
+        last_bytes = downloaded;
 
         let percent = if total > 0 {
             (((downloaded as f64 / total as f64) * 100.0).round() as i64).clamp(0, 100)
         } else {
             -1
         };
-        let now = std::time::Instant::now();
-        let dt = now.duration_since(last_tick).as_secs_f64();
-        // 上报时机：百分比变化（原有行为），或 500ms 无变化时刷新速度
-        if percent != last_percent || dt >= 0.5 {
-            if dt > 0f64 {
-                let inst = (downloaded - last_bytes) as f64 / dt;
-                speed_ema = if speed_ema == 0f64 {
-                    inst
-                } else {
-                    speed_ema * 0.7 + inst * 0.3
-                };
-                last_tick = now;
-                last_bytes = downloaded;
-            }
-            if percent >= 0 {
-                last_percent = percent;
-            }
-            let _ = app.emit(
-                PROGRESS_EVENT,
-                UpdateProgress {
-                    percent: percent.max(0) as u32,
-                    downloaded,
-                    total,
-                    speed: speed_ema as u64,
-                },
-            );
-        }
+        let _ = app.emit(
+            PROGRESS_EVENT,
+            UpdateProgress {
+                percent: percent.max(0) as u32,
+                downloaded,
+                total,
+                speed: speed_ema as u64,
+            },
+        );
     }
     writer.flush().map_err(AppError::Io)?;
 
