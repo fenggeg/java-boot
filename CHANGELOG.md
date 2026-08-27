@@ -7,6 +7,15 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-27
+
+### 新增
+
+- **项目级 / 服务级环境变量注入**：支持在项目配置与服务配置中以 `KEY=VALUE` 形式自定义环境变量，启动服务时自动注入到子进程（mvn 编译 + java 运行）
+- **环境变量优先级合并**：服务级同名变量覆盖项目级，项目级覆盖系统继承；允许覆盖 Launcher 内置的 JAVA_HOME / MAVEN_HOME / PATH / MAVEN_OPTS
+- **环境变量编辑器 UI**：项目配置弹窗与服务配置弹窗新增 key-value 行内编辑器，支持增删行，复用 override_properties 的交互模式
+- **数据库 v6 迁移**：projects 与 services 表新增 `env_vars TEXT` 列，存储格式与 `override_properties` 一致（JSON 数组 `[{key,value}]`）
+
 ## [0.7.0] - 2026-08-27
 
 ### 新增
