@@ -535,12 +535,24 @@ fn safe_join(root: &Path, rel: &str) -> AppResult<PathBuf> {
         return Err(AppError::Git("不允许路径穿越 (..)".to_string()));
     }
     let full = root.join(p);
-    if let (Some(r), Some(f)) = (
-        crate::util::canonicalize_clean(root),
-        crate::util::canonicalize_clean(&full),
-    ) {
-        if !f.starts_with(&r) {
-            return Err(AppError::Git("路径越界".to_string()));
+    // 安全校验：canonicalize root 后，对 full 的 parent canonicalize 再拼文件名，
+    // 解决目标文件尚不存在时 canonicalize(full) 返回 None 导致边界检查被跳过的问题。
+    let canonical_root = crate::util::canonicalize_clean(root);
+    if let Some(cr) = &canonical_root {
+        let parent = full.parent().unwrap_or(Path::new(""));
+        let file_name = full.file_name();
+        if let (Some(cp), Some(fname)) = (crate::util::canonicalize_clean(parent), file_name) {
+            let resolved = cp.join(fname);
+            if !resolved.starts_with(cr) {
+                return Err(AppError::Git("路径越界".to_string()));
+            }
+            return Ok(resolved);
+        }
+        // parent 也不存在时，退化到全路径 canonicalize
+        if let Some(cf) = crate::util::canonicalize_clean(&full) {
+            if !cf.starts_with(cr) {
+                return Err(AppError::Git("路径越界".to_string()));
+            }
         }
     }
     Ok(full)
@@ -664,9 +676,18 @@ pub fn status(project_id: &str) -> AppResult<GitStatus> {
     })
 }
 
-/// 是否处于合并中：`git rev-parse --git-path MERGE_HEAD` 存在
-/// （跟随 worktree/submodule 的真实 git 目录）
+/// 是否处于合并中：检测 MERGE_HEAD 是否存在。
+/// 使用 `--absolute-git-dir` 获取真实 git 目录（正确处理 worktree/submodule），
+/// 然后在其下查找 MERGE_HEAD。回退到 `--git-path` + 相对路径拼接。
 fn merge_in_progress(root: &Path) -> bool {
+    // 优先使用 --absolute-git-dir 获取真实 git 目录（worktree 感知）
+    if let Ok(out) = run_git(root, &["rev-parse", "--absolute-git-dir"]) {
+        let git_dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !git_dir.is_empty() {
+            return PathBuf::from(&git_dir).join("MERGE_HEAD").exists();
+        }
+    }
+    // 回退：--git-path 返回相对路径，拼接 root（非 worktree 场景下正确）
     let out = match run_git(root, &["rev-parse", "--git-path", "MERGE_HEAD"]) {
         Ok(o) => o,
         Err(_) => return false,
@@ -819,6 +840,12 @@ pub fn read_file(project_id: &str, path: &str) -> AppResult<String> {
     let full = safe_join(&root, path)?;
     if !full.exists() {
         return Err(AppError::Git(format!("文件不存在: {}", path)));
+    }
+    // 先检查文件大小，避免一次性读入超大文件导致内存耗尽
+    let metadata = std::fs::metadata(&full)
+        .map_err(|e| AppError::Git(format!("读取文件信息失败: {}", e)))?;
+    if metadata.len() > 2 * 1024 * 1024 {
+        return Err(AppError::Git("文件超过 2MB，暂不支持编辑".to_string()));
     }
     let bytes = std::fs::read(&full).map_err(|e| AppError::Git(format!("读取失败: {}", e)))?;
     if bytes.len() > 2 * 1024 * 1024 {

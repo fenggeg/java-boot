@@ -446,7 +446,7 @@ export default function LogViewer({ serviceId }: Props) {
                   matchCount > 0 && matchIndices[matchIdx] === absIdx;
                 return (
                   <div
-                    key={absIdx}
+                    key={`${l.ts}-${l.source}-${absIdx}`}
                     className={`log-line ${sourceClass(l.source)} ${lv} ${isCurrentMatch ? "log-match-current" : ""}`}
                     style={{ height: LINE_HEIGHT, minHeight: LINE_HEIGHT }}
                   >

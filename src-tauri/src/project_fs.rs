@@ -5,7 +5,9 @@
 //! - `read_file`：UTF-8 优先；失败尝试 GBK 转码（中文项目常见），非 UTF-8 标记只读防写坏编码；超大文件只读预览
 //! - `write_file`：仅写入 UTF-8 文本，路径校验防止越出项目根
 
+use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
 use serde::Serialize;
 
@@ -155,6 +157,17 @@ pub fn read_file(project_id: &str, path: &str) -> AppResult<FileContent> {
     if !full.is_file() {
         return Err(AppError::NotFound(format!("文件不存在: {}", path)));
     }
+    // 先检查文件大小，避免一次性读入超大文件导致内存耗尽
+    let metadata = std::fs::metadata(&full)
+        .map_err(|e| AppError::Other(format!("读取文件信息失败: {}", e)))?;
+    let file_size = metadata.len();
+    if file_size > (MAX_EDIT_SIZE as u64) * 2 {
+        // 超过可编辑上限的 2 倍：直接拒绝，不读入内存
+        return Err(AppError::Other(format!(
+            "文件超过 {}MB，暂不支持读取",
+            MAX_EDIT_SIZE * 2 / 1024 / 1024
+        )));
+    }
     let bytes = std::fs::read(&full)
         .map_err(|e| AppError::Other(format!("读取失败: {}", e)))?;
     let size = bytes.len() as u64;
@@ -240,6 +253,13 @@ const MAX_WALK_FILES: usize = 50_000;
 /// 目录深度上限：防御 Windows junction（file_type 不算 symlink）循环等异常树
 const MAX_WALK_DEPTH: usize = 24;
 
+/// walk_files 缓存：避免每次打开 Ctrl+P 弹层都全量遍历大型项目目录。
+/// key = project_id, value = (文件列表, 缓存时刻)
+/// TTL 5 秒：兼顾快速连续打开弹层的性能与 git 操作后的新鲜度
+static WALK_CACHE: once_cell::sync::Lazy<std::sync::Mutex<HashMap<String, (Vec<FlatFile>, std::time::Instant)>>> =
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
+const WALK_CACHE_TTL: Duration = Duration::from_secs(5);
+
 fn rel_depth(rel: &str) -> usize {
     if rel.is_empty() {
         0
@@ -286,12 +306,26 @@ fn walk_dir(dir: &Path, rel: &str, out: &mut Vec<FlatFile>) {
 
 /// 遍历项目根下全部文件（排除黑名单目录与符号链接）
 pub fn walk_files(project_id: &str) -> AppResult<Vec<FlatFile>> {
+    // 检查缓存：TTL 内直接返回，避免重复全量遍历
+    {
+        let cache = WALK_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((files, ts)) = cache.get(project_id) {
+            if ts.elapsed() < WALK_CACHE_TTL {
+                return Ok(files.clone());
+            }
+        }
+    }
     let project = db::get_project(project_id)?;
     let root = Path::new(&project.root_path)
         .canonicalize()
         .map_err(|e| AppError::Other(format!("项目根目录无法解析: {}", e)))?;
     let mut out = Vec::new();
     walk_dir(&root, "", &mut out);
+    // 写入缓存
+    {
+        let mut cache = WALK_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        cache.insert(project_id.to_string(), (out.clone(), std::time::Instant::now()));
+    }
     Ok(out)
 }
 
@@ -374,6 +408,18 @@ pub fn rename_entry(project_id: &str, path: &str, new_name: &str) -> AppResult<S
 
 /// 递归复制目录 / 文件（不含符号链接）
 fn copy_recursive(src: &Path, dst: &Path) -> AppResult<u64> {
+    copy_recursive_inner(src, dst, 0)
+}
+
+fn copy_recursive_inner(src: &Path, dst: &Path, depth: usize) -> AppResult<u64> {
+    const MAX_COPY_DEPTH: usize = 32;
+    if depth > MAX_COPY_DEPTH {
+        return Err(AppError::Other(format!(
+            "复制深度超限（{} 层），可能存在 junction 循环: {}",
+            MAX_COPY_DEPTH,
+            src.display()
+        )));
+    }
     let meta = std::fs::symlink_metadata(src)?;
     if meta.is_dir() {
         std::fs::create_dir_all(dst)?;
@@ -383,7 +429,9 @@ fn copy_recursive(src: &Path, dst: &Path) -> AppResult<u64> {
             if ft.is_symlink() {
                 continue;
             }
-            total += copy_recursive(&entry.path(), &dst.join(entry.file_name()))?;
+            // Windows junction（reparse point 但非 symlink）深度递归防护：
+            // file_type().is_symlink() 对 junction 返回 false，靠 depth 上限兜底
+            total += copy_recursive_inner(&entry.path(), &dst.join(entry.file_name()), depth + 1)?;
         }
         Ok(total)
     } else {

@@ -59,6 +59,8 @@ export default function TerminalView({projectId}: Props) {
     registry.get(projectId)?.sessionId ?? null
   );
   const unlistenRef = useRef<UnlistenFn | null>(null);
+  // 用于 attachListener 的 disposed 标记，组件卸载时标记已废弃
+  const attachDisposedRef = useRef<{ current: boolean }>({ current: false });
 
   const isDark = () =>
     document.documentElement.getAttribute("data-theme") === "dark";
@@ -106,9 +108,11 @@ export default function TerminalView({projectId}: Props) {
   /** 订阅输出事件并写入 xterm */
   const attachListener = useCallback(() => {
     unlistenRef.current?.();
-    let unlisten: UnlistenFn | undefined;
+    unlistenRef.current = null;
+    // 防止 listen resolve 前 cleanup 已执行导致监听泄漏
+    const disposedRef = { current: false };
     (async () => {
-      unlisten = await listen<TerminalChunk>("terminal://out", (e) => {
+      const unlisten = await listen<TerminalChunk>("terminal://out", (e) => {
         const {id, chunk, closed: isClosed} = e.payload;
         const entry = registry.get(projectId);
         if (!entry || id !== entry.sessionId) return;
@@ -119,8 +123,14 @@ export default function TerminalView({projectId}: Props) {
           setClosed(true);
         }
       });
+      if (disposedRef.current) {
+        unlisten();
+        return;
+      }
       unlistenRef.current = unlisten;
     })();
+    // 保存 disposedRef 以便 cleanup 时标记
+    attachDisposedRef.current = disposedRef;
   }, [projectId]);
 
   /** 创建后端会话并绑定到 xterm 实例 */
@@ -149,7 +159,7 @@ export default function TerminalView({projectId}: Props) {
       entry.fit.fit();
       await api.terminalResize(sid, entry.term.cols, entry.term.rows).catch(() => {});
     } catch (e) {
-      entry.term.write(`\x1b[31m[终端启动失败] ${String(e)}\x1b[0m\r\n`);
+      entry.term.write(`\x1b[31m[终端启动失败] ${api.toErrMsg(e)}\x1b[0m\r\n`);
       setClosed(true);
     } finally {
       setBusy(false);
@@ -202,6 +212,7 @@ export default function TerminalView({projectId}: Props) {
       entry.fit.fit();
     }
     return () => {
+      attachDisposedRef.current.current = true;
       unlistenRef.current?.();
       unlistenRef.current = null;
     };

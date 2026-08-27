@@ -82,7 +82,8 @@ pub fn strip_ansi_codes(s: &str) -> String {
 /// 相较原实现修复了 `Started .* in .* seconds` 用 `contains` 永远不命中的问题。
 pub fn check_started(line: &str) -> bool {
     // "Started XxxApplication in 5.234 seconds"
-    if line.contains("Started ") && line.contains(" in ") && line.contains("second") {
+    // 要求 "Started " 在行首附近（前 50 字符内），减少日志中间出现 "Started xxx in xxx second" 的误匹配
+    if line.len() <= 200 && line.contains("Started ") && line.contains(" in ") && line.contains("second") {
         return true;
     }
     line.contains("Tomcat started on port")

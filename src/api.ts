@@ -269,3 +269,19 @@ export const openInBrowser = (port: number) =>
 
 export const detectJdks = () => invoke<JdkInfo[]>("detect_jdks");
 export const detectMavens = () => invoke<MavenInfo[]>("detect_mavens");
+
+// ============================ Error ============================
+
+/**
+ * 归一化错误信息：统一 TauriError / Error / string 的格式化输出
+ */
+export function toErrMsg(e: unknown): string {
+  if (e === null || e === undefined) return "未知错误";
+  if (typeof e === "string") return e;
+  if (e instanceof Error) return e.message;
+  // Tauri 的 invoke 错误对象通常含 message 或直接是字符串
+  if (typeof e === "object" && "message" in e) {
+    return String((e as { message: unknown }).message);
+  }
+  return String(e);
+}

@@ -120,9 +120,9 @@ export default function ProjectConfigModal({
       message.success("项目配置已保存");
       onSaved();
       onClose();
-    } catch (e: any) {
-      if (e?.errorFields) return;
-      message.error(`保存失败: ${e}`);
+    } catch (e) {
+      if (e && typeof e === "object" && "errorFields" in e) return;
+      message.error(`保存失败: ${api.toErrMsg(e)}`);
     } finally {
       setSaving(false);
     }

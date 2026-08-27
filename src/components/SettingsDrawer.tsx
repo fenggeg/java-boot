@@ -3,6 +3,7 @@ import {Settings} from "./Icons";
 import {useStore} from "../store";
 import type {AppConfig} from "../types";
 import {useEffect, useRef, useState} from "react";
+import {toErrMsg} from "../api";
 
 const { Text } = Typography;
 
@@ -43,8 +44,8 @@ export default function SettingsDrawer({ open, onClose }: Props) {
       pendingRef.current = null;
       try {
         await updateConfig(next);
-      } catch (e: any) {
-        message.error(`保存配置失败: ${e}`);
+      } catch (e) {
+        message.error(`保存配置失败: ${toErrMsg(e)}`);
       }
     }, 500);
   };
@@ -63,8 +64,8 @@ export default function SettingsDrawer({ open, onClose }: Props) {
       if (pendingRef.current) {
         const pending = pendingRef.current;
         pendingRef.current = null;
-        updateConfig(pending).catch((e: any) =>
-          message.error(`保存配置失败: ${e}`)
+        updateConfig(pending).catch((e) =>
+          message.error(`保存配置失败: ${toErrMsg(e)}`)
         );
       }
     }

@@ -91,8 +91,8 @@ export default function TopBar({ onOpenSettings }: Props) {
       await api.stopAll();
       message.success("已停止所有运行中的服务");
       await refreshServices();
-    } catch (e: any) {
-      message.error(`停止失败: ${e}`);
+    } catch (e) {
+      message.error(`停止失败: ${api.toErrMsg(e)}`);
     }
   };
 

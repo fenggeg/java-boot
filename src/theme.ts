@@ -8,10 +8,12 @@ interface ThemeStore {
   setMode: (mode: ThemeMode) => void;
 }
 
-const stored =
+const raw =
   typeof localStorage !== "undefined"
-    ? (localStorage.getItem("javaboot:theme") as ThemeMode | null)
+    ? localStorage.getItem("javaboot:theme")
     : null;
+const stored: ThemeMode | null =
+  raw === "dark" || raw === "light" ? raw : null;
 
 export const useThemeStore = create<ThemeStore>((set) => ({
   mode: stored === "dark" ? "dark" : "light",

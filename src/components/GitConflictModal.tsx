@@ -121,8 +121,8 @@ export default function GitConflictModal({
         }
         setResultText(content);
         loadedForRef.current = activePath;
-      } catch (e: any) {
-        if (!cancelled) message.error(`读取冲突版本失败: ${e}`);
+      } catch (e) {
+        if (!cancelled) message.error(`读取冲突版本失败: ${api.toErrMsg(e)}`);
       } finally {
         if (!cancelled) setLoadingVer(false);
       }
@@ -157,8 +157,8 @@ export default function GitConflictModal({
         );
         advance(activePath);
         await onChanged();
-      } catch (e: any) {
-        message.error(`解决失败: ${e}`);
+      } catch (e) {
+        message.error(`解决失败: ${api.toErrMsg(e)}`);
       } finally {
         setBusy(false);
       }
@@ -175,8 +175,8 @@ export default function GitConflictModal({
       message.success("已标记为已解决");
       advance(activePath);
       await onChanged();
-    } catch (e: any) {
-      message.error(`标记失败: ${e}`);
+} catch (e) {
+        message.error(`标记失败: ${api.toErrMsg(e)}`);
     } finally {
       setBusy(false);
     }
@@ -198,8 +198,8 @@ export default function GitConflictModal({
           setActivePath(null);
           onClose();
           await onChanged();
-        } catch (e: any) {
-          message.error(`中止失败: ${e}`);
+        } catch (e) {
+          message.error(`中止失败: ${api.toErrMsg(e)}`);
         } finally {
           setBusy(false);
         }
@@ -217,8 +217,8 @@ export default function GitConflictModal({
       setActivePath(null);
       onClose();
       await onChanged();
-    } catch (e: any) {
-      message.error(`完成合并失败: ${e}`);
+    } catch (e) {
+      message.error(`完成合并失败: ${api.toErrMsg(e)}`);
     } finally {
       setBusy(false);
     }

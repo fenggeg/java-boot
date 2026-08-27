@@ -178,6 +178,11 @@ fn scan_recursive(
 
     let mut children = vec![];
     for module_rel in &info.modules {
+        // 安全校验：module 路径不允许 .. 或绝对路径，防止越界读取
+        if module_rel.contains("..") || std::path::Path::new(module_rel).is_absolute() {
+            log::warn!("跳过可疑模块路径: {}", module_rel);
+            continue;
+        }
         let module_path = dir.join(module_rel);
         let module_pom = if module_path.is_dir() {
             module_path.join("pom.xml")

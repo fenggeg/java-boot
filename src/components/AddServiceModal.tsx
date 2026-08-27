@@ -17,9 +17,11 @@ export default function AddServiceModal({
 }: Props) {
   const [form] = Form.useForm();
   const [pomPath, setPomPath] = useState("");
+  const [loading, setLoading] = useState(false);
   const { message } = App.useApp();
 
   const handlePick = async () => {
+    if (loading) return;
     const selected = await open({
       multiple: false,
       filters: [{ name: "Maven POM", extensions: ["xml"] }],
@@ -33,22 +35,27 @@ export default function AddServiceModal({
   };
 
   const handleAdd = async () => {
+    if (loading) return;
     if (!pomPath) {
       message.warning("请选择 pom.xml 文件");
       return;
     }
     const name = form.getFieldValue("name");
+    setLoading(true);
     try {
       const service = await api.addService(pomPath, name || undefined);
       message.success(`已添加服务 "${service.name}"`);
       onAdded();
       handleClose();
-    } catch (e: any) {
-      message.error(`添加失败: ${e}`);
+    } catch (e) {
+      message.error(`添加失败: ${api.toErrMsg(e)}`);
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleClose = () => {
+    if (loading) return;
     setPomPath("");
     form.resetFields();
     onClose();
@@ -67,7 +74,11 @@ export default function AddServiceModal({
       onOk={handleAdd}
       okText="添加"
       cancelText="取消"
+      confirmLoading={loading}
+      okButtonProps={{ disabled: !pomPath }}
       destroyOnClose
+      maskClosable={!loading}
+      closable={!loading}
     >
       <Form form={form} layout="vertical">
         <Form.Item label="pom.xml 路径" required>

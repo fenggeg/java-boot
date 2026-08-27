@@ -139,18 +139,34 @@ fn java_home_valid(home: &str) -> bool {
 }
 
 /// 反推缓存：java.exe 路径 → 真实 java.home（进程内共享，避免批量启动时反复探测）
+/// key 为 java.exe 绝对路径，种类有限（PATH 中条目），不会无界增长；
+/// 设 64 条上限做防御性保护
 static JAVA_HOME_DETECT_CACHE: once_cell::sync::Lazy<
     parking_lot::Mutex<std::collections::HashMap<String, Option<String>>>,
 > = once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+const JAVA_HOME_CACHE_MAX: usize = 64;
+
+/// Java 版本缓存：java.exe 路径 → 主版本号（进程内共享）
+/// 与 JAVA_HOME_DETECT_CACHE 同理，避免批量启动时反复执行 java -version
+static JAVA_VERSION_CACHE: once_cell::sync::Lazy<
+    parking_lot::Mutex<std::collections::HashMap<String, Option<u32>>>,
+> = once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+const JAVA_VERSION_CACHE_MAX: usize = 64;
 
 /// 通过执行 java 反推真实 java.home（处理 PATH 目录、scoop shims 等非标准布局）
 ///
 /// scoop 的 shims/java.exe 是转发 stub，其所在目录不是 JDK home；
 /// 用 `-XshowSettings:properties -version` 输出中的 `java.home` 拿到真实路径。
 fn detect_java_home_from_java_exe(java_exe: &str) -> Option<String> {
-    if let Some(cached) = JAVA_HOME_DETECT_CACHE.lock().get(java_exe).cloned() {
+    let mut cache = JAVA_HOME_DETECT_CACHE.lock();
+    if let Some(cached) = cache.get(java_exe).cloned() {
         return cached;
     }
+    // 防御性清理：缓存条目超过上限时清空（key 种类有限，正常不会触发）
+    if cache.len() >= JAVA_HOME_CACHE_MAX {
+        cache.clear();
+    }
+    drop(cache);
     let detected = detect_java_home_uncached(java_exe);
     log::info!(
         "从 {} 反推 java.home: {:?}",
@@ -242,6 +258,77 @@ pub fn resolve_java_home(cfg: &EnvConfig) -> Option<String> {
         );
     }
     home
+}
+
+/// 检测 Java 主版本号（如 8, 11, 17, 21）。
+///
+/// `@argfile` 是 JDK 9 引入的功能（JEP 294），JDK 8 不支持。
+/// 此函数用于在命令行超长时决定是否可用 @argfile，还是需要改用 CLASSPATH 环境变量方案。
+///
+/// 解析 `java -version` 输出：
+/// - JDK ≤ 8: `version "1.8.0_302"` → 主版本取第二段 (8)
+/// - JDK ≥ 9: `version "17.0.2"`   → 主版本取第一段 (17)
+pub fn detect_java_major_version(cfg: &EnvConfig) -> Option<u32> {
+    let java_home = resolve_java_home(cfg)?;
+    let java_exe = format!("{}\\bin\\java.exe", java_home);
+    detect_java_major_version_from_exe(&java_exe)
+}
+
+/// 从 java.exe 路径检测 Java 主版本号（带缓存）
+fn detect_java_major_version_from_exe(java_exe: &str) -> Option<u32> {
+    let mut cache = JAVA_VERSION_CACHE.lock();
+    if let Some(cached) = cache.get(java_exe).cloned() {
+        return cached;
+    }
+    if cache.len() >= JAVA_VERSION_CACHE_MAX {
+        cache.clear();
+    }
+    drop(cache);
+
+    let detected = detect_java_major_version_uncached(java_exe);
+    log::info!(
+        "Java 版本检测: {} → major {}",
+        java_exe,
+        detected.map_or("<失败>".to_string(), |v| v.to_string())
+    );
+    JAVA_VERSION_CACHE
+        .lock()
+        .insert(java_exe.to_string(), detected);
+    detected
+}
+
+fn detect_java_major_version_uncached(java_exe: &str) -> Option<u32> {
+    let output = std::process::Command::new(java_exe)
+        .arg("-version")
+        .creation_flags_no_window()
+        .output()
+        .ok()?;
+    // -version 输出在 stderr
+    let text = crate::util::decode_output(&output.stderr);
+    // 形如: openjdk version "1.8.0_302"  或  openjdk version "17.0.2"
+    for line in text.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.find('"') {
+            let after_quote = &t[rest + 1..];
+            if let Some(end) = after_quote.find('"') {
+                let version_str = &after_quote[..end];
+                return parse_java_major_version(version_str);
+            }
+        }
+    }
+    None
+}
+
+/// 解析 Java 版本字符串为主版本号
+/// "1.8.0_302" → 8, "17.0.2" → 17, "21" → 21
+fn parse_java_major_version(version: &str) -> Option<u32> {
+    let first_part = version.split('.').next()?;
+    if first_part == "1" {
+        // JDK ≤ 8: 1.8.x → 8
+        version.split('.').nth(1)?.split('_').next()?.parse().ok()
+    } else {
+        first_part.parse().ok()
+    }
 }
 
 /// 启动前预检：确认 java / mvn 可用

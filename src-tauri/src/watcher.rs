@@ -107,7 +107,17 @@ impl WatchManager {
                     }
                 }));
                 if let Err(e) = result {
-                    log::error!("watch worker 异常退出 ({}): {:?}", sid_worker, e);
+                    log::error!("watch worker 异常退出 ({}): {:?}，尝试重建监听", sid_worker, e);
+                    // 【修复】worker panic 后尝试重建 watcher，避免永久失去自动重启能力
+                    // 延迟 5 秒后重建，避免连续 panic 导致 CPU 空转
+                    std::thread::sleep(Duration::from_secs(5));
+                    if let Ok(svc) = crate::db::get_service(&sid_worker) {
+                        if svc.auto_restart {
+                            let app_rebuild = app_worker.clone();
+                            let _ = get_watch_manager().watch(app_rebuild, svc);
+                            log::info!("watch worker 已重建: {}", sid_worker);
+                        }
+                    }
                 }
             })
         };
@@ -163,6 +173,8 @@ impl WatchManager {
                 let _ = handle.join();
             }
         }
+        // 清除重启中标志：unwatch 后不应再有重启在执行，避免标志卡住阻塞后续 watch
+        RESTART_IN_PROGRESS.lock().remove(service_id);
     }
 
     /// 停止所有文件监听并回收 worker 线程
@@ -249,6 +261,10 @@ fn is_relevant_event(event: &notify::Event) -> bool {
     }
 }
 
+// 竞态防护标志：compile_and_start 正在执行时阻止重复触发
+static RESTART_IN_PROGRESS: once_cell::sync::Lazy<Mutex<HashMap<String, bool>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+
 fn trigger_restart(app: &AppHandle, service_id: &str) {
     let service = match crate::db::get_service(service_id) {
         Ok(s) => s,
@@ -257,30 +273,45 @@ fn trigger_restart(app: &AppHandle, service_id: &str) {
             return;
         }
     };
+    // 仅当服务配置了自动重启时才触发（refresh_all 可能在事件发出后关闭了 auto_restart）
+    if !service.auto_restart {
+        return;
+    }
     // 仅当服务正在运行时才自动重启
     let mgr = process::get_manager();
     if !mgr.is_running(service_id) {
         return;
     }
-    // 竞态防护：检查当前状态，若已在 Recompiling/Starting/Stopping 则跳过，
-    // 避免防抖窗口内多次事件触发并发 Maven 编译
-    let current_status = mgr.get_runtime(service_id).status;
-    if matches!(
-        current_status,
-        ServiceStatus::Recompiling | ServiceStatus::Starting | ServiceStatus::Stopping
-    ) {
-        log::info!(
-            "跳过自动重启（服务 {} 当前状态: {:?}）",
-            service_id,
-            current_status
-        );
-        return;
+    // 【TOCTOU 修复】原子地检查状态并设置重启中标志，避免检查与 spawn 之间的竞态
+    {
+        let mut in_progress = RESTART_IN_PROGRESS.lock();
+        if let Some(true) = in_progress.get(service_id) {
+            log::info!("跳过自动重启（服务 {} 已有重启在进行中）", service_id);
+            return;
+        }
+        // 再次检查状态（与设置标志原子化）
+        let current_status = mgr.get_runtime(service_id).status;
+        if matches!(
+            current_status,
+            ServiceStatus::Recompiling | ServiceStatus::Starting | ServiceStatus::Stopping
+        ) {
+            log::info!(
+                "跳过自动重启（服务 {} 当前状态: {:?}）",
+                service_id,
+                current_status
+            );
+            return;
+        }
+        in_progress.insert(service_id.to_string(), true);
     }
     let app_clone = app.clone();
+    let sid_clone = service_id.to_string();
     // 异步执行编译启动
     tauri::async_runtime::spawn(async move {
         if let Err(e) = mgr.compile_and_start(app_clone, service).await {
             log::error!("自动重启失败: {}", e);
         }
+        // 清理标志
+        RESTART_IN_PROGRESS.lock().remove(&sid_clone);
     });
 }

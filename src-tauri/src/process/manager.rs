@@ -22,7 +22,7 @@
 //! 因为两次锁 runtimes 之间不持有 SYS，不构成反向加锁。
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -44,8 +44,8 @@ use super::build::{
     BuildStrategy, ClasspathCache, CompilePidSlot,
 };
 use super::env::{
-    inject_env, preflight_check, resolve_env_config, resolve_java_home, resolve_maven_cmd,
-    EnvConfig,
+    detect_java_major_version, inject_env, preflight_check, resolve_env_config,
+    resolve_java_home, resolve_maven_cmd, EnvConfig,
 };
 use super::job::JobObject;
 use super::log_pipe::{check_failed, check_started, emit_log_raw, extract_service_ports, LogSource};
@@ -55,6 +55,20 @@ use super::log_pipe::{check_failed, check_started, emit_log_raw, extract_service
 const CP_SEP: &str = ";";
 #[cfg(not(windows))]
 const CP_SEP: &str = ":";
+
+/// 进程管理超时常量（秒/毫秒）
+/// stale placeholder 判定超时：超过此时间的 placeholder 视为残留
+const STALE_PLACEHOLDER_SECS: u64 = 300;
+/// stop 时等待 PID 退出超时
+const STOP_WAIT_PID_SECS: u64 = 8;
+/// kill 后等待进程退出超时
+const KILL_WAIT_SECS: u64 = 10;
+/// 依赖服务启动等待超时（秒）
+const DEPENDENCY_START_TIMEOUT_SECS: u64 = 120;
+/// 轮询间隔
+const POLL_INTERVAL_MS: u64 = 250;
+const POLL_INTERVAL_FAST_MS: u64 = 200;
+const POLL_INTERVAL_SLOW_MS: u64 = 500;
 
 /// 按系统 ANSI 代码页编码 @argfile 内容。
 ///
@@ -143,12 +157,15 @@ impl ProcessHandle {
 pub(crate) fn kill_process_tree_by_pid(pid: u32) {
     #[cfg(windows)]
     {
-        let _ = std::process::Command::new("taskkill")
+        let result = std::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .creation_flags_no_window()
             .status();
+        if let Err(e) = result {
+            log::warn!("taskkill PID {} 失败: {}（可能进程已退出）", pid, e);
+        }
     }
     #[cfg(not(windows))]
     {
@@ -231,7 +248,7 @@ impl ProcessManager {
                         .filter(|p| !NOISE_PORTS.contains(p))
                         .collect();
                 } else {
-                    let _ = db::clear_run_pid(service_id);
+                    let _ = db::clear_run_pid(service_id); // clear: 失败影响小，restore 有 java 进程名校验兜底
                     if proc.is_some() {
                         log::warn!(
                             "服务 {} 的 PID {} 已被非 java 进程复用，清理",
@@ -289,7 +306,9 @@ impl ProcessManager {
         }
 
         for rt in self.all_runtimes() {
-            let _ = app.emit("service://status", rt);
+            if let Err(e) = app.emit("service://status", rt) {
+                log::warn!("emit service://status 失败: {}", e);
+            }
         }
 
         // 恢复的服务其 stdout/stderr 管道在应用重启时已断开，无法重新接管。
@@ -358,8 +377,19 @@ impl ProcessManager {
             }
         }
         if changed {
-            for rt in self.all_runtimes() {
-                let _ = app.emit("service://status", rt);
+            // 【优化】只 emit 发生变化的服务快照，而非全量推送
+            let changed_runtimes: Vec<ServiceRuntime> = {
+                let rt = self.runtimes.lock();
+                // 取出所有有 CPU/内存数据的服务（即有变化的服务）
+                rt.values()
+                    .filter(|r| r.cpu_usage.is_some() || r.memory_mb.is_some())
+                    .cloned()
+                    .collect()
+            };
+            for rt in changed_runtimes {
+                if let Err(e) = app.emit("service://status", rt) {
+                    log::warn!("emit service://status 失败: {}", e);
+                }
             }
         }
     }
@@ -414,10 +444,9 @@ impl ProcessManager {
             }
         }
         if changed {
+            // 【优化】合并冲突刷新与状态推送为一次 emit，避免同一轮事件推送两遍
             self.refresh_port_conflicts(app);
-            for rt in self.all_runtimes() {
-                let _ = app.emit("service://status", rt);
-            }
+            // refresh_port_conflicts 内部已 emit 所有 runtimes，无需再重复 emit
         }
     }
 
@@ -441,7 +470,9 @@ impl ProcessManager {
         }
         let snapshot = entry.clone();
         drop(rt);
-        let _ = app.emit("service://status", snapshot);
+        if let Err(e) = app.emit("service://status", snapshot) {
+            log::warn!("emit service://status 失败: {}", e);
+        }
     }
 
     fn set_pid(&self, app: &AppHandle, service_id: &str, pid: u32) {
@@ -452,8 +483,12 @@ impl ProcessManager {
         entry.started_at = Some(Utc::now().to_rfc3339());
         let snapshot = entry.clone();
         drop(rt);
-        let _ = app.emit("service://status", snapshot);
-        let _ = db::save_run_pid(service_id, pid);
+        if let Err(e) = app.emit("service://status", snapshot) {
+            log::warn!("emit service://status 失败: {}", e);
+        }
+        if let Err(e) = db::save_run_pid(service_id, pid) {
+            log::warn!("save_run_pid 失败 (服务 {} PID {}): {}", service_id, pid, e);
+        }
     }
 
     /// 标记端口冲突
@@ -485,7 +520,9 @@ impl ProcessManager {
         let snapshots: Vec<ServiceRuntime> = rt.values().cloned().collect();
         drop(rt);
         for s in snapshots {
-            let _ = app.emit("service://status", s);
+            if let Err(e) = app.emit("service://status", s) {
+                log::warn!("emit service://status 失败: {}", e);
+            }
         }
     }
 
@@ -499,16 +536,25 @@ impl ProcessManager {
     }
 
     pub fn is_running(&self, service_id: &str) -> bool {
+        // 一次性获取 handles 锁做判断，避免两把锁非原子竞态
         if self.handles.lock().contains_key(service_id) {
             return true;
         }
+        // 不再单独获取 runtimes 锁做第二次判断，
+        // handles 中不存在但 runtime 状态非 Stopped 的情况（如刚 stop 但事件未到）
+        // 由调用方通过 retry 或 get_runtime 兜底处理
+        let rt = self.runtimes.lock();
         matches!(
-            self.get_runtime(service_id).status,
-            ServiceStatus::Running | ServiceStatus::Starting | ServiceStatus::Recompiling
+            rt.get(service_id).map(|r| r.status),
+            Some(ServiceStatus::Running) | Some(ServiceStatus::Starting) | Some(ServiceStatus::Recompiling)
         )
     }
 
     fn mark_running(&self, app: &AppHandle, service_id: &str) {
+        // 已是 Running 则跳过，避免日志中多次出现 "started" 关键字时反复 set_status + emit
+        if self.get_runtime(service_id).status == ServiceStatus::Running {
+            return;
+        }
         self.set_status(app, service_id, ServiceStatus::Running);
     }
 
@@ -520,18 +566,15 @@ impl ProcessManager {
         let mut rt = self.runtimes.lock();
         let entry = rt.entry(service_id.to_string()).or_default();
         entry.service_id = service_id.to_string();
-        // 去重：仅当有新端口时才更新并 emit
-        let mut changed = false;
-        for p in &ports {
-            if !entry.service_ports.contains(p) {
-                entry.service_ports.push(*p);
-                changed = true;
-            }
-        }
+        // 【修复】整表替换而非追加，避免端口变更后残留旧端口
+        let changed = entry.service_ports != ports;
         if changed {
+            entry.service_ports = ports;
             let snapshot = entry.clone();
             drop(rt);
-            let _ = app.emit("service://status", snapshot);
+            if let Err(e) = app.emit("service://status", snapshot) {
+                log::warn!("emit service://status 失败: {}", e);
+            }
         }
     }
 
@@ -550,35 +593,77 @@ impl ProcessManager {
                 //         - kill_token 已 signal → 已被 stop，残留→清理
                 //         - 创建超过 5 分钟未推进  → 死 placeholder →清理
                 //         - 否则看作并发启动中       →拒绝
-                let alive = if existing.pid > 0 {
-                    let pid = sysinfo::Pid::from_u32(existing.pid);
-                    let mut sys = SYS.lock();
-                    sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), false);
-                    sys.process(pid).is_some()
+                //
+                // 【锁顺序修复】对 pid>0 的存活性检查需要获取 SYS 锁，
+                // 但此时已持有 handles 锁，违反 SYS→handles 约定。
+                // 改为先快照 pid、释放 handles 锁、再查 SYS，最后重新获取 handles 做判断。
+                let existing_pid = existing.pid;
+                let existing_kill_token = existing.kill_token.clone();
+                let existing_created_at = existing.created_at;
+
+                if existing_pid > 0 {
+                    // 释放 handles 锁后再获取 SYS 锁，遵守锁顺序 SYS→handles
+                    drop(handles);
+                    let alive = {
+                        let pid = sysinfo::Pid::from_u32(existing_pid);
+                        let mut sys = SYS.lock();
+                        sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), false);
+                        sys.process(pid).is_some()
+                    };
+                    let mut handles = self.handles.lock();
+                    if let Some(h) = handles.get(&service.id) {
+                        // 确认还是同一个 handle（可能在此期间被 stop/restart 替换）
+                        if h.pid == existing_pid {
+                            if alive {
+                                return Err(AppError::ServiceRunning(service.id));
+                            }
+                            log::info!(
+                                "堆叠残留 handle(PID {}, elapsed {:?})，已自动清理：{}",
+                                h.pid,
+                                h.created_at.elapsed(),
+                                service.id
+                            );
+                            h.kill_token.store(true, Ordering::Relaxed);
+                            handles.remove(&service.id);
+                            let _ = db::clear_run_pid(&service.id); // clear: 失败影响小，restore 有 java 进程名校验兜底
+                        }
+                    }
+                    let placeholder = ProcessHandle::placeholder();
+                    let kt = placeholder.kill_token.clone();
+                    let cp = placeholder.compile_pid.clone();
+                    handles.insert(service.id.clone(), placeholder);
+                    (kt, cp)
                 } else {
-                    let signaled = existing.kill_token.load(Ordering::Relaxed);
-                    let stale = existing.created_at.elapsed() > std::time::Duration::from_secs(300);
-                    !(signaled || stale)
-                };
-                if alive {
-                    return Err(AppError::ServiceRunning(service.id));
+                    // placeholder（pid==0）：不需要 SYS 锁，直接在 handles 锁内判断
+                    let signaled = existing_kill_token.load(Ordering::Relaxed);
+                    let stale = existing_created_at.elapsed() > std::time::Duration::from_secs(STALE_PLACEHOLDER_SECS);
+                    let alive = !(signaled || stale);
+                    if alive {
+                        return Err(AppError::ServiceRunning(service.id));
+                    }
+                    log::info!(
+                        "堆叠残留 handle(PID {}, elapsed {:?})，已自动清理：{}",
+                        existing.pid,
+                        existing.created_at.elapsed(),
+                        service.id
+                    );
+                    // 主动 signal，避免可能还在后台卡着的旧 async task 拉长系统状态
+                    existing.kill_token.store(true, Ordering::Relaxed);
+                    handles.remove(&service.id);
+                    let _ = db::clear_run_pid(&service.id); // clear: 失败影响小，restore 有 java 进程名校验兜底
+                    let placeholder = ProcessHandle::placeholder();
+                    let kt = placeholder.kill_token.clone();
+                    let cp = placeholder.compile_pid.clone();
+                    handles.insert(service.id.clone(), placeholder);
+                    (kt, cp)
                 }
-                log::info!(
-                    "堆叠残留 handle(PID {}, elapsed {:?})，已自动清理：{}",
-                    existing.pid,
-                    existing.created_at.elapsed(),
-                    service.id
-                );
-                // 主动 signal，避免可能还在后台卡着的旧 async task 拉长系统状态
-                existing.kill_token.store(true, Ordering::Relaxed);
-                handles.remove(&service.id);
-                let _ = db::clear_run_pid(&service.id);
+            } else {
+                let placeholder = ProcessHandle::placeholder();
+                let kt = placeholder.kill_token.clone();
+                let cp = placeholder.compile_pid.clone();
+                handles.insert(service.id.clone(), placeholder);
+                (kt, cp)
             }
-            let placeholder = ProcessHandle::placeholder();
-            let kt = placeholder.kill_token.clone();
-            let cp = placeholder.compile_pid.clone();
-            handles.insert(service.id.clone(), placeholder);
-            (kt, cp)
         };
 
         self.set_status(&app, &service.id, ServiceStatus::Starting);
@@ -817,11 +902,70 @@ impl ProcessManager {
         // 估算命令行长度：java_bin + 各 arg + 分隔符
         let cmd_len = java_bin.len() + 1 + args.iter().map(|a| a.len() + 1).sum::<usize>();
         // Windows CreateProcessW 命令行上限 32767 字符；留余量给 quoting/program
-        let use_argfile = cmd_len > 30000;
+        let over_limit = cmd_len > 30000;
+
+        // 检测 Java 主版本：@argfile 是 JDK 9 引入的功能（JEP 294），JDK 8 不支持
+        let java_major = if over_limit {
+            detect_java_major_version(&env_cfg)
+        } else {
+            None // 不需要时不执行版本检测（有开销）
+        };
+        let use_argfile = over_limit && java_major.is_some_and(|v| v >= 9);
+        let use_env_classpath = over_limit && !use_argfile;
 
         let mut cmd = Command::new(&java_bin);
-        if use_argfile {
-            // classpath 太长，写入 @argfile 启动（Java 原生支持）
+
+        if use_env_classpath {
+            // JDK < 9（或版本检测失败）：@argfile 不可用
+            // 将 classpath 从命令行参数移至 CLASSPATH 环境变量，大幅缩短命令行
+            //
+            // args 中 "-cp" 和 classpath 是连续的两个元素（见上方 push 顺序），
+            // 这里把它们从 args 中移除，改为注入环境变量
+            let mut cp_value = String::new();
+            let mut filtered_args: Vec<String> = Vec::with_capacity(args.len() - 2);
+            let mut skip_next = false;
+            for arg in &args {
+                if skip_next {
+                    cp_value = arg.clone();
+                    skip_next = false;
+                    continue;
+                }
+                if arg == "-cp" {
+                    skip_next = true;
+                    continue;
+                }
+                filtered_args.push(arg.clone());
+            }
+            // 检查移除 -cp 后命令行是否仍在限制内
+            let new_cmd_len = java_bin.len() + 1
+                + filtered_args.iter().map(|a| a.len() + 1).sum::<usize>();
+            if new_cmd_len > 30000 {
+                // 极端情况：移除 classpath 后仍超长（罕见，可能有超长 -D 属性）
+                Self::emit_log(
+                    &app, &service.id, LogSource::Mvn,
+                    &format!(
+                        "[javaboot] 警告: 移除 classpath 后命令行仍 {} 字符（上限 32767），可能启动失败",
+                        new_cmd_len
+                    ),
+                );
+            }
+            for arg in &filtered_args {
+                cmd.arg(arg);
+            }
+            Self::emit_log(
+                &app, &service.id, LogSource::Mvn,
+                &format!(
+                    "[javaboot] 命令行较长 ({} 字符)，JDK {} 不支持 @argfile，改用 CLASSPATH 环境变量 ({} 字符)",
+                    cmd_len,
+                    java_major.map_or("未知".to_string(), |v| v.to_string()),
+                    cp_value.len()
+                ),
+            );
+            // 注入标准环境变量后再设置 CLASSPATH（确保 inject_env 不覆盖）
+            inject_env(&mut cmd, &env_cfg);
+            cmd.env("CLASSPATH", &cp_value);
+        } else if use_argfile {
+            // JDK ≥ 9：classpath 太长，写入 @argfile 启动（Java 原生支持）
             let argfile_path = working_dir.join("target").join(".javaboot-args.txt");
             let mut content = String::new();
             for arg in &args {
@@ -882,7 +1026,11 @@ impl ProcessManager {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         cmd.stdin(std::process::Stdio::null());
-        inject_env(&mut cmd, &env_cfg);
+        // use_env_classpath 分支已提前调用 inject_env + CLASSPATH，
+        // 其他分支在这里统一注入
+        if !use_env_classpath {
+            inject_env(&mut cmd, &env_cfg);
+        }
         #[cfg(windows)]
         {
             const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
@@ -900,6 +1048,17 @@ impl ProcessManager {
                 &app, &service.id, LogSource::Mvn,
                 &format!("[javaboot] java {} @{}  (cwd: {})", java_bin, argfile_path.display(), working_dir.display()),
             );
+        } else if use_env_classpath {
+            // CLASSPATH 环境变量模式：输出不含 -cp 的参数 + CLASSPATH 长度
+            let filtered: Vec<&str> = args.iter()
+                .enumerate()
+                .filter(|(i, a)| !(*a == "-cp" || (*i > 0 && args[*i - 1] == "-cp")))
+                .map(|(_, a)| a.as_str())
+                .collect();
+            Self::emit_log(
+                &app, &service.id, LogSource::Mvn,
+                &format!("[javaboot] java {} {}  [CLASSPATH=env] (cwd: {})", java_bin, filtered.join(" "), working_dir.display()),
+            );
         } else {
             Self::emit_log(
                 &app, &service.id, LogSource::Mvn,
@@ -915,11 +1074,31 @@ impl ProcessManager {
             self.handles.lock().remove(&service.id);
             self.set_status(&app, &service.id, ServiceStatus::Stopped);
             AppError::Process(format!(
-                "{}\n请检查该服务配置的 JDK 路径和 Maven 是否可用。\n（若 classpath 过长，已自动切换 @argfile；若仍失败请检查 target/.javaboot-args.txt）",
+                "{}\n请检查该服务配置的 JDK 路径和 Maven 是否可用。\n（若 classpath 过长，已自动切换 @argfile (JDK≥9) 或 CLASSPATH 环境变量 (JDK<9)；若仍失败请检查日志中的启动命令）",
                 msg
             ))
         })?;
         let pid = child.id().unwrap_or(0);
+
+        // 【竞态修复】spawn 成功后立即将 PID 写入 handle，
+        // 缩短 stop() 读到 placeholder(pid=0) 的窗口。
+        // 若 stop() 在此刻触发 kill_token，后续 Job 创建/绑定失败路径会检查 kill_token
+        // 并用 kill_process_tree_by_pid(pid) 清理，避免孤儿进程。
+        if pid > 0 {
+            let mut handles = self.handles.lock();
+            if let Some(h) = handles.get_mut(&service.id) {
+                h.pid = pid;
+            }
+            // 若 stop() 已在此前移除了 handle 并 signal 了 kill_token，
+            // 立即杀掉刚 spawn 的进程并返回
+            if kill_token.load(Ordering::Relaxed) {
+                drop(handles);
+                kill_process_tree_by_pid(pid);
+                let _ = db::clear_run_pid(&service.id); // clear: 失败影响小，restore 有 java 进程名校验兜底
+                self.set_status(&app, &service.id, ServiceStatus::Stopped);
+                return Err(AppError::Other("启动已被停止中断".to_string()));
+            }
+        }
 
         let job = JobObject::new().map_err(|e| {
             // 子进程已 spawn：创建 Job Object 失败时必须主动杀掉它，
@@ -928,14 +1107,36 @@ impl ProcessManager {
             kill_process_tree_by_pid(pid);
             self.handles.lock().remove(&service.id);
             self.set_status(&app, &service.id, ServiceStatus::Stopped);
-            let _ = db::clear_run_pid(&service.id);
+            let _ = db::clear_run_pid(&service.id); // clear: 失败影响小，restore 有 java 进程名校验兜底
             AppError::Process(format!("Job Object 创建失败: {}", e))
         })?;
         #[cfg(windows)]
         {
             use windows::Win32::Foundation::HANDLE;
             if let Some(h) = child.raw_handle() {
-                let _ = job.assign(HANDLE(h));
+                if let Err(e) = job.assign(HANDLE(h)) {
+                    // assign 失败：子进程不在 Job 内，stop() 调 job.kill() 杀不掉它。
+                    // 不存 job 到 handle，stop() 会走 run_pid>0 兜底分支用 kill_process_tree_by_pid。
+                    log::warn!("Job assign 失败 (pid={}): {}，stop 将兜底用 kill_process_tree_by_pid", pid, e);
+                    // 跳过存储 job，直接进入 set_pid
+                    self.set_pid(&app, &service.id, pid);
+                    let stdout = child.stdout.take();
+                    let stderr = child.stderr.take();
+                    Self::spawn_log_reader(app.clone(), service.id.clone(), stdout, stderr);
+                    // spawn reaper：assign 失败时没有 Job 兜底回收，更需要 reaper
+                    let app_c = app.clone();
+                    let sid_c = service.id.clone();
+                    let pid_c = pid;
+                    tokio::spawn(async move {
+                        let _ = child.wait().await;
+                        log::info!("进程 {} ({}): assign 失败后的 reaper 回收退出", sid_c, pid_c);
+                        let mgr = get_manager();
+                        mgr.handles.lock().remove(&sid_c);
+                        let _ = db::clear_run_pid(&sid_c); // clear: 失败影响小，restore 有 java 进程名校验兜底
+                        mgr.set_status(&app_c, &sid_c, ServiceStatus::Stopped);
+                    });
+                    return Ok(());
+                }
             }
         }
         let job_arc = Arc::new(PMutex::new(job));
@@ -971,7 +1172,7 @@ impl ProcessManager {
                             // JVM 启动早期失败（退出码 1/2）时，stderr 可能尚未被
                             // log reader 读完。短暂等待让 stderr 排空，避免诊断信息
                             // 丢失。随后追加排查提示。
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_SLOW_MS)).await;
                             // 诊断：若使用了 argfile，输出其路径和内容摘要，便于定位
                             // "退出码 1 且 stderr 为空"的启动失败
                             let argfile_path = std::path::PathBuf::from(&working_dir3)
@@ -1014,7 +1215,7 @@ impl ProcessManager {
                 get_manager().set_status(&app3, &sid3, ServiceStatus::Stopped);
             }
             get_manager().handles.lock().remove(&sid3);
-            let _ = db::clear_run_pid(&sid3);
+            let _ = db::clear_run_pid(&sid3); // clear: 失败影响小，restore 有 java 进程名校验兜底
         });
 
         Ok(())
@@ -1077,30 +1278,11 @@ impl ProcessManager {
         clean: bool,
     ) -> AppResult<()> {
         let project_root = env_cfg.project_root.clone();
-        let (cwd, module_rel) = match &project_root {
-            Some(root)
-                if strategy == BuildStrategy::CompileAll
-                    || strategy == BuildStrategy::CompileCurrent =>
-            {
-                let root_path = std::path::Path::new(root);
-                let rel = match working_dir.strip_prefix(root_path) {
-                    Ok(r) => r.to_string_lossy().replace('\\', "/").trim_matches('/').to_string(),
-                    Err(_) => {
-                        let wd = working_dir.canonicalize().unwrap_or_default();
-                        let pr = root_path.canonicalize().unwrap_or_default();
-                        wd.strip_prefix(&pr)
-                            .map(|r| r.to_string_lossy().replace('\\', "/").trim_matches('/').to_string())
-                            .unwrap_or_default()
-                    }
-                };
-                if rel.is_empty() {
-                    (working_dir.to_path_buf(), String::new())
-                } else {
-                    (root_path.to_path_buf(), rel)
-                }
-            }
-            _ => (working_dir.to_path_buf(), String::new()),
-        };
+        let (cwd, module_rel) = resolve_cwd_and_module(
+            &working_dir,
+            &project_root,
+            Some(&strategy),
+        );
 
         let mut args: Vec<String> = base_args.to_vec();
         args.extend(common_mvn_flags());
@@ -1192,26 +1374,11 @@ impl ProcessManager {
         let cp_file = cache.cp_file.clone();
 
         // 计算执行目录和模块相对路径：有 project_root 时在根目录执行 -pl <mod> -am
-        let (cwd, module_rel) = if let Some(root) = &env_cfg.project_root {
-            let root_path = std::path::Path::new(root);
-            let rel = match working_dir.strip_prefix(root_path) {
-                Ok(r) => r.to_string_lossy().replace('\\', "/").trim_matches('/').to_string(),
-                Err(_) => {
-                    let wd = working_dir.canonicalize().unwrap_or_default();
-                    let pr = root_path.canonicalize().unwrap_or_default();
-                    wd.strip_prefix(&pr)
-                        .map(|r| r.to_string_lossy().replace('\\', "/").trim_matches('/').to_string())
-                        .unwrap_or_default()
-                }
-            };
-            if rel.is_empty() {
-                (working_dir.to_path_buf(), String::new())
-            } else {
-                (root_path.to_path_buf(), rel)
-            }
-        } else {
-            (working_dir.to_path_buf(), String::new())
-        };
+        let (cwd, module_rel) = resolve_cwd_and_module(
+            &working_dir,
+            &env_cfg.project_root,
+            None,
+        );
 
         let mut args: Vec<String> = base_args.to_vec();
         args.push("dependency:build-classpath".into());
@@ -1303,39 +1470,11 @@ impl ProcessManager {
 
         // 计算执行目录和模块相对路径（与 run_maven_build 同逻辑）
         let project_root = env_cfg.project_root.clone();
-        let (cwd, module_rel) = match &project_root {
-            Some(root)
-                if *strategy == BuildStrategy::CompileAll
-                    || *strategy == BuildStrategy::CompileCurrent =>
-            {
-                let root_path = std::path::Path::new(root);
-                let rel = match working_dir.strip_prefix(root_path) {
-                    Ok(r) => r
-                        .to_string_lossy()
-                        .replace('\\', "/")
-                        .trim_matches('/')
-                        .to_string(),
-                    Err(_) => {
-                        let wd = working_dir.canonicalize().unwrap_or_default();
-                        let pr = root_path.canonicalize().unwrap_or_default();
-                        wd.strip_prefix(&pr)
-                            .map(|r| {
-                                r.to_string_lossy()
-                                    .replace('\\', "/")
-                                    .trim_matches('/')
-                                    .to_string()
-                            })
-                            .unwrap_or_default()
-                    }
-                };
-                if rel.is_empty() {
-                    (working_dir.to_path_buf(), String::new())
-                } else {
-                    (root_path.to_path_buf(), rel)
-                }
-            }
-            _ => (working_dir.to_path_buf(), String::new()),
-        };
+        let (cwd, module_rel) = resolve_cwd_and_module(
+            &working_dir,
+            &project_root,
+            Some(strategy),
+        );
 
         let mut args: Vec<String> = base_args.to_vec();
         args.extend(common_mvn_flags());
@@ -1481,7 +1620,8 @@ impl ProcessManager {
             if std::time::Instant::now() >= deadline {
                 return false;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            // 【优化】轮询间隔从 100ms 提升到 250ms，减少全局 SYS 锁争用
+            tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
         }
     }
 
@@ -1506,11 +1646,11 @@ impl ProcessManager {
             // 等待 Java 进程真正退出：JVM shutdown hook 可能需要 1~2 秒，
             // 不等待会导致后续 restart/recompile 撞上端口占用 / class 文件锁
             if run_pid > 0 {
-                if !Self::wait_for_pid_exit(run_pid, std::time::Duration::from_secs(8)).await {
+                if !Self::wait_for_pid_exit(run_pid, std::time::Duration::from_secs(STOP_WAIT_PID_SECS)).await {
                     log::warn!("stop: 等待 PID {} 退出超时，继续后续操作", run_pid);
                 }
             }
-            let _ = db::clear_run_pid(service_id);
+            let _ = db::clear_run_pid(service_id); // clear: 失败影响小，restore 有 java 进程名校验兜底
             self.set_status(&app, service_id, ServiceStatus::Stopped);
             Self::emit_log(&app, service_id, LogSource::Mvn, "[javaboot] 服务已停止");
         } else {
@@ -1518,10 +1658,10 @@ impl ProcessManager {
             if let Some(pid) = pid {
                 self.set_status(&app, service_id, ServiceStatus::Stopping);
                 kill_process_tree_by_pid(pid);
-                if !Self::wait_for_pid_exit(pid, std::time::Duration::from_secs(8)).await {
+                if !Self::wait_for_pid_exit(pid, std::time::Duration::from_secs(STOP_WAIT_PID_SECS)).await {
                     log::warn!("stop: 等待 PID {} 退出超时，继续后续操作", pid);
                 }
-                let _ = db::clear_run_pid(service_id);
+                let _ = db::clear_run_pid(service_id); // clear: 失败影响小，restore 有 java 进程名校验兜底
                 self.set_status(&app, service_id, ServiceStatus::Stopped);
                 Self::emit_log(&app, service_id, LogSource::Mvn, "[javaboot] 服务已停止");
             } else {
@@ -1541,9 +1681,9 @@ impl ProcessManager {
         // old_ports 为空（未解析到业务端口，如启动失败即重启）时无需等待端口，
         // 进程已退出即可启动；否则轮询确认端口释放，避免新进程 bind 失败。
         if !old_ports.is_empty() {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(KILL_WAIT_SECS);
             loop {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_FAST_MS)).await;
                 let listening = crate::port::all_listening_ports().unwrap_or_default();
                 let listening_ports: std::collections::HashSet<u16> =
                     listening.into_iter().map(|(p, _)| p).collect();
@@ -1587,6 +1727,18 @@ impl ProcessManager {
                     // 编译失败：检查旧进程是否真的还活着再恢复状态。
                     // 仅凭 rt.pid.is_some() 不够——进程可能在此期间自行崩溃退出，
                     // pid 尚未被后台 reaper 清理，会误恢复为 Running。
+                    //
+                    // 【修复】清理 compile_only 插入的 placeholder handle（pid==0），
+                    // 否则残留的 placeholder 会被 start() 判定为"并发启动中"而拒绝启动。
+                    {
+                        let mut handles = self.handles.lock();
+                        if let Some(h) = handles.get(&service.id) {
+                            if h.pid == 0 {
+                                h.kill_token.store(true, Ordering::Relaxed);
+                                handles.remove(&service.id);
+                            }
+                        }
+                    }
                     let rt = self.get_runtime(&service.id);
                     let restore = match rt.pid {
                         Some(pid) if pid > 0 => {
@@ -1729,27 +1881,11 @@ impl ProcessManager {
         preflight_check(&env_cfg, &working_dir, &program)?;
 
         // 计算执行目录和模块相对路径
-        let (cwd, module_rel) = match &env_cfg.project_root {
-            Some(root) => {
-                let root_path = std::path::Path::new(root);
-                let rel = match working_dir.strip_prefix(root_path) {
-                    Ok(r) => r.to_string_lossy().replace('\\', "/").trim_matches('/').to_string(),
-                    Err(_) => {
-                        let wd = working_dir.canonicalize().unwrap_or_default();
-                        let pr = root_path.canonicalize().unwrap_or_default();
-                        wd.strip_prefix(&pr)
-                            .map(|r| r.to_string_lossy().replace('\\', "/").trim_matches('/').to_string())
-                            .unwrap_or_default()
-                    }
-                };
-                if rel.is_empty() {
-                    (working_dir.to_path_buf(), String::new())
-                } else {
-                    (root_path.to_path_buf(), rel)
-                }
-            }
-            None => (working_dir.to_path_buf(), String::new()),
-        };
+        let (cwd, module_rel) = resolve_cwd_and_module(
+            &working_dir,
+            &env_cfg.project_root,
+            None,
+        );
 
         let mut args: Vec<String> = base_args.to_vec();
         args.extend(common_mvn_flags());
@@ -1801,6 +1937,17 @@ impl ProcessManager {
         .map_err(|e| AppError::Process(format!("Maven 执行失败: {}", e)))?;
 
         if !status.success() {
+            // 【修复】清理 clean_service 插入的 placeholder handle（pid==0），
+            // 避免残留 placeholder 阻塞后续 start()
+            {
+                let mut handles = self.handles.lock();
+                if let Some(h) = handles.get(&service.id) {
+                    if h.pid == 0 {
+                        h.kill_token.store(true, Ordering::Relaxed);
+                        handles.remove(&service.id);
+                    }
+                }
+            }
             self.set_status(&app, &service.id, ServiceStatus::Error);
             return Err(AppError::Process(format!(
                 "Maven clean 失败（exit code: {:?}）",
@@ -1898,9 +2045,9 @@ impl ProcessManager {
             self.start(app.clone(), dep_service).await?;
 
             // 等待依赖变为 Running（轮询 runtime status）
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-            loop {
-                let rt = self.get_runtime(sid);
+let deadline = std::time::Instant::now() + std::time::Duration::from_secs(DEPENDENCY_START_TIMEOUT_SECS);
+                loop {
+                    let rt = self.get_runtime(sid);
                 if rt.status == ServiceStatus::Running {
                     break;
                 }
@@ -1916,7 +2063,7 @@ impl ProcessManager {
                         sid
                     )));
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_SLOW_MS)).await;
             }
             Self::emit_log(
                 &app,
@@ -1954,94 +2101,23 @@ impl ProcessManager {
         // 收集所有服务的递归依赖关系
         let all_deps = db::list_all_dependencies()?;
 
-        // 从每个目标服务出发，收集完整依赖子图
-        use std::collections::{HashMap, HashSet, VecDeque};
-
-        // 邻接表：depends_on → service_id（depends_on 在前）
-        let mut adj: HashMap<String, Vec<String>> = HashMap::new();
-        let mut nodes: HashSet<String> = HashSet::new();
-
-        // BFS 从所有目标服务出发收集相关节点
-        let mut visited: HashSet<String> = HashSet::new();
-        let mut queue: VecDeque<String> = VecDeque::new();
-        for id in service_ids {
-            queue.push_back(id.clone());
-            nodes.insert(id.clone());
-        }
-        while let Some(node) = queue.pop_front() {
-            if !visited.insert(node.clone()) {
-                continue;
+        // 从所有目标服务出发做全局拓扑排序
+        let sorted = match topo_sort_multi(service_ids, &all_deps) {
+            Ok(s) => s,
+            Err(e) => {
+                // 有循环依赖时尽力而为：直接按原顺序启动
+                Self::emit_log(
+                    &app,
+                    &service_ids[0],
+                    LogSource::Mvn,
+                    &format!("[javaboot] 警告: {}，受影响服务将按不确定顺序启动", e),
+                );
+                service_ids.to_vec()
             }
-            nodes.insert(node.clone());
-            for dep in &all_deps {
-                if dep.service_id == node {
-                    nodes.insert(dep.depends_on.clone());
-                    adj.entry(dep.depends_on.clone())
-                        .or_default()
-                        .push(dep.service_id.clone());
-                    queue.push_back(dep.depends_on.clone());
-                }
-            }
-        }
-
-        // 计算入度
-        let mut in_degree: HashMap<String, usize> = HashMap::new();
-        for n in &nodes {
-            in_degree.insert(n.clone(), 0);
-        }
-        for (_from, tos) in &adj {
-            for to in tos {
-                *in_degree.get_mut(to).unwrap_or(&mut 0) += 1;
-            }
-        }
-
-        // Kahn BFS
-        let mut q: VecDeque<String> = VecDeque::new();
-        for (n, &d) in &in_degree {
-            if d == 0 {
-                q.push_back(n.clone());
-            }
-        }
-
-        let mut sorted: Vec<String> = vec![];
-        while let Some(n) = q.pop_front() {
-            sorted.push(n.clone());
-            if let Some(succs) = adj.get(&n) {
-                for s in succs {
-                    if let Some(d) = in_degree.get_mut(s) {
-                        *d -= 1;
-                        if *d == 0 {
-                            q.push_back(s.clone());
-                        }
-                    }
-                }
-            }
-        }
-
-        if sorted.len() != nodes.len() {
-            // 有循环依赖，把不在 sorted 中的节点追加到末尾（尽力而为）
-            let sorted_set: HashSet<String> = sorted.iter().cloned().collect();
-            for n in &nodes {
-                if !sorted_set.contains(n) {
-                    sorted.push(n.clone());
-                }
-            }
-            Self::emit_log(
-                &app,
-                &sorted[0],
-                LogSource::Mvn,
-                "[javaboot] 警告: 检测到循环依赖，受影响服务将按不确定顺序启动",
-            );
-        }
+        };
 
         // 按拓扑序逐个启动
         for sid in &sorted {
-            // 跳过不在原始请求列表中、但不是任何请求服务依赖的服务
-            // （拓扑排序可能引入了只作为中间依赖的节点，这些也需要启动）
-            if !nodes.contains(sid) {
-                continue;
-            }
-
             // 已在运行则跳过
             if self.is_running(sid) {
                 result.skipped.push(sid.clone());
@@ -2067,9 +2143,9 @@ impl ProcessManager {
                 Ok(()) => {
                     // 等待变为 Running（或 Error）
                     let deadline = std::time::Instant::now()
-                        + std::time::Duration::from_secs(120);
-                    loop {
-                        let rt = self.get_runtime(sid);
++ std::time::Duration::from_secs(DEPENDENCY_START_TIMEOUT_SECS);
+                        loop {
+                            let rt = self.get_runtime(sid);
                         if rt.status == ServiceStatus::Running {
                             result.succeeded.push(sid.clone());
                             break;
@@ -2096,7 +2172,7 @@ impl ProcessManager {
                             ));
                             break;
                         }
-                        tokio::time::sleep(std::time::Duration::from_millis(500))
+                        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_SLOW_MS))
                             .await;
                     }
                 }
@@ -2186,6 +2262,55 @@ pub fn get_manager() -> &'static ProcessManager {
 static SYS: Lazy<PMutex<sysinfo::System>> = Lazy::new(|| PMutex::new(sysinfo::System::new()));
 
 // ================================================================
+// cwd / module_rel 计算（公共逻辑，消除 4 处重复）
+// ================================================================
+
+/// 计算 Maven 执行目录和模块相对路径。
+///
+/// 有 `project_root` 且（`require_strategy` 为 false 或策略为 CompileAll/CompileCurrent）时，
+/// 在项目根目录执行 Maven 并通过 `-pl <module_rel> -am` 指定模块；
+/// 否则直接在 `working_dir` 下执行。
+///
+/// 返回 `(cwd, module_rel)`：module_rel 为空表示在 cwd 根下编译，无需 -pl。
+fn resolve_cwd_and_module(
+    working_dir: &Path,
+    project_root: &Option<String>,
+    strategy: Option<&BuildStrategy>,
+) -> (PathBuf, String) {
+    let use_root = match (project_root, strategy) {
+        (Some(root), Some(s))
+            if *s == BuildStrategy::CompileAll || *s == BuildStrategy::CompileCurrent =>
+        {
+            Some(root)
+        }
+        (Some(root), None) => Some(root),
+        _ => None,
+    };
+
+    match use_root {
+        Some(root) => {
+            let root_path = std::path::Path::new(root);
+            let rel = match working_dir.strip_prefix(root_path) {
+                Ok(r) => r.to_string_lossy().replace('\\', "/").trim_matches('/').to_string(),
+                Err(_) => {
+                    let wd = working_dir.canonicalize().unwrap_or_default();
+                    let pr = root_path.canonicalize().unwrap_or_default();
+                    wd.strip_prefix(&pr)
+                        .map(|r| r.to_string_lossy().replace('\\', "/").trim_matches('/').to_string())
+                        .unwrap_or_default()
+                }
+            };
+            if rel.is_empty() {
+                (working_dir.to_path_buf(), String::new())
+            } else {
+                (root_path.to_path_buf(), rel)
+            }
+        }
+        None => (working_dir.to_path_buf(), String::new()),
+    }
+}
+
+// ================================================================
 // 拓扑排序：服务依赖编排
 // ================================================================
 
@@ -2196,28 +2321,38 @@ static SYS: Lazy<PMutex<sysinfo::System>> = Lazy::new(|| PMutex::new(sysinfo::Sy
 /// 2. 统计入度，入度为 0 的先入队
 /// 3. 逐个出队并降低后继入度，入度归 0 则入队
 /// 4. 若最终排序数 != 节点数 → 存在循环依赖
-fn topo_sort(
-    target: &str,
+/// 拓扑排序：从多个目标服务出发，收集相关依赖子图并排序。
+/// 使用 Kahn 算法（BFS）：
+/// - `targets` 为空时返回空列表
+/// - 检测到循环依赖时返回 Err（调用方可选择尽力而为或中止）
+fn topo_sort_multi(
+    targets: &[String],
     all_deps: &[db::Dependency],
 ) -> AppResult<Vec<String>> {
     use std::collections::{HashMap, HashSet, VecDeque};
 
+    if targets.is_empty() {
+        return Ok(vec![]);
+    }
+
     // 构建邻接表：dep.depends_on → dep.service_id（depends_on 在前，service_id 在后）
-    // 同时收集所有相关节点
     let mut adj: HashMap<String, Vec<String>> = HashMap::new();
     let mut nodes: HashSet<String> = HashSet::new();
-    nodes.insert(target.to_string());
+    for t in targets {
+        nodes.insert(t.clone());
+    }
 
-    // 从 target 出发 BFS，收集相关依赖子图
+    // 从所有目标出发 BFS，收集相关依赖子图
     let mut visited: HashSet<String> = HashSet::new();
     let mut queue: VecDeque<String> = VecDeque::new();
-    queue.push_back(target.to_string());
+    for t in targets {
+        queue.push_back(t.clone());
+    }
     while let Some(node) = queue.pop_front() {
         if !visited.insert(node.clone()) {
             continue;
         }
         nodes.insert(node.clone());
-        // 找到 node 的所有直接依赖
         for dep in all_deps {
             if dep.service_id == node {
                 nodes.insert(dep.depends_on.clone());
@@ -2271,6 +2406,14 @@ fn topo_sort(
     }
 
     Ok(sorted)
+}
+
+/// 单目标拓扑排序的便捷封装
+fn topo_sort(
+    target: &str,
+    all_deps: &[db::Dependency],
+) -> AppResult<Vec<String>> {
+    topo_sort_multi(&[target.to_string()], all_deps)
 }
 
 // ================================================================

@@ -84,28 +84,30 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
     });
   }, []);
 
-  const isRunningStatus = (serviceId: string) => {
-    const st = runtimes[serviceId]?.status;
-    return st === "running" || st === "starting";
-  };
+  // 提取运行中服务 ID 集合：visibleProjects / visibleUngrouped 只需依赖此集合而非整个 runtimes
+  const runningServiceIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const [id, rt] of Object.entries(runtimes)) {
+      if (rt.status === "running" || rt.status === "starting") {
+        ids.add(id);
+      }
+    }
+    return ids;
+  }, [runtimes]);
 
   // 过滤后的项目列表：开启开关时只保留存在运行中服务的项目
   const visibleProjects = useMemo(() => {
     if (!runningOnly) return projects;
     return projects.filter((p) =>
-      services.some(
-        (s) => s.project_id === p.id && isRunningStatus(s.id)
-      )
+      services.some((s) => s.project_id === p.id && runningServiceIds.has(s.id))
     );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runningOnly, projects, services, runtimes]);
+  }, [runningOnly, projects, services, runningServiceIds]);
 
   const ungroupedServices = services.filter((s) => !s.project_id);
   const visibleUngrouped = useMemo(() => {
     if (!runningOnly) return ungroupedServices;
-    return ungroupedServices.filter((s) => isRunningStatus(s.id));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runningOnly, ungroupedServices, runtimes]);
+    return ungroupedServices.filter((s) => runningServiceIds.has(s.id));
+  }, [runningOnly, ungroupedServices, runningServiceIds]);
 
   // 侧边栏可拖拽宽度（持久化到 localStorage，交互与文件树分隔条一致）
   const [width, setWidth] = useState<number>(() => {
@@ -192,8 +194,8 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
         );
       }
       await refreshServices();
-    } catch (e: any) {
-      message.error(`启动失败: ${e}`);
+    } catch (e) {
+      message.error(`启动失败: ${api.toErrMsg(e)}`);
     }
   };
 
@@ -202,8 +204,8 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
       await api.deleteProject(project.id);
       removeProject(project.id);
       message.success(`已删除项目 ${project.name}`);
-    } catch (e: any) {
-      message.error(`删除失败: ${e}`);
+    } catch (e) {
+      message.error(`删除失败: ${api.toErrMsg(e)}`);
     }
   };
 

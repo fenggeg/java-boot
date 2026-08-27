@@ -699,6 +699,9 @@ export default function FilePanel({
   const [error, setError] = useState<string | null>(null);
   // 编辑态语法高亮底层（与输入层滚动同步）
   const editorUnderlayRef = useRef<HTMLPreElement>(null);
+  // 防抖高亮：输入时不立即跑 Prism，而是延迟 150ms 后批量高亮
+  const [highlightedHtml, setHighlightedHtml] = useState("");
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 文本/标记文件的查看模式：仅 Markdown 使用（预览 ↔ 编辑）；
   // 其他文本文件无需切换，直接在单页内编辑（只读文件静态展示）
   const [viewMode, setViewMode] = useState<"view" | "edit">("view");
@@ -989,8 +992,8 @@ export default function FilePanel({
     try {
       const nodes = await loadMergedNodes(project.id, path);
       setTreeData((prev) => setChildren(prev, path, nodes));
-    } catch (e: any) {
-      message.error(`加载目录失败: ${e}`);
+    } catch (e) {
+      message.error(`加载目录失败: ${api.toErrMsg(e)}`);
       setTreeData((prev) => setChildren(prev, path, []));
     }
   }, [project.id, message]);
@@ -1100,21 +1103,25 @@ export default function FilePanel({
         if (fileType === "image") {
           // 图片：获取绝对路径后通过 Tauri asset 协议展示
           const absPath = await api.getFileAbsPath(project.id, path);
-          setTabs((prev) => [
-            ...prev,
-            {
-              path,
-              fileType,
-              content: "",
-              assetUrl: convertFileSrc(absPath),
-              meta: {
+          setTabs((prev) => {
+            // 防重复标签：若已在异步等待期间被添加则跳过
+            if (prev.some((t) => t.path === path)) return prev;
+            return [
+              ...prev,
+              {
+                path,
+                fileType,
                 content: "",
-                encoding: "binary",
-                readonly: true,
-                size: 0,
+                assetUrl: convertFileSrc(absPath),
+                meta: {
+                  content: "",
+                  encoding: "binary",
+                  readonly: true,
+                  size: 0,
+                },
               },
-            },
-          ]);
+            ];
+          });
           setActivePath(path);
         } else if (fileType === "binary") {
           // 二进制文件：不读取文本内容，只展示大小提示
@@ -1126,35 +1133,41 @@ export default function FilePanel({
             /* 二进制可能无法按文本读取，属正常情况 */
           }
           const absPath = await api.getFileAbsPath(project.id, path);
-          setTabs((prev) => [
-            ...prev,
-            {
-              path,
-              fileType,
-              content: "",
-              assetUrl: convertFileSrc(absPath),
-              meta: { content: "", encoding: "binary", readonly: true, size },
-            },
-          ]);
+          setTabs((prev) => {
+            if (prev.some((t) => t.path === path)) return prev;
+            return [
+              ...prev,
+              {
+                path,
+                fileType,
+                content: "",
+                assetUrl: convertFileSrc(absPath),
+                meta: { content: "", encoding: "binary", readonly: true, size },
+              },
+            ];
+          });
           setActivePath(path);
         } else {
           // 文本文件
           const meta = await api.readProjectFile(project.id, path);
           const buf = toBufferEol(meta.content);
-          setTabs((prev) => [
-            ...prev,
-            {
-              path,
-              fileType,
-              content: buf.content,
-              meta: {...meta, content: buf.content},
-              eol: buf.eol,
-            },
-          ]);
+          setTabs((prev) => {
+            if (prev.some((t) => t.path === path)) return prev;
+            return [
+              ...prev,
+              {
+                path,
+                fileType,
+                content: buf.content,
+                meta: {...meta, content: buf.content},
+                eol: buf.eol,
+              },
+            ];
+          });
           setActivePath(path);
         }
-      } catch (e: any) {
-        setError(String(e));
+      } catch (e) {
+        setError(api.toErrMsg(e));
       } finally {
         setLoading(false);
       }
@@ -1280,8 +1293,8 @@ export default function FilePanel({
       // 保存会改变工作区状态，刷新文件树 / 标签的 git 标记与行级 diff
       scheduleGitRefresh();
       setDiffRev((v) => v + 1);
-    } catch (e: any) {
-      message.error(`保存失败: ${e}`);
+    } catch (e) {
+      message.error(`保存失败: ${api.toErrMsg(e)}`);
     } finally {
       setSaving(false);
     }
@@ -1323,7 +1336,7 @@ export default function FilePanel({
         }
         if (head.head === null) {
           // 未跟踪 / HEAD 中不存在：整个文件标记为新增
-          setLineKinds(lines.map(() => 2 as LineKind));
+          setLineKinds(lines.map((): LineKind => 2));
           return;
         }
         const res = diffLineKinds(head.head, activeTab.content);
@@ -1387,7 +1400,7 @@ export default function FilePanel({
     api
       .gitFileLog(project.id, path)
       .then((cs) => setHistCommits(cs))
-      .catch((e) => setHistErr(String(e)))
+      .catch((e) => setHistErr(api.toErrMsg(e)))
       .finally(() => setHistLoading(false));
   };
 
@@ -1787,6 +1800,24 @@ export default function FilePanel({
     isMarkdown(activeTab.path) &&
     (activeTab.meta.readonly || viewMode === "view");
 
+  // 防抖高亮：内容变化后 150ms 才跑 Prism，大文件输入不卡顿
+  useEffect(() => {
+    if (!activeTab || activeTab.fileType !== "text" || isMdPreview) return;
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => {
+      const content = activeTab.content;
+      const html = highlightCode(
+        content.endsWith("\n") ? content + " " : content,
+        getPrismLang(activeTab.path)
+      );
+      setHighlightedHtml(html);
+    }, 150);
+    return () => {
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab?.content, activeTab?.path, isMdPreview]);
+
   /** 行号栏显示条件：文本文件、≤1 万行、非 Markdown 预览 */
   const showLineNumbers =
     !!activeTab &&
@@ -2148,8 +2179,8 @@ export default function FilePanel({
       scheduleGitRefresh();
       message.success("已重命名");
       setRenaming(null);
-    } catch (e: any) {
-      message.error(`重命名失败: ${e}`);
+    } catch (e) {
+      message.error(`重命名失败: ${api.toErrMsg(e)}`);
     }
   }, [renaming, project.id, refreshDir, remapTabPaths, message, scheduleGitRefresh]);
 
@@ -2176,8 +2207,8 @@ export default function FilePanel({
         }
         scheduleGitRefresh();
         message.success(isCut ? "已移动" : "已粘贴");
-      } catch (e: any) {
-        message.error(`${isCut ? "移动" : "粘贴"}失败: ${e}`);
+      } catch (e) {
+        message.error(`${isCut ? "移动" : "粘贴"}失败: ${api.toErrMsg(e)}`);
       }
     },
     [clipboard, project.id, refreshDir, remapTabPaths, message, scheduleGitRefresh]
@@ -2202,8 +2233,8 @@ export default function FilePanel({
         remapTabPaths(src, newPath);
         scheduleGitRefresh();
         message.success("已移动");
-      } catch (e: any) {
-        message.error(`移动失败: ${e}`);
+} catch (e) {
+      message.error(`移动失败: ${api.toErrMsg(e)}`);
       }
     },
     [draggingPath, project.id, refreshDir, remapTabPaths, message, scheduleGitRefresh]
@@ -2583,8 +2614,7 @@ export default function FilePanel({
                     aria-hidden
                     style={{paddingLeft: 12 + lnWidth}}
                     dangerouslySetInnerHTML={{
-                      __html: highlightCode(
-                        // 末尾换行时补一个空格，保证底层行数与输入层一致
+                      __html: highlightedHtml || highlightCode(
                         activeTab.content.endsWith("\n")
                           ? activeTab.content + " "
                           : activeTab.content,

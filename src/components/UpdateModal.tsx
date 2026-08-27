@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import {ArrowDown, Check, Download, Refresh, Warning} from "./Icons";
 import {checkForUpdate, downloadAndInstall, cancelUpdate, formatSize, relaunchAndInstall, type UpdateInfo,} from "../update";
 import {Prism} from "../prism-langs";
+import {toErrMsg} from "../api";
 
 interface Props {
   open: boolean;
@@ -57,7 +58,7 @@ export default function UpdateModal({open, onClose}: Props) {
       })
       .catch((e) => {
         if (cancelledRef.value) return;
-        setError(String(e));
+        setError(toErrMsg(e));
         setPhase("error");
       });
   }, []);
@@ -96,10 +97,10 @@ export default function UpdateModal({open, onClose}: Props) {
         }
       );
       setDownloaded(true);
-    } catch (e: any) {
+    } catch (e) {
       // 取消不弹错误提示，其他失败才提示
-      if (!String(e).includes("下载已取消")) {
-        message.error(`下载失败: ${e}`);
+      if (!toErrMsg(e).includes("下载已取消")) {
+        message.error(`下载失败: ${toErrMsg(e)}`);
       }
     } finally {
       setDownloading(false);
@@ -123,8 +124,8 @@ export default function UpdateModal({open, onClose}: Props) {
     }
     try {
       await relaunchAndInstall(installerPathRef.current);
-    } catch (e: any) {
-      message.error(`重启失败: ${e}`);
+    } catch (e) {
+      message.error(`重启失败: ${toErrMsg(e)}`);
     }
   }, [message]);
 

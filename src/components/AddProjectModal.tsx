@@ -118,8 +118,8 @@ export default function AddProjectModal({
       if (result.length === 0) {
         setError("未扫描到任何 module");
       }
-    } catch (e: any) {
-      setError(String(e));
+    } catch (e) {
+      setError(api.toErrMsg(e));
     } finally {
       setScanning(false);
     }
@@ -196,8 +196,8 @@ export default function AddProjectModal({
       );
       onAdded();
       handleClose();
-    } catch (e: any) {
-      message.error(`添加失败: ${e}`);
+    } catch (e) {
+      message.error(`添加失败: ${api.toErrMsg(e)}`);
     }
   };
 
@@ -322,9 +322,8 @@ export default function AddProjectModal({
               checkable
               checkedKeys={checkedKeys}
               onCheck={(keys) => {
-                setCheckedKeys(
-                  (Array.isArray(keys) ? keys : keys.checked) as string[]
-                );
+                const raw = Array.isArray(keys) ? keys : keys.checked;
+                setCheckedKeys(raw.filter((k): k is string => typeof k === "string"));
               }}
               treeData={toTreeData(modules)}
               defaultExpandAll

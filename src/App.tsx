@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useMemo, useState} from "react";
-import {App as AntApp, Dropdown, Tabs} from "antd";
+import {App as AntApp, Dropdown, Tabs, Alert, Button} from "antd";
 import {listen, type UnlistenFn,} from "@tauri-apps/api/event";
 import {useStore} from "./store";
 import type {LogLine, Project, Service, ServiceRuntime} from "./types";
@@ -34,6 +34,7 @@ export default function App() {
   const closeTab = useStore((s) => s.closeTab);
   const openedTabs = useStore((s) => s.openedTabs);
   const logs = useStore((s) => s.logs);
+  const initError = useStore((s) => s.initError);
 
   const [addProjectOpen, setAddProjectOpen] = useState(false);
   const [addServiceOpen, setAddServiceOpen] = useState(false);
@@ -61,6 +62,8 @@ export default function App() {
 
     let unlistenStatus: UnlistenFn | undefined;
     let unlistenLog: UnlistenFn | undefined;
+    // 防止 listen resolve 前 cleanup 已执行导致监听泄漏
+    const disposedRef = { current: false };
 
     (async () => {
       unlistenStatus = await listen<ServiceRuntime>(
@@ -69,12 +72,23 @@ export default function App() {
           setRuntime(e.payload);
         }
       );
+      if (disposedRef.current) {
+        unlistenStatus();
+        unlistenStatus = undefined;
+        return;
+      }
       unlistenLog = await listen<LogLine>("service://log", (e) => {
         appendLog(e.payload);
       });
+      if (disposedRef.current) {
+        unlistenLog();
+        unlistenLog = undefined;
+        return;
+      }
     })();
 
     return () => {
+      disposedRef.current = true;
       unlistenStatus?.();
       unlistenLog?.();
     };
@@ -192,6 +206,20 @@ export default function App() {
 
   return (
     <div className="app-layout">
+      {initError && (
+        <Alert
+          type="error"
+          showIcon
+          banner
+          message="初始化失败"
+          description={initError}
+          action={
+            <Button size="small" onClick={() => init()}>
+              重试
+            </Button>
+          }
+        />
+      )}
       <TopBar onOpenSettings={() => setSettingsOpen(true)} />
 
       <div className="main-body">

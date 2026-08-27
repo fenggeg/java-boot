@@ -22,6 +22,8 @@ interface Store {
   openedTabs: string[];
   gitAvailable: boolean;
   loading: boolean;
+  /** 初始化失败时的错误信息，UI 据此展示提示 */
+  initError: string | null;
 
   // actions
   init: () => Promise<void>;
@@ -79,23 +81,34 @@ export const useStore = create<Store>((set, get) => {
     if (pendingIds.length === 0) return;
     const state = get();
     const maxLines = state.config.log_buffer_lines || 10000;
+    // 收集当前有效的服务 ID 集合，用于过滤已删除服务的残留事件
+    const validServiceIds = new Set(state.services.map((s) => s.id));
     const nextLogs = { ...state.logs };
     for (const sid of pendingIds) {
+      // 跳过已删除服务的日志，避免"复活"
+      if (!validServiceIds.has(sid)) {
+        delete pendingLogs[sid];
+        continue;
+      }
       const batch = pendingLogs[sid];
       if (!batch || batch.length === 0) continue;
       delete pendingLogs[sid];
       const existing = nextLogs[sid] ?? { lines: [], hasUnread: false };
-      const lines = existing.lines;
-      for (const l of batch) lines.push(l);
-      if (lines.length > maxLines) {
-        lines.splice(0, lines.length - maxLines);
-      }
+      // 构造新数组而非原地 push，避免 zustand 引用相等判断失效
+      const lines = [...existing.lines, ...batch];
+      // 超限截断：同样构造新数组
+      const trimmed = lines.length > maxLines
+        ? lines.slice(lines.length - maxLines)
+        : lines;
       const isSelected = state.selectedServiceId === sid;
       const isPaused = state.paused[sid];
       // 暂停的服务：日志已写入 lines 数组（缓存），但不生成新 LogBuffer 引用，
       // 避免触发订阅重渲染；恢复时会手动递增 logFlushTick 强制刷新。
       if (!isPaused) {
-        nextLogs[sid] = { lines, hasUnread: !isSelected };
+        nextLogs[sid] = { lines: trimmed, hasUnread: !isSelected };
+      } else {
+        // 暂停时也更新 lines 引用（新数组），但保持 hasUnread 不变
+        nextLogs[sid] = { lines: trimmed, hasUnread: existing.hasUnread };
       }
     }
     set({ logs: nextLogs });
@@ -126,9 +139,10 @@ export const useStore = create<Store>((set, get) => {
   openedTabs: loadOpenedTabs(),
   gitAvailable: false,
   loading: false,
+  initError: null,
 
   init: async () => {
-    set({ loading: true });
+    set({ loading: true, initError: null });
     try {
       const [projects, services, runtimes, config, gitOk] = await Promise.all([
         api.listProjects(),
@@ -181,8 +195,9 @@ export const useStore = create<Store>((set, get) => {
         openedTabs,
       });
     } catch (e) {
+      const msg = api.toErrMsg(e);
       console.error("init failed", e);
-      set({ loading: false });
+      set({ loading: false, initError: msg });
     }
   },
 
@@ -222,12 +237,17 @@ export const useStore = create<Store>((set, get) => {
   },
 
   setRuntime: (rt) => {
+    // 跳过已删除服务的 runtime 事件，避免"复活"
+    const services = get().services;
+    if (!services.some((s) => s.id === rt.service_id)) return;
     set((state) => ({
       runtimes: { ...state.runtimes, [rt.service_id]: rt },
     }));
   },
 
   appendLog: (log) => {
+    // 跳过已删除服务的日志，避免"复活"
+    if (!get().services.some((s) => s.id === log.service_id)) return;
     // 不直接 set，而是推入 pending 队列，由节流定时器批量 flush。
     // 这样高频日志下 setState 频率从"每条一次"降到"每 FLUSH_INTERVAL 一次"。
     const queue = pendingLogs[log.service_id];

@@ -76,8 +76,8 @@ export default function GitDiffModal({
           const d = await api.gitDiff(projectId, target.path, useStaged);
           setDiffText(d || "(无差异)");
         }
-      } catch (e: any) {
-        setError(String(e));
+      } catch (e) {
+        setError(api.toErrMsg(e));
       } finally {
         setLoading(false);
       }
@@ -108,8 +108,8 @@ export default function GitDiffModal({
       const c = await api.gitReadFile(projectId, change.path);
       setContent(c);
       setEditing(true);
-    } catch (e: any) {
-      message.error(`读取文件失败: ${e}`);
+    } catch (e) {
+      message.error(`读取文件失败: ${api.toErrMsg(e)}`);
     }
   };
 
@@ -124,8 +124,8 @@ export default function GitDiffModal({
       const d = await api.gitDiff(projectId, change.path, false);
       setDiffText(d || "(无差异)");
       onChanged();
-    } catch (e: any) {
-      message.error(`保存失败: ${e}`);
+    } catch (e) {
+      message.error(`保存失败: ${api.toErrMsg(e)}`);
     } finally {
       setSaving(false);
     }

@@ -63,8 +63,8 @@ export default function GitPanel({ project, onClose, onBackFiles }: Props) {
       ]);
       setStatus(st);
       setCommits(lg);
-    } catch (e: any) {
-      setError(String(e));
+    } catch (e) {
+      setError(api.toErrMsg(e));
     } finally {
       setLoading(false);
     }
@@ -101,8 +101,8 @@ export default function GitPanel({ project, onClose, onBackFiles }: Props) {
     try {
       await api.gitStage(project.id, paths);
       await refresh();
-    } catch (e: any) {
-      message.error(`暂存失败: ${e}`);
+    } catch (e) {
+      message.error(`暂存失败: ${api.toErrMsg(e)}`);
     }
   };
 
@@ -111,8 +111,8 @@ export default function GitPanel({ project, onClose, onBackFiles }: Props) {
     try {
       await api.gitUnstage(project.id, paths);
       await refresh();
-    } catch (e: any) {
-      message.error(`取消暂存失败: ${e}`);
+    } catch (e) {
+      message.error(`取消暂存失败: ${api.toErrMsg(e)}`);
     }
   };
 
@@ -132,8 +132,8 @@ export default function GitPanel({ project, onClose, onBackFiles }: Props) {
           setCommitMsg("");
           setExpandedHash(null);
           await refresh();
-        } catch (e: any) {
-          message.error(`提交失败: ${e}`);
+        } catch (e) {
+          message.error(`提交失败: ${api.toErrMsg(e)}`);
           // 抛出异常让 Popconfirm/Modal 保持打开以便用户修正
           throw e;
         } finally {
@@ -154,14 +154,14 @@ export default function GitPanel({ project, onClose, onBackFiles }: Props) {
       } else {
         message.error(`拉取失败: ${r.message}`);
       }
-    } catch (e: any) {
-      message.error(`拉取失败: ${e}`);
+    } catch (e) {
+      message.error(`拉取失败: ${api.toErrMsg(e)}`);
     } finally {
       setPulling(false);
       await refresh();
       // 拉取产生合并冲突时自动打开冲突解决面板
-      const st = await api.gitStatus(project.id).catch(() => null);
-      if (st && (st.merging || st.changes.some(isConflictChange))) {
+      // 【优化】复用 refresh() 已获取的 status，避免重复 IPC
+      if (status && (status.merging || status.changes.some(isConflictChange))) {
         setConflictOpen(true);
       }
     }
@@ -177,8 +177,8 @@ export default function GitPanel({ project, onClose, onBackFiles }: Props) {
         message.error(`推送失败: ${r.message}`);
       }
       await refresh();
-    } catch (e: any) {
-      message.error(`推送失败: ${e}`);
+    } catch (e) {
+      message.error(`推送失败: ${api.toErrMsg(e)}`);
     } finally {
       setPushing(false);
     }
@@ -198,7 +198,7 @@ export default function GitPanel({ project, onClose, onBackFiles }: Props) {
       const d = await api.gitShow(project.id, hash);
       setShowDiff(d);
     } catch (e: unknown) {
-      setDiffError(e instanceof Error ? e.message : String(e));
+      setDiffError(api.toErrMsg(e));
     }
   };
 

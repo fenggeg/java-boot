@@ -2079,9 +2079,26 @@ body {
   /* 必须与输入层(.file-editor-textarea)及 diff 标记定位(LINE_H=22)一致，
      用 1.6 这类相对值会随行号线性漂移，长文件下 diff 条明显错位 */
   line-height: 22px;
-  overflow: hidden;
+  /* overflow: auto（非 hidden）：与 textarea 的 overflow: auto 保持一致，
+     确保两层同时出现/消失滚动条，内容区宽度始终相同 */
+  overflow: auto;
   pointer-events: none;
   z-index: 0;
+}
+
+/* 底层滚动条不可见：宽度与全局 ::-webkit-scrollbar(10px) 一致，
+   确保预留的滚动条空间与 textarea 完全相同；thumb/track 透明实现视觉隐藏。
+   滚动位置由 textarea 的 onScroll 同步，底层仅做占位 */
+.file-editor-overlay .file-code-underlay::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.file-editor-overlay .file-code-underlay::-webkit-scrollbar-track {
+  background: transparent;
+}
+.file-editor-overlay .file-code-underlay::-webkit-scrollbar-thumb {
+  background: transparent;
+  border: none;
 }
 
 .file-editor-overlay .file-editor-input {
@@ -2092,6 +2109,16 @@ body {
   caret-color: var(--text);
   background: transparent;
   overflow: auto;
+  /* 显式声明与 .file-code-underlay 完全一致的 padding 与字体参数，
+     确保两层文字位置严格重合（光标不会与高亮文字错位） */
+  padding: 12px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 22px;
+  tab-size: 2;
+  border: none;
+  outline: none;
+  resize: none;
 }
 
 /* 选区重影修复：浏览器默认 ::selection 会用不透明前景色绘制输入层文字，

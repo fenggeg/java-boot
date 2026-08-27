@@ -41,8 +41,8 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
       // 同时省掉一次 IPC 往返。无依赖时等价于普通启动。
       await api.startServiceWithDependencies(service.id);
       // 启动是异步的，真实结果通过 service://status 事件通知
-    } catch (e: any) {
-      message.error(`启动失败: ${e}`);
+    } catch (e) {
+      message.error(`启动失败: ${api.toErrMsg(e)}`);
     } finally {
       setBusy(false);
     }
@@ -53,8 +53,8 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
     setBusy(true);
     try {
       await api.stopService(service.id);
-    } catch (e: any) {
-      message.error(`停止失败: ${e}`);
+    } catch (e) {
+      message.error(`停止失败: ${api.toErrMsg(e)}`);
     } finally {
       setBusy(false);
     }
@@ -66,8 +66,8 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
     try {
       await api.restartService(service.id);
       // 重启是异步的，真实结果通过事件通知
-    } catch (e: any) {
-      message.error(`重启失败: ${e}`);
+    } catch (e) {
+      message.error(`重启失败: ${api.toErrMsg(e)}`);
     } finally {
       setBusy(false);
     }
@@ -79,8 +79,8 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
     try {
       await api.compileAndStart(service.id);
       // 编译并启动是异步的
-    } catch (e: any) {
-      message.error(`编译失败: ${e}`);
+    } catch (e) {
+      message.error(`编译失败: ${api.toErrMsg(e)}`);
     } finally {
       setBusy(false);
     }
@@ -92,8 +92,8 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
     try {
       await api.recompileAndStart(service.id);
       // 重新编译并启动是异步的
-    } catch (e: any) {
-      message.error(`重新编译失败: ${e}`);
+    } catch (e) {
+      message.error(`重新编译失败: ${api.toErrMsg(e)}`);
     } finally {
       setBusy(false);
     }
@@ -103,8 +103,8 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
     try {
       await api.cleanService(service.id);
       message.success(`${service.name}: 清理完成`);
-    } catch (e: any) {
-      message.error(`清理失败: ${e}`);
+    } catch (e) {
+      message.error(`清理失败: ${api.toErrMsg(e)}`);
     }
   };
 
@@ -113,21 +113,21 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
       await api.deleteService(service.id);
       removeService(service.id);
       message.success("已删除服务");
-    } catch (e: any) {
-      message.error(`删除失败: ${e}`);
+    } catch (e) {
+      message.error(`删除失败: ${api.toErrMsg(e)}`);
     }
   };
 
   const handlePortClick = (port: number) => {
-    api.openInBrowser(port).catch((e) => message.error(`打开失败: ${e}`));
+    api.openInBrowser(port).catch((e) => message.error(`打开失败: ${api.toErrMsg(e)}`));
   };
 
   const handleToggleAutoRestart = async (enabled: boolean) => {
     try {
       await api.toggleAutoRestart(service.id, enabled);
       await refreshServices();
-    } catch (e: any) {
-      message.error(`操作失败: ${e}`);
+    } catch (e) {
+      message.error(`操作失败: ${api.toErrMsg(e)}`);
     }
   };
 

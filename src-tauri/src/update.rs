@@ -22,6 +22,32 @@ use crate::util::NoWindow;
 /// 下载进度事件名
 const PROGRESS_EVENT: &str = "update://progress";
 
+/// 允许的下载域名白名单（GitHub Releases 直链 + CDN + 代理）
+const ALLOWED_DOWNLOAD_HOSTS: &[&str] = &[
+    "github.com",
+    "objects.githubusercontent.com",
+    "node-red.gyfwork.cc.cd",
+];
+
+/// 检查 URL host 是否在白名单中
+fn is_allowed_download_host(url: &str) -> bool {
+    let parsed = match url::Url::parse(url) {
+        Ok(u) => u,
+        Err(_) => return false,
+    };
+    // 仅允许 HTTPS
+    if parsed.scheme() != "https" {
+        return false;
+    }
+    let host = parsed.host_str().unwrap_or("");
+    ALLOWED_DOWNLOAD_HOSTS.iter().any(|h| host == *h)
+}
+
+/// 安全获取 Mutex guard，poison 时恢复而非 panic
+fn safe_lock(mutex: &Mutex<Option<CancellationToken>>) -> std::sync::MutexGuard<'_, Option<CancellationToken>> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// 进度上报与速度采样的固定间隔：
 /// 固定时间窗保证 speed = 窗口内实际字节数 ÷ 实际耗时，与真实吞吐一致
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
@@ -97,11 +123,18 @@ pub async fn download_update(
     if url.is_empty() {
         return Err(AppError::Other("下载地址为空".to_string()));
     }
+    // URL 白名单校验：阻止非可信来源的下载
+    if !is_allowed_download_host(&url) {
+        return Err(AppError::Other(format!(
+            "下载地址域名不在白名单中: {}",
+            url.split('/').nth(2).unwrap_or("未知")
+        )));
+    }
 
     // 注册本次下载的取消令牌；若已有旧令牌（异常残留）先取消旧的
     let token = CancellationToken::new();
     {
-        let mut guard = cancel_state.0.lock().expect("DownloadCancel poisoned");
+        let mut guard = safe_lock(&cancel_state.0);
         if let Some(old) = guard.take() {
             old.cancel();
         }
@@ -154,16 +187,16 @@ pub async fn download_update(
     use futures_util::StreamExt;
     loop {
         // 取消检查：cancel_update 触发后立即中止
-        if token.is_cancelled() {
-            writer.flush().ok();
-            drop(writer);
-            let _ = std::fs::remove_file(&target);
-            {
-                let mut guard = cancel_state.0.lock().expect("DownloadCancel poisoned");
-                *guard = None;
+            if token.is_cancelled() {
+                writer.flush().ok();
+                drop(writer);
+                let _ = std::fs::remove_file(&target);
+                {
+                    let mut guard = safe_lock(&cancel_state.0);
+                    *guard = None;
+                }
+                return Err(AppError::Other("下载已取消".to_string()));
             }
-            return Err(AppError::Other("下载已取消".to_string()));
-        }
 
         // 空闲超时也走一轮采样：停滞时速度能及时回落到 0，而不是停留在旧值
         match tokio::time::timeout(SAMPLE_INTERVAL, stream.next()).await {
@@ -210,7 +243,7 @@ pub async fn download_update(
 
     // 下载完成：清理取消令牌
     {
-        let mut guard = cancel_state.0.lock().expect("DownloadCancel poisoned");
+        let mut guard = safe_lock(&cancel_state.0);
         *guard = None;
     }
 
@@ -233,7 +266,7 @@ pub async fn download_update(
 #[tauri::command]
 pub async fn cancel_update(cancel_state: State<'_, DownloadCancel>) -> AppResult<()> {
     let token = {
-        let guard = cancel_state.0.lock().expect("DownloadCancel poisoned");
+        let guard = safe_lock(&cancel_state.0);
         guard.as_ref().cloned()
     };
     if let Some(t) = token {
@@ -253,8 +286,42 @@ pub async fn cancel_update(cancel_state: State<'_, DownloadCancel>) -> AppResult
 #[tauri::command]
 pub async fn install_update(app: AppHandle, path: String) -> AppResult<()> {
     let installer = PathBuf::from(&path);
+
+    // 安全校验：安装包路径必须位于 update_dir() 内，阻止执行任意路径的可执行文件
+    let update_dir = update_dir();
+    let canonical_installer = crate::util::canonicalize_clean(&installer);
+    let canonical_update_dir = crate::util::canonicalize_clean(&update_dir);
+    match (&canonical_installer, &canonical_update_dir) {
+        (Some(ci), Some(cud)) => {
+            if !ci.starts_with(cud) {
+                return Err(AppError::Other(
+                    "安装包路径不在允许的更新目录中".to_string(),
+                ));
+            }
+        }
+        // 若 canonicalize 失败（如路径不存在），用逻辑比较兜底
+        _ => {
+            let installer_abs = if installer.is_absolute() {
+                installer.clone()
+            } else {
+                std::env::current_dir().unwrap_or_default().join(&installer)
+            };
+            if !installer_abs.starts_with(&update_dir) {
+                return Err(AppError::Other(
+                    "安装包路径不在允许的更新目录中".to_string(),
+                ));
+            }
+        }
+    }
+
     if !crate::util::path_exists_follow_junction(&installer) {
         return Err(AppError::NotFound(format!("安装包不存在: {}", path)));
+    }
+
+    // 安全校验：仅允许执行 .exe 文件
+    match installer.extension().and_then(|e| e.to_str()) {
+        Some("exe") => {}
+        _ => return Err(AppError::Other("安装包必须是 .exe 文件".to_string())),
     }
 
     std::process::Command::new(&installer)

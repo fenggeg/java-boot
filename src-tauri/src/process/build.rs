@@ -211,8 +211,10 @@ fn wait_with_timeout(child: &mut std::process::Child, pid: u32) -> std::io::Resu
             Ok(Some(status)) => return Ok(status),
             Ok(None) => {
                 if Instant::now() >= deadline {
-                    // 超时：强杀进程树，返回错误
+                    // 超时：强杀进程树
                     let _ = kill_child(pid);
+                    // 【修复】等待进程真正退出并回收句柄，避免僵尸进程和管道泄漏
+                    let _ = child.wait();
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
                         format!("Maven 进程 {} 超时（600 秒），已强杀", pid),

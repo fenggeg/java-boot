@@ -250,6 +250,8 @@ pub async fn kill(session_id: &str) -> AppResult<()> {
             crate::process::manager::kill_process_tree_by_pid(pid);
         }
         let _ = c.kill();
+        // 【修复】等待进程真正退出并回收句柄，避免僵尸句柄和 reader 线程长期阻塞
+        let _ = c.wait();
     }
     Ok(())
 }
@@ -284,6 +286,8 @@ pub async fn kill_all() {
             if let Some(mut c) = s.child.lock().await.take() {
                 // 只杀 shell 进程本身，不杀进程树
                 let _ = c.kill();
+                // 【修复】等待退出并回收句柄
+                let _ = c.wait();
             }
         }
     }
