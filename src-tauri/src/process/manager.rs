@@ -615,17 +615,34 @@ impl ProcessManager {
                         // 确认还是同一个 handle（可能在此期间被 stop/restart 替换）
                         if h.pid == existing_pid {
                             if alive {
-                                return Err(AppError::ServiceRunning(service.id));
+                                // 防御性检查：runtime 状态为 Error/Stopped 但进程"存活"，
+                                // 可能是 sysinfo 刷新延迟或 PID 复用。
+                                // 用户主动请求启动，说明他认为服务未运行，应清理后允许启动。
+                                let rt_status = self.runtimes.lock()
+                                    .get(&service.id)
+                                    .map(|r| r.status);
+                                if matches!(rt_status, Some(ServiceStatus::Error) | Some(ServiceStatus::Stopped)) {
+                                    log::warn!(
+                                        "PID {} sysinfo 显示存活但 runtime 状态为 {:?}，清理残留后允许重启：{}",
+                                        existing_pid, rt_status, service.id
+                                    );
+                                    h.kill_token.store(true, Ordering::Relaxed);
+                                    handles.remove(&service.id);
+                                    let _ = db::clear_run_pid(&service.id);
+                                } else {
+                                    return Err(AppError::ServiceRunning(service.id));
+                                }
+                            } else {
+                                log::info!(
+                                    "堆叠残留 handle(PID {}, elapsed {:?})，已自动清理：{}",
+                                    h.pid,
+                                    h.created_at.elapsed(),
+                                    service.id
+                                );
+                                h.kill_token.store(true, Ordering::Relaxed);
+                                handles.remove(&service.id);
+                                let _ = db::clear_run_pid(&service.id); // clear: 失败影响小，restore 有 java 进程名校验兜底
                             }
-                            log::info!(
-                                "堆叠残留 handle(PID {}, elapsed {:?})，已自动清理：{}",
-                                h.pid,
-                                h.created_at.elapsed(),
-                                service.id
-                            );
-                            h.kill_token.store(true, Ordering::Relaxed);
-                            handles.remove(&service.id);
-                            let _ = db::clear_run_pid(&service.id); // clear: 失败影响小，restore 有 java 进程名校验兜底
                         }
                     }
                     let placeholder = ProcessHandle::placeholder();
@@ -637,7 +654,14 @@ impl ProcessManager {
                     // placeholder（pid==0）：不需要 SYS 锁，直接在 handles 锁内判断
                     let signaled = existing_kill_token.load(Ordering::Relaxed);
                     let stale = existing_created_at.elapsed() > std::time::Duration::from_secs(STALE_PLACEHOLDER_SECS);
-                    let alive = !(signaled || stale);
+                    // 额外检查 runtime 状态：如果后端已将状态设为 Error/Stopped，
+                    // 说明上一次启动已明确失败，placeholder 是残留的，应清理而非拒绝。
+                    // 否则会出现"状态=Error → 前端显示启动按钮，但 start() 返回 ServiceRunning"的死锁。
+                    let rt_status = self.runtimes.lock()
+                        .get(&service.id)
+                        .map(|r| r.status);
+                    let failed = matches!(rt_status, Some(ServiceStatus::Error) | Some(ServiceStatus::Stopped));
+                    let alive = !(signaled || stale || failed);
                     if alive {
                         return Err(AppError::ServiceRunning(service.id));
                     }
