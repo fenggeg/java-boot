@@ -7,6 +7,47 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-27
+
+### 新增
+
+- **更新下载 URL 白名单**：`download_update` 校验下载地址 host 必须在白名单（github.com / objects.githubusercontent.com / 自有 CDN）且为 HTTPS，阻止非可信来源下载
+- **安装包路径与类型校验**：`install_update` 校验安装包路径必须位于 `update_dir()` 内、扩展名必须为 `.exe`，阻止执行任意路径的可执行文件
+- **Java 主版本检测与 argfile JDK8 回退**：命令行超长时先检测 Java 主版本号（解析 `java -version`），JDK 8 不支持 `@argfile`（JEP 294 为 JDK 9 引入）则自动回退到 CLASSPATH 环境变量方案；版本检测结果进程内缓存（64 条上限）避免批量启动反复探测
+- **watcher worker 异常后自动重建**：文件监听 worker panic 退出后延迟 5 秒重建 watcher，避免永久失去自动重启能力；`unwatch` 时清除重启中标志，防止标志卡住阻塞后续 watch
+- **自动重启 TOCTOU 竞态修复**：引入 `RESTART_IN_PROGRESS` 标志，原子地检查服务状态并设置标志，避免检查与 spawn 之间被并发事件触发重复编译；仅当服务配置了自动重启且正在运行时才触发
+- **初始化失败错误提示**：`init()` 失败时在顶部展示 Alert 横幅并提供「重试」按钮，替代静默失败
+- **错误信息归一化**：新增 `api.toErrMsg` 统一 TauriError / Error / string 的格式化输出，全前端错误提示改用此函数，消除 `catch (e: any)` 的 `any` 类型
+- **walk_files 缓存**：Ctrl+P 文件列表遍历结果按 project_id 缓存（TTL 5 秒），避免每次打开弹层都全量遍历大型项目目录
+
+### 变更
+
+- **状态推送只 emit 变化服务**：CPU/内存采样与端口冲突刷新改为只推送有变化的服务快照，而非全量推送所有 runtimes，减少 IPC 噪声
+- **端口列表整表替换**：`set_service_ports` 改为整表替换而非追加，避免端口变更后残留旧端口
+- **mark_running 幂等**：已是 Running 状态时跳过 set_status + emit，避免日志中多次出现 "started" 关键字时反复推送
+- **is_running 单锁判断**：一次性获取 handles 锁做判断，避免 handles 与 runtimes 两把锁的非原子竞态
+- **日志缓冲构造新数组**：`flushLogs` 改为构造新数组而非原地 push，确保 zustand 引用相等判断生效；暂停服务也更新 lines 引用
+- **已删除服务事件过滤**：`setRuntime` / `appendLog` / `flushLogs` 跳过已删除服务的事件，避免"复活"已删除服务
+
+### 修复
+
+- **路径穿越校验绕过**：`git::safe_join` 在目标文件尚不存在时 `canonicalize(full)` 返回 None 导致边界检查被跳过；改为 canonicalize parent 后拼文件名再校验，正确处理未创建文件
+- **pom 模块路径越界**：`scan_recursive` 校验 module 路径不允许 `..` 或绝对路径，防止越界读取
+- **read_file 超大文件内存耗尽**：`project_fs::read_file` 与 `git::read_file` 先检查文件大小再读入，超过上限直接拒绝，避免一次性读入超大文件
+- **copy_recursive junction 循环**：递归复制增加深度上限（32 层），防御 Windows junction（file_type 不算 symlink）导致的无限递归
+- **Mutex poison panic**：`update.rs` 下载取消状态锁改用 `safe_lock`，poison 时恢复而非 panic；`walk_files` 缓存锁同理
+- **stop 后僵尸进程与句柄泄漏**：`build::wait_with_timeout` 超时强杀后 `child.wait()` 回收句柄；`terminal::kill` / `kill_all` 杀 shell 后 `wait()` 回收，避免僵尸句柄和 reader 线程长期阻塞
+- **taskkill 失败静默**：`kill_process_tree_by_pid` 记录 taskkill 失败日志，便于排查"进程已退出"场景
+- **emit 失败静默**：所有 `app.emit` 失败改为 `log::warn` 记录，便于排查 IPC 异常
+- **save_run_pid 失败静默**：记录失败日志而非完全忽略
+- **check_started 误匹配**：要求 "Started " 在行首附近（行长 ≤ 200）且包含完整三段关键字，减少日志中间出现 "Started xxx in xxx second" 的误匹配
+- **theme localStorage 脏值**：严格校验 localStorage 值为 "dark"/"light" 之一，避免脏值导致主题异常
+- **listen 泄漏**：App 初始化监听增加 `disposedRef`，防止 listen resolve 前 cleanup 已执行导致监听泄漏
+
+### CI
+
+- 无构建流水线变更
+
 ## [0.9.0] - 2026-08-27
 
 ### 新增
