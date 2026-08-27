@@ -162,8 +162,12 @@ function classifyChange(ch: GitChange): FileGitStatus {
   return gitChangeKind(ch);
 }
 
-/** 行级 diff 标记：0=未变 1=修改 2=新增 */
-type LineKind = 0 | 1 | 2;
+/**
+ * 行级 diff 标记：0=未变 1=修改 2=新增
+ * 3=删除：该位置上方相对 HEAD 有行被移除（缓冲区中已无对应行），
+ * 标记画在删除点之后的第一行上，与 Git 面板的「-N」口径对应
+ */
+type LineKind = 0 | 1 | 2 | 3;
 
 /** 行比较的归一化：忽略行尾 CR，抵消 core.autocrlf 的 CRLF/LF 差异 */
 function normLine(l: string): string {
@@ -198,7 +202,13 @@ function diffLineKinds(head: string, buf: string): LineKind[] {
   }
   const am = a.length - pre - suf;
   const bm = b.length - pre - suf;
-  if (bm === 0) return kinds; // 纯删除：缓冲区无行可标
+  if (bm === 0) {
+    // 纯删除：缓冲区无行可标，删除条落在紧随删除点的第一行（贴文件尾则用最后一行）
+    if (am > 0 && b.length > 0) {
+      kinds[Math.min(pre, b.length - 1)] = 3;
+    }
+    return kinds;
+  }
   if (am === 0) {
     // 纯新增
     for (let i = pre; i < pre + bm; i++) kinds[i] = 2;
@@ -278,6 +288,12 @@ function diffLineKinds(head: string, buf: string): LineKind[] {
       kinds[row + k] = k < modN ? 1 : 2;
     }
     row += addN;
+    // 块内净删除：在该差异块缓冲区末行的下一行标「删除」（EOF 处贴最后一行）；
+    // 目标行只会是后续公共行或尾缀行（kind 0），不会覆盖已打的修改/新增
+    if (delN > addN) {
+      const target = Math.min(row, b.length - 1);
+      if (kinds[target] === 0) kinds[target] = 3;
+    }
     t = t2;
   }
   return kinds;
@@ -1258,7 +1274,7 @@ export default function FilePanel({
     syncGutter(0);
   }, [activePath, lineKinds, syncGutter]);
 
-  /** 左缘 diff 条（绿=新增行，橙=修改行）；left 为行号栏宽度偏移 */
+  /** 左缘 diff 条（绿=新增行，橙=修改行，红=行删除点）；left 为行号栏宽度偏移 */
   const renderDiffGutter = (left: number) => {
     if (!lineKinds || !lineKinds.some((k) => k !== 0)) return null;
     const bars: React.ReactNode[] = [];
@@ -1268,7 +1284,7 @@ export default function FilePanel({
       bars.push(
         <div
           key={idx}
-          className={`diff-bar ${k === 2 ? "add" : "mod"}`}
+          className={`diff-bar ${k === 2 ? "add" : k === 3 ? "del" : "mod"}`}
           style={{ top: GUTTER_PAD + idx * LINE_H }}
         />
       );
