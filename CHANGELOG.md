@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-08-27
+
+### 修复
+
+- **启动死锁（残留 handle）**：`start()` 检测到残留 handle 且 sysinfo 显示进程存活时，额外检查 runtime 状态；若为 `Error`/`Stopped`（用户主动请求启动说明认为服务未运行），清理残留 handle 与 PID 记录后允许重启，而非返回 `ServiceRunning` 拒绝启动
+- **启动死锁（残留 placeholder）**：placeholder 残留同理，runtime 已标记 `Error`/`Stopped` 时视为上次启动失败的残留，清理而非拒绝；避免"状态=Error → 前端显示启动按钮但 `start()` 返回 ServiceRunning"的死锁
+
 ## [0.10.0] - 2026-08-27
 
 ### 新增
