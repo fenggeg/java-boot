@@ -3061,6 +3061,101 @@ body {
   background: rgba(255, 255, 255, 0.1);
 }
 
+/* ── 快速打开（Ctrl+P 项目级文件名搜索） ── */
+.quick-open-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.quick-open {
+  position: fixed;
+  top: 12%;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 41;
+  width: min(560px, calc(100vw - 120px));
+  border-radius: var(--r-md);
+  border: 1px solid var(--border-2);
+  background: var(--surface);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+  animation: fade-down 0.18s var(--ease-out);
+}
+
+.quick-open-input {
+  display: block;
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+
+.quick-open-input::placeholder {
+  color: var(--text-4);
+}
+
+.quick-open-list {
+  max-height: min(420px, 60vh);
+  overflow-y: auto;
+  padding: 4px;
+  scrollbar-width: thin;
+}
+
+.quick-open-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none;
+  border-radius: var(--r-sm);
+}
+
+.quick-open-item.sel {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.quick-open-name {
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.quick-open-dir {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl; /* 目录从左侧截断，保留离文件名最近的段 */
+  text-align: left;
+}
+
+.quick-open-empty {
+  padding: 22px;
+  text-align: center;
+  color: var(--text-4);
+  font-size: 12px;
+}
+
+.quick-open-hint {
+  display: flex;
+  gap: 14px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  color: var(--text-4);
+  font-size: 11px;
+}
+
 /* ========================================================
    集成终端抽屉
    ======================================================== */

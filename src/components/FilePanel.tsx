@@ -47,6 +47,11 @@ interface Props {
 const LINE_H = 22;
 /** 代码区顶部内边距（px），与 CSS 保持一致 */
 const GUTTER_PAD = 12;
+/**
+ * 编辑器搜索内容上限（字符）：与后端 MAX_EDIT_SIZE(2MB) 对齐——
+ * 后端 2MB 内均可编辑/预览，搜索应当可用；再大则禁扫防按键卡顿
+ */
+const SEARCH_LIMIT = 2_000_000;
 
 // ================================================================
 // 文件类型分类
@@ -71,6 +76,26 @@ function getFileType(filename: string): FileType {
   if (IMAGE_EXTS.has(ext)) return "image";
   if (BINARY_EXTS.has(ext)) return "binary";
   return "text";
+}
+
+/** 按文件名渲染类型图标（文件树 / 标签栏 / 快速打开共用） */
+function FileTypeIcon({name, size}: {name: string; size: number}) {
+  const ft = getFileType(name);
+  return (
+    <span
+      className={`file-tree-icon file ${
+        ft === "image" ? "file-type-image" : ft === "binary" ? "file-type-binary" : ""
+      }`}
+    >
+      {ft === "image" ? (
+        <ImageIcon size={size} />
+      ) : ft === "binary" ? (
+        <Binary size={size} />
+      ) : (
+        <File size={size} />
+      )}
+    </span>
+  );
 }
 
 /** 语法高亮：返回 HTML 字符串（无匹配语言时返回转义后的纯文本） */
@@ -121,6 +146,15 @@ interface OpenTab {
 interface TreeClipboard {
   mode: "copy" | "cut";
   path: string;
+}
+
+/** 快速打开命中项 */
+interface QuickHit {
+  path: string;
+  name: string;
+  dir: string;
+  /** 排序分：越小越靠前 */
+  score: number;
 }
 
 /** 由 porcelain 记录归一化状态：与 Git 面板共用 gitChangeKind，保证两处归类一致 */
@@ -402,6 +436,12 @@ function statusLabel(k: FileGitStatus): string {
   }
 }
 
+/** 取路径的目录部分（无分隔符时为空串） */
+function dirOf(p: string): string {
+  const i = p.lastIndexOf("/");
+  return i < 0 ? "" : p.slice(0, i);
+}
+
 function TreeRow({
   node,
   depth,
@@ -527,8 +567,6 @@ function TreeRow({
     );
   }
 
-  const fileType = getFileType(node.name);
-
   return (
     <div
       className={`file-tree-row file ${isActive ? "active" : ""}`}
@@ -537,17 +575,7 @@ function TreeRow({
       {...commonHandlers}
     >
       <span className="file-tree-caret" />
-      <span
-        className={`file-tree-icon file ${fileType === "image" ? "file-type-image" : fileType === "binary" ? "file-type-binary" : ""}`}
-      >
-        {fileType === "image" ? (
-          <ImageIcon size={14} />
-        ) : fileType === "binary" ? (
-          <Binary size={14} />
-        ) : (
-          <File size={14} />
-        )}
-      </span>
+      <FileTypeIcon name={node.name} size={14} />
       <span className={`file-tree-name ${gs.kind ? `gs-${gs.kind}` : ""}`}>
         {node.name}
       </span>
@@ -630,6 +658,12 @@ export default function FilePanel({
     y: number;
     path: string;
     isDir: boolean;
+  } | null>(null);
+  // 标签页右键菜单（锚点定位与文件树菜单同一套做法）
+  const [tabCtx, setTabCtx] = useState<{
+    x: number;
+    y: number;
+    path: string;
   } | null>(null);
   const [clipboard, setClipboard] = useState<TreeClipboard | null>(null);
   const [renaming, setRenaming] = useState<{ path: string; name: string } | null>(
@@ -1055,6 +1089,61 @@ export default function FilePanel({
     [tabs, activePath, modal]
   );
 
+  /**
+   * 批量关闭标签（标签右键菜单「关闭其他 / 右侧 / 全部」复用）：
+   * 脏标签合并为一次确认，避免逐个弹窗。关闭后的激活顺序：
+   * 当前激活未关 > keepPath（发起菜单的标签）> 与被关标签最相邻的幸存者（同距偏右）
+   */
+  const closeMany = useCallback(
+    (targets: string[], keepPath?: string | null) => {
+      const all = tabsRef.current;
+      const tset = new Set(targets);
+      const remaining = all.filter((t) => !tset.has(t.path));
+      if (remaining.length === all.length) return;
+      const dirtyN = all.reduce(
+        (n, t) =>
+          tset.has(t.path) && t.content !== t.meta.content ? n + 1 : n,
+        0
+      );
+      let next: string | null = null;
+      if (activePath && !tset.has(activePath)) next = activePath;
+      else if (keepPath && !tset.has(keepPath)) next = keepPath;
+      else if (remaining.length > 0) {
+        const idxOf = new Map(all.map((t, i) => [t.path, i] as const));
+        let bestD = Infinity;
+        let bestIdx = -1;
+        for (const r of remaining) {
+          const ri = idxOf.get(r.path)!;
+          for (const c of targets) {
+            const d = Math.abs(ri - idxOf.get(c)!);
+            if (d < bestD || (d === bestD && ri > bestIdx)) {
+              bestD = d;
+              bestIdx = ri;
+              next = r.path;
+            }
+          }
+        }
+      }
+      const doClose = () => {
+        setTabs(remaining);
+        setActivePath(next);
+      };
+      if (dirtyN > 0) {
+        modal.confirm({
+          title: "放弃未保存的修改？",
+          content: `有 ${dirtyN} 个标签有未保存的修改，关闭后将丢失。`,
+          okText: "放弃并关闭",
+          okButtonProps: { danger: true },
+          cancelText: "取消",
+          onOk: doClose,
+        });
+      } else {
+        doClose();
+      }
+    },
+    [activePath, modal]
+  );
+
   /** 更新当前激活标签的内容 */
   const updateActiveContent = useCallback(
     (content: string) => {
@@ -1247,17 +1336,36 @@ export default function FilePanel({
     len: number;
   }
 
+  /** 内容超上限（>2MB 只读大文件）时搜索禁用，输入框提示而非静默"无匹配" */
+  const searchTooLarge =
+    !!activeTab &&
+    activeTab.fileType === "text" &&
+    activeTab.content.length > SEARCH_LIMIT;
+
   const searchHits = useMemo<SearchHit[]>(() => {
     const src = searchOpen ? activeTab?.content : undefined;
-    if (!src || !searchQuery || src.length > 400_000) return [];
+    if (!src || !searchQuery || src.length > SEARCH_LIMIT) return [];
     const hay = src.toLowerCase();
     const needle = searchQuery.toLowerCase();
     const lineStarts: number[] = [0];
     for (let i = 0; i < src.length; i++) {
       if (src[i] === "\n") lineStarts.push(i + 1);
     }
+    // 制表符按 tab-size=2 展开的可视宽度：段 [a, b) 自可视基点 v0 起累计
+    const visWidth = (a: number, b: number, v0: number): number => {
+      let v = v0;
+      for (let k = a; k < b; k++) {
+        v += src.charCodeAt(k) === 9 ? 2 - (v % 2) : 1;
+      }
+      return v;
+    };
     const res: SearchHit[] = [];
     let from = 0;
+    // 命中按位置递增：同行命中从上一命中处增量展开可视列，
+    // 避免 minified 单行大文件上 O(命中数 × 行首距离) 的重复回走（最坏 O(n²)）
+    let prevAt = -1;
+    let prevSegStart = -1;
+    let prevV = 0;
     while (res.length < 2000) {
       const at = hay.indexOf(needle, from);
       if (at < 0) break;
@@ -1268,13 +1376,15 @@ export default function FilePanel({
         if (lineStarts[mid]! <= at) lo = mid;
         else hi = mid - 1;
       }
-      // 可视列号：制表符按 tab-size=2 展开，保证高亮框对齐等宽渲染
       const segStart = lineStarts[lo]!;
-      let v = 0;
-      for (let k = segStart; k < at; k++) {
-        v += src.charCodeAt(k) === 9 ? 2 - (v % 2) : 1;
-      }
+      const v =
+        prevAt >= 0 && prevSegStart === segStart
+          ? visWidth(prevAt, at, prevV)
+          : visWidth(segStart, at, 0);
       res.push({line: lo, visCol: v, len: needle.length});
+      prevAt = at;
+      prevSegStart = segStart;
+      prevV = v;
       from = at + Math.max(needle.length, 1);
     }
     return res;
@@ -1330,11 +1440,134 @@ export default function FilePanel({
     editorInputRef.current?.focus();
   }, []);
 
-  // Ctrl+F 打开编辑器搜索（全局默认查找已在 main.tsx 拦截）；Esc 关闭
+  // ================================================================
+  // 快速打开（Ctrl+P）：项目级文件名 / 路径过滤跳转
+  // ================================================================
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [quickQuery, setQuickQuery] = useState("");
+  const [quickIdx, setQuickIdx] = useState(0);
+  // 全量扁平文件列表；每次打开弹层都后台重拉，杜绝树操作后的陈旧索引
+  const [flatFiles, setFlatFiles] = useState<api.FlatFile[] | null>(null);
+  const quickListRef = useRef<HTMLDivElement>(null);
+
+  /** 拉取全量文件列表；失败时保留上次结果（退化为旧数据可用） */
+  const loadFlatFiles = useCallback(async () => {
+    try {
+      const files = await api.walkFiles(project.id);
+      setFlatFiles(files);
+    } catch {
+      /* 保留上一次列表 */
+    }
+  }, [project.id]);
+
+  /**
+   * 过滤与排序（小写不区分大小写）：文件名前缀 > 文件名包含（位置越靠前越优）
+   * > 路径包含。空查询展示前 50 个当浏览列表。全量收集后排序取前 100——
+   * 过滤本身就要扫全部条目，截断省不出成本，只换掉排序正确性。
+   */
+  const quickResults = useMemo<QuickHit[]>(() => {
+    if (!flatFiles) return [];
+    const q = quickQuery.trim().toLowerCase();
+    if (!q) {
+      return flatFiles.slice(0, 50).map((f) => ({
+        path: f.path,
+        name: f.name,
+        dir: dirOf(f.path),
+        score: 0,
+      }));
+    }
+    const out: QuickHit[] = [];
+    for (const f of flatFiles) {
+      const pl = f.path.toLowerCase();
+      const slash = pl.lastIndexOf("/");
+      const nl = slash < 0 ? pl : pl.slice(slash + 1);
+      let score: number | null;
+      if (nl.startsWith(q)) {
+        score = 0;
+      } else {
+        const ni = nl.indexOf(q);
+        if (ni >= 0) {
+          score = 1 + Math.min(ni, 999) / 1000;
+        } else {
+          const pi = pl.indexOf(q);
+          score = pi >= 0 ? 10 + Math.min(pi, 999) / 1000 : null;
+        }
+      }
+      if (score !== null) {
+        out.push({path: f.path, name: f.name, dir: dirOf(f.path), score});
+      }
+    }
+    out.sort(
+      (a, b) =>
+        a.score - b.score ||
+        a.path.length - b.path.length ||
+        a.path.localeCompare(b.path)
+    );
+    return out.slice(0, 100);
+  }, [flatFiles, quickQuery]);
+
+  // 结果集变化时收敛选中下标
+  useEffect(() => {
+    setQuickIdx((i) =>
+      quickResults.length ? Math.min(i, quickResults.length - 1) : 0
+    );
+  }, [quickResults.length]);
+
+  // 选中项滚动进可视区
+  useEffect(() => {
+    quickListRef.current
+      ?.querySelector(".quick-open-item.sel")
+      ?.scrollIntoView({block: "nearest"});
+  }, [quickIdx]);
+
+  const openQuickOpen = useCallback(() => {
+    setQuickOpen(true);
+    setQuickQuery("");
+    setQuickIdx(0);
+    void loadFlatFiles();
+  }, [loadFlatFiles]);
+
+  const closeQuickOpen = useCallback(() => {
+    setQuickOpen(false);
+    setQuickQuery("");
+    setQuickIdx(0);
+  }, []);
+
+  /** 回车 / 点击：打开选中文件并收起弹层 */
+  const acceptQuick = useCallback(() => {
+    const hit = quickResults[quickIdx];
+    if (!hit) return;
+    void openFile(hit.path);
+    closeQuickOpen();
+  }, [quickResults, quickIdx, openFile, closeQuickOpen]);
+
+  // Ctrl+P 全局唤起；Esc 在输入框内 stopPropagation 关闭，不外溢
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        !e.altKey &&
+        !e.shiftKey &&
+        e.key.toLowerCase() === "p"
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        openQuickOpen();
+      } else if (e.key === "Escape" && quickOpen) {
+        closeQuickOpen();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [openQuickOpen, quickOpen, closeQuickOpen]);
+
+  // Ctrl+F 打开编辑器搜索（全局默认查找已在 main.tsx 拦截）；Esc 关闭。
+  // 快速打开弹层存在时不响应，避免按键穿透到被遮罩的编辑器
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "f") {
         if (
+          !quickOpen &&
           activeTab &&
           activeTab.fileType === "text" &&
           !isMdPreview
@@ -1349,7 +1582,7 @@ export default function FilePanel({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeTab, isMdPreview, searchOpen, closeSearch]);
+  }, [activeTab, isMdPreview, searchOpen, closeSearch, quickOpen]);
 
   /** 搜索命中高亮层（绝对定位半透明色块；padLeft = 行号栏宽 + 内容左 padding） */
   const renderHitLayer = (padLeft: number) => {
@@ -1648,7 +1881,6 @@ export default function FilePanel({
           {tabs.length > 0 && (
             <div className="file-tabs">
               {tabs.map((t) => {
-                const ft = getFileType(t.path.split("/").pop() ?? "");
                 const tabDirty = t.content !== t.meta.content;
                 const tKind = statusMap.get(t.path);
                 return (
@@ -1656,19 +1888,17 @@ export default function FilePanel({
                     key={t.path}
                     className={`file-tab ${t.path === activePath ? "active" : ""}`}
                     onClick={() => setActivePath(t.path)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setTabCtx({ x: e.clientX, y: e.clientY, path: t.path });
+                    }}
                     title={t.path}
                   >
-                    <span
-                      className={`file-tree-icon file ${ft === "image" ? "file-type-image" : ft === "binary" ? "file-type-binary" : ""}`}
-                    >
-                      {ft === "image" ? (
-                        <ImageIcon size={12} />
-                      ) : ft === "binary" ? (
-                        <Binary size={12} />
-                      ) : (
-                        <File size={12} />
-                      )}
-                    </span>
+                    <FileTypeIcon
+                      name={t.path.split("/").pop() ?? ""}
+                      size={12}
+                    />
                     <span
                       className={`file-tab-name ${tKind ? `gs-${tKind}` : ""}`}
                     >
@@ -1937,11 +2167,18 @@ export default function FilePanel({
                 spellCheck={false}
                 autoComplete="off"
               />
-              <span className={`editor-search-count ${searchQuery && !searchHits.length ? "none" : ""}`}>
+              <span
+                className={`editor-search-count ${searchQuery && !searchHits.length ? "none" : ""}`}
+                title={
+                  searchTooLarge ? "文件超过 2MB，已禁用内容搜索" : undefined
+                }
+              >
                 {searchQuery
-                  ? searchHits.length
-                    ? `${matchIdx + 1}/${searchHits.length}`
-                    : "无匹配"
+                  ? searchTooLarge
+                    ? "文件过大"
+                    : searchHits.length
+                      ? `${matchIdx + 1}/${searchHits.length}`
+                      : "无匹配"
                   : ""}
               </span>
               <button
@@ -2005,6 +2242,79 @@ export default function FilePanel({
           </div>
         )}
       </div>
+
+      {/* 快速打开（Ctrl+P）：遮罩点击关闭，弹层置顶 */}
+      {quickOpen && (
+        <>
+          <div className="quick-open-mask" onClick={closeQuickOpen} />
+          <div className="quick-open">
+            <input
+              autoFocus
+              className="quick-open-input"
+              value={quickQuery}
+              onChange={(e) => {
+                setQuickQuery(e.target.value);
+                setQuickIdx(0);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setQuickIdx((i) =>
+                    quickResults.length ? (i + 1) % quickResults.length : 0
+                  );
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setQuickIdx((i) =>
+                    quickResults.length
+                      ? (i - 1 + quickResults.length) % quickResults.length
+                      : 0
+                  );
+                } else if (e.key === "Enter") {
+                  e.preventDefault();
+                  acceptQuick();
+                } else if (e.key === "Escape") {
+                  e.stopPropagation();
+                  closeQuickOpen();
+                }
+              }}
+              placeholder="输入文件名或路径过滤，回车打开…"
+              spellCheck={false}
+              autoComplete="off"
+            />
+            <div className="quick-open-list" ref={quickListRef}>
+              {!flatFiles ? (
+                <div className="quick-open-empty">
+                  <Spin size="small" />
+                </div>
+              ) : quickResults.length === 0 ? (
+                <div className="quick-open-empty">无匹配文件</div>
+              ) : (
+                quickResults.map((h, i) => (
+                  <div
+                    key={h.path}
+                    className={`quick-open-item${i === quickIdx ? " sel" : ""}`}
+                    onMouseEnter={() => setQuickIdx(i)}
+                    onClick={acceptQuick}
+                  >
+                    <FileTypeIcon name={h.name} size={13} />
+                    <span className="quick-open-name">{h.name}</span>
+                    {h.dir && (
+                      <span className="quick-open-dir" title={h.dir}>
+                        {h.dir}
+                      </span>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="quick-open-hint">
+              <span>↑↓ 选择</span>
+              <span>Enter 打开</span>
+              <span>Esc 关闭</span>
+            </div>
+          </div>
+        </>
+      )}
 
       {/* 文件树右键菜单 */}
       {ctxMenu && (
@@ -2082,6 +2392,115 @@ export default function FilePanel({
               top: ctxMenu.y,
               // 锚点必须非 0 尺寸：0x0 的 fixed 元素会被 rc-trigger 判定为
               // 不可见（offsetParent 为 null 且宽高为 0），导致弹层永不对齐
+              width: 1,
+              height: 1,
+              opacity: 0,
+              pointerEvents: "none",
+            }}
+          />
+        </Dropdown>
+      )}
+
+      {/* 标签页右键菜单 */}
+      {tabCtx && (
+        <Dropdown
+          open={true}
+          trigger={["contextMenu"]}
+          onOpenChange={(open) => {
+            if (!open) setTabCtx(null);
+          }}
+          menu={{
+            items: [
+              {
+                key: "close",
+                icon: <X size={13} />,
+                label: "关闭",
+                onClick: () => {
+                  closeMany([tabCtx.path]);
+                  setTabCtx(null);
+                },
+              },
+              {
+                key: "closeOthers",
+                label: "关闭其他",
+                disabled: tabs.length <= 1,
+                onClick: () => {
+                  closeMany(
+                    tabsRef.current
+                      .filter((t) => t.path !== tabCtx.path)
+                      .map((t) => t.path),
+                    tabCtx.path
+                  );
+                  setTabCtx(null);
+                },
+              },
+              {
+                key: "closeRight",
+                label: "关闭右侧标签",
+                disabled:
+                  tabs.findIndex((t) => t.path === tabCtx.path) ===
+                  tabs.length - 1,
+                onClick: () => {
+                  const idx = tabsRef.current.findIndex(
+                    (t) => t.path === tabCtx.path
+                  );
+                  closeMany(
+                    tabsRef.current.slice(idx + 1).map((t) => t.path),
+                    tabCtx.path
+                  );
+                  setTabCtx(null);
+                },
+              },
+              {
+                key: "closeAll",
+                label: "全部关闭",
+                onClick: () => {
+                  closeMany(tabsRef.current.map((t) => t.path));
+                  setTabCtx(null);
+                },
+              },
+              { type: "divider" as const },
+              {
+                key: "copyPath",
+                icon: <Copy size={13} />,
+                label: "复制路径",
+                onClick: () => {
+                  navigator.clipboard
+                    .writeText(tabCtx.path)
+                    .then(() => message.success("路径已复制"))
+                    .catch(() => message.error("复制失败"));
+                  setTabCtx(null);
+                },
+              },
+              {
+                key: "rename",
+                icon: <Edit size={13} />,
+                label: "重命名",
+                onClick: () => {
+                  const name = tabCtx.path.split("/").pop() ?? "";
+                  setRenaming({ path: tabCtx.path, name });
+                  setTabCtx(null);
+                },
+              },
+              {
+                key: "reveal",
+                icon: <FolderOpen size={13} />,
+                label: "在文件管理器中显示",
+                onClick: () => {
+                  api.revealInFileManager(project.id, tabCtx.path).catch((e) =>
+                    message.error(`打开文件管理器失败: ${e}`)
+                  );
+                  setTabCtx(null);
+                },
+              },
+            ],
+          }}
+        >
+          <div
+            style={{
+              position: "fixed",
+              left: tabCtx.x,
+              top: tabCtx.y,
               width: 1,
               height: 1,
               opacity: 0,

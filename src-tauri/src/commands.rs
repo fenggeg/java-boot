@@ -728,6 +728,15 @@ pub async fn reveal_in_file_manager(project_id: String, path: String) -> AppResu
     .map_err(|e| AppError::Other(format!("打开文件管理器任务失败: {}", e)))?
 }
 
+/// 扁平遍历项目内全部文件（排除依赖/构建目录与符号链接），
+/// 供前端做文件名快速搜索（Ctrl+P 快速打开）
+#[tauri::command]
+pub async fn walk_files(project_id: String) -> AppResult<Vec<crate::project_fs::FlatFile>> {
+    tokio::task::spawn_blocking(move || crate::project_fs::walk_files(&project_id))
+        .await
+        .map_err(|e| AppError::Other(format!("遍历项目文件任务失败: {}", e)))?
+}
+
 // ============================ Terminal（集成终端） ============================
 
 /// 为项目创建交互式终端会话，返回会话 id

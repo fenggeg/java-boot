@@ -224,6 +224,78 @@ pub fn get_file_abs_path(project_id: &str, path: &str) -> AppResult<String> {
 }
 
 // ================================================================
+// 全量文件扁平遍历（前端快速打开 / 文件名搜索的数据源）
+// ================================================================
+
+/// 扁平文件条目：只含文件不含目录（快速打开按文件名跳转，目录无意义）
+#[derive(Debug, Clone, Serialize)]
+pub struct FlatFile {
+    /// 相对项目根的路径（`/` 分隔）
+    pub path: String,
+    pub name: String,
+}
+
+/// 遍历条目上限：极端仓库防止拖爆内存与 IPC 传输
+const MAX_WALK_FILES: usize = 50_000;
+/// 目录深度上限：防御 Windows junction（file_type 不算 symlink）循环等异常树
+const MAX_WALK_DEPTH: usize = 24;
+
+fn rel_depth(rel: &str) -> usize {
+    if rel.is_empty() {
+        0
+    } else {
+        rel.split('/').count()
+    }
+}
+
+/// 递归列出项目内全部文件，扁平返回。读操作不经过 safe_join；
+/// 无权限 / 已消失的目录静默跳过，达到上限即截断
+fn walk_dir(dir: &Path, rel: &str, out: &mut Vec<FlatFile>) {
+    if out.len() >= MAX_WALK_FILES {
+        return;
+    }
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in read.flatten() {
+        if out.len() >= MAX_WALK_FILES {
+            return;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Ok(ft) = entry.file_type() else { continue };
+        if ft.is_symlink() {
+            continue; // 跳过符号链接，避免循环/越界（与 list_dir 口径一致）
+        }
+        if ft.is_dir() {
+            if DIR_BLACKLIST.contains(&name.as_str()) {
+                continue;
+            }
+            let child_rel = join_rel(rel, &name);
+            if rel_depth(&child_rel) > MAX_WALK_DEPTH {
+                continue;
+            }
+            walk_dir(&entry.path(), &child_rel, out);
+        } else if ft.is_file() {
+            out.push(FlatFile {
+                path: join_rel(rel, &name),
+                name,
+            });
+        }
+    }
+}
+
+/// 遍历项目根下全部文件（排除黑名单目录与符号链接）
+pub fn walk_files(project_id: &str) -> AppResult<Vec<FlatFile>> {
+    let project = db::get_project(project_id)?;
+    let root = Path::new(&project.root_path)
+        .canonicalize()
+        .map_err(|e| AppError::Other(format!("项目根目录无法解析: {}", e)))?;
+    let mut out = Vec::new();
+    walk_dir(&root, "", &mut out);
+    Ok(out)
+}
+
+// ================================================================
 // 文件树右键菜单操作：重命名 / 复制 / 移动 / 在文件管理器中显示
 // ================================================================
 

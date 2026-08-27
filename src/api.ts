@@ -222,6 +222,16 @@ export const fsMoveEntry = (projectId: string, srcPath: string, destDir: string)
 export const revealInFileManager = (projectId: string, path: string) =>
   invoke<void>("reveal_in_file_manager", { projectId, path });
 
+/** 项目内全量文件扁平条目（快速打开用，已排除依赖/构建目录与符号链接） */
+export interface FlatFile {
+  path: string;
+  name: string;
+}
+
+/// 扁平遍历项目内全部文件（快速打开数据源，上限 5 万条）
+export const walkFiles = (projectId: string) =>
+  invoke<FlatFile[]>("walk_files", { projectId });
+
 // ============================ Terminal（集成终端） ============================
 
 export const terminalCreate = (projectId: string) =>

@@ -192,6 +192,7 @@ pub fn run() {
             commands::fs_copy_entry,
             commands::fs_move_entry,
             commands::reveal_in_file_manager,
+            commands::walk_files,
             // terminal
             commands::terminal_create,
             commands::terminal_write,
