@@ -165,6 +165,24 @@ impl WatchManager {
         }
     }
 
+    /// 停止所有文件监听并回收 worker 线程
+    ///
+    /// 应用退出时调用：确保 watcher 防抖 worker 不会再触发 `trigger_restart`
+    /// （`compile_and_start` 会先 stop 杀进程），避免退出竞态导致服务被误杀。
+    pub fn unwatch_all(&self) {
+        let states: Vec<(String, WatchState)> = {
+            let mut m = self.watchers.lock();
+            m.drain().collect()
+        };
+        self.dirty.lock().clear();
+        for (_, mut s) in states {
+            s._cancel.store(true, Ordering::Relaxed);
+            if let Some(handle) = s._worker.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
     /// 模块是否可能存在未编译的源码变更：
     /// - 有 watcher 且明确干净（false）→ 返回 false（可跳过 mtime 扫描）
     /// - 无 watcher / 有未消费事件 → true（走真实校验）

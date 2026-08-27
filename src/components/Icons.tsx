@@ -121,14 +121,11 @@ export function Restart({ size, ...rest }: IconProps) {
 }
 
 export function Settings({ size, ...rest }: IconProps) {
-  // brutalist slider-cluster glyph
+  // 通用齿轮（gear）设置图标
   return (
     <Svg size={size} {...rest}>
-      <rect x="3" y="4" width="18" height="16" />
-      <path d="M3 9 H21 M3 15 H21" />
-      <circle cx="9" cy="6.5" r="1.1" fill="currentColor" stroke="none" />
-      <circle cx="15" cy="12" r="1.1" fill="currentColor" stroke="none" />
-      <circle cx="8" cy="17.5" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
     </Svg>
   );
 }
@@ -396,6 +393,16 @@ export function Download({ size, ...rest }: IconProps) {
       <path d="M12 4 L12 15" />
       <path d="M7 10.5 L12 15.5 L17 10.5" />
       <path d="M5 19.5 L19 19.5" />
+    </Svg>
+  );
+}
+
+/// 软件更新图标：带向上箭头的刷新弧线，表示"检查/获取新版本"
+export function Update({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <path d="M21 12a9 9 0 1 1-3-6.7" />
+      <path d="M21 3 L21 8 L16 8" />
     </Svg>
   );
 }

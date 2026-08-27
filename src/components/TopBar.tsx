@@ -2,7 +2,7 @@ import {useCallback, useEffect, useMemo, useState} from "react";
 import type {UnlistenFn} from "@tauri-apps/api/event";
 import {getCurrentWindow} from "@tauri-apps/api/window";
 import {App, Badge, Button, Popconfirm, Tooltip} from "antd";
-import {Copy, Download, GitPull, Minus, Moon, Settings, Square, Stop, Sun, Warning, X} from "./Icons";
+import {Copy, GitPull, Minus, Moon, Settings, Square, Stop, Sun, Update, Warning, X} from "./Icons";
 import {useStore} from "../store";
 import * as api from "../api";
 import {STATUS_META} from "../types";
@@ -182,7 +182,7 @@ export default function TopBar({ onOpenSettings }: Props) {
               onClick={() => setUpdateOpen(true)}
               aria-label="检查更新"
             >
-              <Download size={15} />
+              <Update size={15} />
             </button>
           </Badge>
         </Tooltip>

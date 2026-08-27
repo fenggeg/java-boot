@@ -1,4 +1,4 @@
-import {memo} from "react";
+import {memo, useState} from "react";
 import {App, Dropdown, Switch, Tooltip} from "antd";
 import {Broom, Code, More, Play, Restart, Settings, Stop, Warning,} from "./Icons";
 import {useStore} from "../store";
@@ -12,13 +12,8 @@ interface Props {
   onConfig: (service: Service) => void;
 }
 
-// 已知噪声端口（JMX/DevTools/H2 等），展示时过滤掉
-const NOISE_PORTS = new Set([
-  35729, // Spring DevTools restart
-  1099,  // JMX/RMI registry
-  9092,  // H2 DB TCP
-  4848,  // JMXMP
-]);
+// 噪声端口（JMX/DevTools/H2 等）由后端在 runtime.ports / runtime.service_ports
+// 返回前统一过滤，前端无需维护重复列表，避免前后端漂移。
 
 function ServiceCardInner({ service, active, onConfig }: Props) {
   const runtime = useStore((s) => s.runtimes[service.id]);
@@ -31,56 +26,76 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
   const meta = STATUS_META[status];
   const isRunning =
     status === "running" || status === "starting" || status === "recompiling";
+  // 操作进行中标志：执行启动/重启/编译期间禁用所有操作按钮，防止并发触发
+  // 导致 handles map 上的 placeholder 被误判为堆叠残留而 kill 掉刚启动的进程。
+  const [busy, setBusy] = useState(false);
   const logBuf = useStore((s) => s.logs[service.id]);
   const hasUnread = logBuf?.hasUnread ?? false;
 
   const handleStart = async () => {
+    if (busy) return;
+    setBusy(true);
     try {
-      // 如果配置了依赖服务，走带依赖编排的启动流程
-      const deps = await api.getServiceDependencies(service.id);
-      if (deps.length > 0) {
-        await api.startServiceWithDependencies(service.id);
-      } else {
-        await api.startService(service.id);
-      }
+      // 统一走带依赖编排的启动流程：后端根据实际依赖决定是否编排，
+      // 避免前端预判依赖（getServiceDependencies）与实际启动之间的 TOCTOU 竞态，
+      // 同时省掉一次 IPC 往返。无依赖时等价于普通启动。
+      await api.startServiceWithDependencies(service.id);
       // 启动是异步的，真实结果通过 service://status 事件通知
     } catch (e: any) {
       message.error(`启动失败: ${e}`);
+    } finally {
+      setBusy(false);
     }
   };
 
   const handleStop = async () => {
+    if (busy) return;
+    setBusy(true);
     try {
       await api.stopService(service.id);
     } catch (e: any) {
       message.error(`停止失败: ${e}`);
+    } finally {
+      setBusy(false);
     }
   };
 
   const handleRestart = async () => {
+    if (busy) return;
+    setBusy(true);
     try {
       await api.restartService(service.id);
       // 重启是异步的，真实结果通过事件通知
     } catch (e: any) {
       message.error(`重启失败: ${e}`);
+    } finally {
+      setBusy(false);
     }
   };
 
   const handleCompile = async () => {
+    if (busy) return;
+    setBusy(true);
     try {
       await api.compileAndStart(service.id);
       // 编译并启动是异步的
     } catch (e: any) {
       message.error(`编译失败: ${e}`);
+    } finally {
+      setBusy(false);
     }
   };
 
   const handleRecompile = async () => {
+    if (busy) return;
+    setBusy(true);
     try {
       await api.recompileAndStart(service.id);
       // 重新编译并启动是异步的
     } catch (e: any) {
       message.error(`重新编译失败: ${e}`);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -131,7 +146,14 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
     },
     {
       key: "recompile",
-      label: "重新编译并启动",
+      label: (
+        <Tooltip
+          title="强制 mvn clean compile 后启动；编译失败则服务停止（与「编译并启动」不同，后者失败时保留旧进程）"
+          placement="right"
+        >
+          <span>重新编译并启动</span>
+        </Tooltip>
+      ),
       icon: <Code size={13} />,
       onClick: handleRecompile,
     },
@@ -193,13 +215,12 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
             </span>
           )}
           {(() => {
-            // 优先展示从启动日志解析出的 HTTP 服务端口
-            // 为空时回退到所有 LISTENING 端口，但过滤掉已知噪声端口（JMX/DevTools/H2 等）
-            const raw =
+            // 优先展示从启动日志解析出的 HTTP 服务端口；
+            // 为空时回退到 runtime.ports（后端已过滤噪声端口）
+            const ports =
               runtime?.service_ports && runtime.service_ports.length > 0
                 ? runtime.service_ports
                 : runtime?.ports ?? [];
-            const ports = raw.filter((p) => !NOISE_PORTS.has(p));
             if (ports.length === 0) return null;
             return (
               <div className="service-card-ports">
@@ -244,6 +265,7 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
             <button
               className="icon-btn sm"
               onClick={handleStart}
+              disabled={busy}
               aria-label="启动"
               style={{ color: "#34c759" }}
             >
@@ -255,6 +277,7 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
             <button
               className="icon-btn sm danger"
               onClick={handleStop}
+              disabled={busy}
               aria-label="停止"
               style={{ color: "#ff3b30" }}
             >
@@ -266,6 +289,7 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
           <button
             className="icon-btn sm"
             onClick={handleRestart}
+            disabled={busy || status === "starting" || status === "recompiling"}
             aria-label="重启"
             style={{ color: "#0071e3" }}
           >

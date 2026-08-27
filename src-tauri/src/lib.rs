@@ -39,12 +39,17 @@ pub fn run() {
     }
 
     tauri::Builder::default()
+        .manage(update::DownloadCancel::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
         .on_window_event(|window, event| {
             // 应用关闭时停止所有服务
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // 先同步停止所有文件监听：watcher 防抖 worker 是独立线程，
+                // 退出竞态中可能恰好触发 trigger_restart → compile_and_start
+                // → stop 杀进程，导致 stop_all_on_exit=false 时服务被误杀。
+                watcher::get_watch_manager().unwatch_all();
                 let cfg = db::load_config().unwrap_or_default();
                 if cfg.stop_all_on_exit {
                     let app_handle = window.app_handle().clone();
@@ -210,6 +215,7 @@ pub fn run() {
             // update
             update::download_update,
             update::install_update,
+            update::cancel_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

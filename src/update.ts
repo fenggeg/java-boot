@@ -187,6 +187,17 @@ export async function downloadAndInstall(
 }
 
 /**
+ * 取消正在进行的下载
+ *
+ * 后端触发取消令牌，`download_update` 检测到后删除半成品文件
+ * 并返回"下载已取消"错误，`downloadAndInstall` 的 Promise 随之 reject。
+ * 无下载任务时为空操作。
+ */
+export async function cancelUpdate(): Promise<void> {
+  await invoke("cancel_update");
+}
+
+/**
  * 重启应用并完成安装：
  * 启动 NSIS 静默安装器（/S /R），当前进程随即退出，
  * 安装器覆盖文件后自动拉起新版本

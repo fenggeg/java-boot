@@ -10,9 +10,11 @@
 
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Duration;
 
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, State};
+use tokio_util::sync::CancellationToken;
 
 use crate::error::{AppError, AppResult};
 use crate::util::NoWindow;
@@ -23,6 +25,13 @@ const PROGRESS_EVENT: &str = "update://progress";
 /// 进度上报与速度采样的固定间隔：
 /// 固定时间窗保证 speed = 窗口内实际字节数 ÷ 实际耗时，与真实吞吐一致
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
+
+/// 当前下载任务的取消令牌（同一时刻只允许一个下载）
+///
+/// `download_update` 启动时新建令牌并存入；`cancel_update` 触发取消；
+/// 下载结束（完成/失败/取消）清空。用 Mutex 包裹保证线程安全。
+#[derive(Default)]
+pub struct DownloadCancel(Mutex<Option<CancellationToken>>);
 
 /// 更新包存放目录：%LOCALAPPDATA%\javaboot-launcher\updates
 fn update_dir() -> PathBuf {
@@ -77,10 +86,26 @@ fn clean_stale_installers(keep: &std::path::Path) {
 /// 进度经 `update://progress` 事件推送 `{ percent, downloaded, total, speed }`，
 /// speed 为固定 250ms 窗口实测（Δ字节 ÷ Δ耗时）并轻度 EMA 平滑的速度（字节/秒）。
 /// 按固定间隔节流上报，避免高频事件刷爆前端；空闲超时也会采样，停滞时速度能回落到 0。
+///
+/// 下载过程中可通过 `cancel_update` 命令取消：取消后删除半成品文件并返回错误。
 #[tauri::command]
-pub async fn download_update(app: AppHandle, url: String) -> AppResult<String> {
+pub async fn download_update(
+    app: AppHandle,
+    cancel_state: State<'_, DownloadCancel>,
+    url: String,
+) -> AppResult<String> {
     if url.is_empty() {
         return Err(AppError::Other("下载地址为空".to_string()));
+    }
+
+    // 注册本次下载的取消令牌；若已有旧令牌（异常残留）先取消旧的
+    let token = CancellationToken::new();
+    {
+        let mut guard = cancel_state.0.lock().expect("DownloadCancel poisoned");
+        if let Some(old) = guard.take() {
+            old.cancel();
+        }
+        *guard = Some(token.clone());
     }
 
     // rustls TLS：复用 http 插件同款栈；连接超时防挂死，读超时不设（大文件慢速链路）
@@ -128,6 +153,18 @@ pub async fn download_update(app: AppHandle, url: String) -> AppResult<String> {
 
     use futures_util::StreamExt;
     loop {
+        // 取消检查：cancel_update 触发后立即中止
+        if token.is_cancelled() {
+            writer.flush().ok();
+            drop(writer);
+            let _ = std::fs::remove_file(&target);
+            {
+                let mut guard = cancel_state.0.lock().expect("DownloadCancel poisoned");
+                *guard = None;
+            }
+            return Err(AppError::Other("下载已取消".to_string()));
+        }
+
         // 空闲超时也走一轮采样：停滞时速度能及时回落到 0，而不是停留在旧值
         match tokio::time::timeout(SAMPLE_INTERVAL, stream.next()).await {
             Ok(Some(chunk)) => {
@@ -171,6 +208,12 @@ pub async fn download_update(app: AppHandle, url: String) -> AppResult<String> {
     }
     writer.flush().map_err(AppError::Io)?;
 
+    // 下载完成：清理取消令牌
+    {
+        let mut guard = cancel_state.0.lock().expect("DownloadCancel poisoned");
+        *guard = None;
+    }
+
     // 收尾：确保前端收到 100% 终态（速度归零）
     if total > 0 {
         let _ = app.emit(
@@ -181,6 +224,23 @@ pub async fn download_update(app: AppHandle, url: String) -> AppResult<String> {
 
     log::info!("更新包下载完成: {} ({} bytes)", target.display(), downloaded);
     Ok(target.to_string_lossy().to_string())
+}
+
+/// 取消正在进行的下载
+///
+/// 触发当前下载任务的取消令牌，`download_update` 循环检测到后
+/// 删除半成品文件并返回"下载已取消"错误。无下载任务时为空操作。
+#[tauri::command]
+pub async fn cancel_update(cancel_state: State<'_, DownloadCancel>) -> AppResult<()> {
+    let token = {
+        let guard = cancel_state.0.lock().expect("DownloadCancel poisoned");
+        guard.as_ref().cloned()
+    };
+    if let Some(t) = token {
+        t.cancel();
+        log::info!("用户取消更新下载");
+    }
+    Ok(())
 }
 
 /// 启动 NSIS 安装器完成升级

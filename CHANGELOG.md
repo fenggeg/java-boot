@@ -7,6 +7,31 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-27
+
+### 新增
+
+- **取消更新下载**：更新弹窗下载过程中支持取消，后端用 `CancellationToken` 中止下载循环、删除半成品文件；前端取消不弹错误提示，其他失败才提示。新增 `cancel_update` 命令与 `DownloadCancel` 全局状态（同一时刻只允许一个下载，新下载会取消旧令牌）
+- **停止服务后等待进程真正退出**：`stop()` 发出 kill 后轮询 sysinfo 等待 PID 退出（超时 8 秒），解决 JVM shutdown hook 需 1~2 秒退出导致的后续 restart/recompile 撞上端口占用 / class 文件锁问题
+- **服务操作按钮防抖**：启动 / 停止 / 重启 / 编译 / 重新编译期间禁用所有操作按钮，防止并发触发导致 handles map 上的 placeholder 被误判为堆叠残留而 kill 掉刚启动的进程
+- **argfile 模式启动诊断**：java 启动时输出完整命令（`@path` 或 args 摘要 + cwd），启动失败时输出 argfile 路径与内容前 5 行预览，便于定位"退出码 1 且 stderr 为空"的启动失败
+- **退出时清理文件监听**：应用关闭时先 `unwatch_all` 停止所有 watcher 并回收 worker 线程，避免退出竞态中 watcher 防抖 worker 触发 `trigger_restart`（其 `compile_and_start` 会先 stop 杀进程）导致 `stop_all_on_exit=false` 时服务被误杀
+- **更新检查图标**：顶栏检查更新按钮改用带向上箭头的刷新弧线图标（Update），替代易误解的下载图标
+- **重新编译并启动 Tooltip**：下拉菜单项增加说明 Tooltip，区分与「编译并启动」的行为差异（前者失败时服务停止，后者保留旧进程）
+
+### 变更
+
+- **噪声端口过滤后移到后端**：JMX/DevTools/H2 等噪声端口改由后端在 `runtime.ports` / `runtime.service_ports` 返回前统一过滤，前端删除重复的 `NOISE_PORTS` 列表，避免前后端漂移
+- **启动流程统一走带依赖编排**：`handleStart` 统一调用 `startServiceWithDependencies`，后端根据实际依赖决定是否编排，避免前端预判依赖（`getServiceDependencies`）与实际启动之间的 TOCTOU 竞态，同时省掉一次 IPC 往返
+- **终端退出只杀 shell 不杀进程树**：`kill_all` 改为只杀 shell 本身（`c.kill`），不杀进程树——用户可能在终端手动启动了服务，这些进程不应随应用退出被杀（服务生死由 `stop_all_on_exit` 配置控制）；shell 子进程会因 ConPTY 关闭失去终端但继续运行
+- **设置图标改为通用齿轮**：原 brutalist slider-cluster 图标改为通用 gear 图标，语义更清晰
+
+### 修复
+
+- **argfile 路径含空格启动失败**：`std::process::Command::arg` 会把 `@C:\a b\args.txt` 自动转成 `"@C:\a b\args.txt"`（引号包整个参数），Java launcher 解析 `@argfile` 时不识别这种带引号形式导致找不到文件（退出码 1）。改用 `raw_arg` 直传，路径含空格时自行构造 `@"path"` 形式（引号紧跟 @ 之后，Java 支持）
+- **JVM 启动早期失败诊断信息丢失**：退出码 1/2 时 stderr 可能尚未被 log reader 读完，启动失败后短暂等待 500ms 让 stderr 排空，避免诊断信息丢失
+- **日志行 key 使用行索引**：LogViewer 虚拟列表行 key 从行内序号 `i` 改为绝对索引 `absIdx`，避免过滤/搜索时行 key 冲突导致 React 渲染异常
+
 ## [0.8.0] - 2026-08-27
 
 ### 新增

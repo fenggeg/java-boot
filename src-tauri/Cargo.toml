@@ -1,6 +1,6 @@
 [package]
 name = "javaboot-launcher"
-version = "0.8.0"
+version = "0.9.0"
 description = "轻量 SpringBoot 启动器"
 authors = ["you"]
 edition = "2021"
@@ -24,6 +24,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 r2d2 = "0.8"
 r2d2_sqlite = { version = "0.25", features = ["bundled"] }
 tokio = { version = "1.0", features = ["sync", "time", "process", "io-util", "macros", "rt", "rt-multi-thread"] }
+tokio-util = "0.7"
 notify = "7.0"
 sysinfo = "0.32"
 quick-xml = "0.37"

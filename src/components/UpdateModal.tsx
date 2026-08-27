@@ -3,7 +3,7 @@ import {App, Button, Modal, Progress, Spin} from "antd";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {ArrowDown, Check, Download, Refresh, Warning} from "./Icons";
-import {checkForUpdate, downloadAndInstall, formatSize, relaunchAndInstall, type UpdateInfo,} from "../update";
+import {checkForUpdate, downloadAndInstall, cancelUpdate, formatSize, relaunchAndInstall, type UpdateInfo,} from "../update";
 import {Prism} from "../prism-langs";
 
 interface Props {
@@ -97,11 +97,23 @@ export default function UpdateModal({open, onClose}: Props) {
       );
       setDownloaded(true);
     } catch (e: any) {
-      message.error(`下载失败: ${e}`);
+      // 取消不弹错误提示，其他失败才提示
+      if (!String(e).includes("下载已取消")) {
+        message.error(`下载失败: ${e}`);
+      }
     } finally {
       setDownloading(false);
     }
   }, [info, message]);
+
+  // ---- 取消下载：通知后端中止，downloadAndInstall 的 Promise 会 reject ----
+  const handleCancelDownload = useCallback(async () => {
+    try {
+      await cancelUpdate();
+    } catch {
+      // 后端无下载任务或已结束，忽略
+    }
+  }, []);
 
   // ---- 立即重启：静默安装器启动后当前进程退出，后续代码不会执行 ----
   const handleRelaunch = useCallback(async () => {
@@ -248,7 +260,7 @@ export default function UpdateModal({open, onClose}: Props) {
   }
 
   // ---- 底部按钮 ----
-  // 下载中不显示任何按钮：进度条 + 速度信息已足够
+  // 下载中显示"取消"按钮：触发后端中止下载
   let footer: React.ReactNode = null;
   if (phase === "available" && info) {
     if (downloaded) {
@@ -260,7 +272,13 @@ export default function UpdateModal({open, onClose}: Props) {
           </Button>
         </>
       );
-    } else if (!downloading) {
+    } else if (downloading) {
+      footer = (
+        <Button danger onClick={handleCancelDownload}>
+          取消下载
+        </Button>
+      );
+    } else {
       footer = (
         <>
           <Button onClick={onClose}>取消</Button>

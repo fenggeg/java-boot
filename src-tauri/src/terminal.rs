@@ -269,9 +269,22 @@ async fn cleanup_project(project_id: &str) {
 }
 
 /// 应用退出时终止所有终端会话，防止残留 shell 进程
+///
+/// **不杀进程树**：用户可能在终端里手动启动了服务（mvn/java），
+/// 这些进程不应随应用退出被杀（由 stop_all_on_exit 配置控制服务生死）。
+/// 只杀 shell 本身（c.kill），shell 的子进程会因 ConPTY 关闭而失去终端，
+/// 但进程本身继续运行。
 pub async fn kill_all() {
     let ids: Vec<String> = SESSIONS.lock().await.keys().cloned().collect();
     for id in ids {
-        let _ = kill(&id).await;
+        let s = SESSIONS.lock().await.remove(&id);
+        if let Some(s) = s {
+            *s.writer.lock().await = None;
+            *s.master.lock().await = None;
+            if let Some(mut c) = s.child.lock().await.take() {
+                // 只杀 shell 进程本身，不杀进程树
+                let _ = c.kill();
+            }
+        }
     }
 }

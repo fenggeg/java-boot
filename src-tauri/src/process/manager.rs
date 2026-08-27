@@ -226,7 +226,10 @@ impl ProcessManager {
                     entry.status = ServiceStatus::Running;
                     entry.pid = Some(*pid);
                     entry.started_at = Some(started_at.clone());
-                    entry.ports = crate::port::ports_for_pid(*pid).unwrap_or_default();
+                    entry.ports = crate::port::ports_for_pid(*pid).unwrap_or_default()
+                        .into_iter()
+                        .filter(|p| !NOISE_PORTS.contains(p))
+                        .collect();
                 } else {
                     let _ = db::clear_run_pid(service_id);
                     if proc.is_some() {
@@ -392,7 +395,14 @@ impl ProcessManager {
         {
             let mut rt = self.runtimes.lock();
             for (service_id, pid) in &service_pids {
-                let all_ports = pid_ports.get(pid).cloned().unwrap_or_default();
+                // 过滤噪声端口（JMX/DevTools/H2 等）：后端统一过滤，前端无需
+                // 维护重复的 NOISE_PORTS 列表，避免前后端漂移。
+                let all_ports: Vec<u16> = pid_ports.get(pid)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|p| !NOISE_PORTS.contains(p))
+                    .collect();
                 let entry = rt.entry(service_id.clone()).or_default();
                 entry.service_id = service_id.clone();
                 if entry.ports != all_ports {
@@ -841,7 +851,18 @@ impl ProcessManager {
                     argfile_path.display(), e
                 )));
             }
-            cmd.arg(format!("@{}", argfile_path.to_string_lossy()));
+            // 关键：用 raw_arg 避免 std::process::Command 对含空格路径自动加引号。
+            // Java launcher 解析 `@argfile` 时不识别 `"@path"` 这种带引号形式，
+            // Command::arg 会把 `@C:\a b\args.txt` 转成 `"@C:\a b\args.txt"` 导致
+            // Java 找不到文件（退出码 1）。这里自行处理：路径含空格时用 Java
+            // 支持的 `@"path"` 形式（引号紧跟 @ 之后），并用 raw_arg 直传。
+            let argfile_str = argfile_path.to_string_lossy().to_string();
+            let at_arg = if argfile_str.contains(' ') || argfile_str.contains('\t') {
+                format!("@\"{}\"", argfile_str)
+            } else {
+                format!("@{}", argfile_str)
+            };
+            cmd.raw_arg(at_arg);
             Self::emit_log(
                 &app,
                 &service.id,
@@ -870,6 +891,21 @@ impl ProcessManager {
         }
 
         check_cancel!();
+
+        // 诊断：输出完整的 java 启动命令（argfile 模式下输出 @path 和 args 摘要），
+        // 便于定位"退出码 1 且 stderr 为空"的启动失败
+        if use_argfile {
+            let argfile_path = working_dir.join("target").join(".javaboot-args.txt");
+            Self::emit_log(
+                &app, &service.id, LogSource::Mvn,
+                &format!("[javaboot] java {} @{}  (cwd: {})", java_bin, argfile_path.display(), working_dir.display()),
+            );
+        } else {
+            Self::emit_log(
+                &app, &service.id, LogSource::Mvn,
+                &format!("[javaboot] java {} {}  (cwd: {})", java_bin, args.join(" "), working_dir.display()),
+            );
+        }
 
         Self::emit_log(&app, &service.id, LogSource::Mvn, "[javaboot] 启动 java 子进程...");
         let mut child = cmd.spawn().map_err(|e| {
@@ -919,6 +955,7 @@ impl ProcessManager {
         let app3 = app.clone();
         let sid3 = service.id.clone();
         let kill_token2 = kill_token.clone();
+        let working_dir3 = working_dir.clone();
         tokio::spawn(async move {
             let status = child.wait().await;
             let killed = kill_token2.load(Ordering::Relaxed);
@@ -931,6 +968,35 @@ impl ProcessManager {
                             &format!("[javaboot] 进程退出，退出码: {:?}", s.code()),
                         );
                         if !s.success() {
+                            // JVM 启动早期失败（退出码 1/2）时，stderr 可能尚未被
+                            // log reader 读完。短暂等待让 stderr 排空，避免诊断信息
+                            // 丢失。随后追加排查提示。
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            // 诊断：若使用了 argfile，输出其路径和内容摘要，便于定位
+                            // "退出码 1 且 stderr 为空"的启动失败
+                            let argfile_path = std::path::PathBuf::from(&working_dir3)
+                                .join("target").join(".javaboot-args.txt");
+                            if argfile_path.exists() {
+                                Self::emit_log(
+                                    &app3, &sid3, LogSource::Mvn,
+                                    &format!("[javaboot] argfile 路径: {}", argfile_path.display()),
+                                );
+                                if let Ok(content) = std::fs::read_to_string(&argfile_path) {
+                                    let lines: Vec<&str> = content.lines().collect();
+                                    Self::emit_log(
+                                        &app3, &sid3, LogSource::Mvn,
+                                        &format!("[javaboot] argfile 共 {} 行，前 5 行:", lines.len()),
+                                    );
+                                    for (i, l) in lines.iter().take(5).enumerate() {
+                                        let preview = if l.len() > 200 { format!("{}...(共{}字符)", &l[..200], l.len()) } else { l.to_string() };
+                                        Self::emit_log(&app3, &sid3, LogSource::Mvn, &format!("  [{}] {}", i, preview));
+                                    }
+                                }
+                            }
+                            Self::emit_log(
+                                &app3, &sid3, LogSource::Mvn,
+                                "[javaboot] 启动失败。可能原因：classpath 缓存过期、argfile 编码/路径问题、主类不存在或端口被占用。可尝试「重新编译并启动」刷新 classpath。",
+                            );
                             get_manager().set_status(&app3, &sid3, ServiceStatus::Error);
                         } else {
                             get_manager().set_status(&app3, &sid3, ServiceStatus::Stopped);
@@ -1389,6 +1455,36 @@ impl ProcessManager {
     // ================================================================
     // stop / restart / compile_and_start / stop_all
     // ================================================================
+
+    /// 等待指定 PID 的进程真正退出（轮询 sysinfo），带超时。
+    ///
+    /// `stop()` 发出 kill 后立即返回，但进程（尤其 JVM 带 shutdown hook）实际退出
+    /// 可能需要 1~2 秒。后续操作（`mvn clean` 删 target、重启绑定端口）若不等待，
+    /// 会撞上文件锁 / 端口占用。返回 true 表示进程已退出，false 表示超时仍存活。
+    async fn wait_for_pid_exit(pid: u32, timeout: std::time::Duration) -> bool {
+        if pid == 0 {
+            return true;
+        }
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let alive = {
+                let mut sys = SYS.lock();
+                sys.refresh_processes(
+                    sysinfo::ProcessesToUpdate::Some(&[sysinfo::Pid::from_u32(pid)]),
+                    false,
+                );
+                sys.process(sysinfo::Pid::from_u32(pid)).is_some()
+            };
+            if !alive {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
     pub async fn stop(&self, app: AppHandle, service_id: &str) -> AppResult<()> {
         Self::emit_log(&app, service_id, LogSource::Mvn, "[javaboot] 正在停止服务...");
         let handle = {
@@ -1401,10 +1497,18 @@ impl ProcessManager {
             if let Some(cpid) = h.compile_pid.lock().take() {
                 kill_process_tree_by_pid(cpid);
             }
+            let run_pid = h.pid;
             if let Some(job) = h.job {
                 job.lock().kill();
-            } else if h.pid > 0 {
-                kill_process_tree_by_pid(h.pid);
+            } else if run_pid > 0 {
+                kill_process_tree_by_pid(run_pid);
+            }
+            // 等待 Java 进程真正退出：JVM shutdown hook 可能需要 1~2 秒，
+            // 不等待会导致后续 restart/recompile 撞上端口占用 / class 文件锁
+            if run_pid > 0 {
+                if !Self::wait_for_pid_exit(run_pid, std::time::Duration::from_secs(8)).await {
+                    log::warn!("stop: 等待 PID {} 退出超时，继续后续操作", run_pid);
+                }
             }
             let _ = db::clear_run_pid(service_id);
             self.set_status(&app, service_id, ServiceStatus::Stopped);
@@ -1414,6 +1518,9 @@ impl ProcessManager {
             if let Some(pid) = pid {
                 self.set_status(&app, service_id, ServiceStatus::Stopping);
                 kill_process_tree_by_pid(pid);
+                if !Self::wait_for_pid_exit(pid, std::time::Duration::from_secs(8)).await {
+                    log::warn!("stop: 等待 PID {} 退出超时，继续后续操作", pid);
+                }
                 let _ = db::clear_run_pid(service_id);
                 self.set_status(&app, service_id, ServiceStatus::Stopped);
                 Self::emit_log(&app, service_id, LogSource::Mvn, "[javaboot] 服务已停止");
@@ -1426,16 +1533,13 @@ impl ProcessManager {
     }
 
     pub async fn restart(&self, app: AppHandle, service: Service) -> AppResult<()> {
-        // 只等真实业务端口释放；JMX/devtools 等噪声端口由框架持有，
-        // 进程退出后可能仍被其它进程占用，等待它们会让重启卡满 10 秒
-        let old_ports: Vec<u16> = self
-            .get_runtime(&service.id)
-            .ports
-            .iter()
-            .copied()
-            .filter(|p| !NOISE_PORTS.contains(p))
-            .collect();
+        // runtime.ports 已由后端过滤噪声端口，这里直接使用。
+        // 等待业务端口被 OS 回收（TIME_WAIT 等），避免新进程 bind 失败。
+        let old_ports: Vec<u16> = self.get_runtime(&service.id).ports.clone();
         self.stop(app.clone(), &service.id).await?;
+        // stop() 已等待进程真正退出；这里额外等待业务端口被 OS 回收（TIME_WAIT 等）。
+        // old_ports 为空（未解析到业务端口，如启动失败即重启）时无需等待端口，
+        // 进程已退出即可启动；否则轮询确认端口释放，避免新进程 bind 失败。
         if !old_ports.is_empty() {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             loop {
@@ -1451,8 +1555,6 @@ impl ProcessManager {
                     break;
                 }
             }
-        } else {
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         }
         self.start(app, service).await
     }
@@ -1482,12 +1584,31 @@ impl ProcessManager {
                     self.start(app, service).await
                 }
                 Err(e) => {
-                    // 编译失败：旧进程仍在运行，恢复 Running 状态
+                    // 编译失败：检查旧进程是否真的还活着再恢复状态。
+                    // 仅凭 rt.pid.is_some() 不够——进程可能在此期间自行崩溃退出，
+                    // pid 尚未被后台 reaper 清理，会误恢复为 Running。
                     let rt = self.get_runtime(&service.id);
-                    let restore = if rt.pid.is_some() {
-                        ServiceStatus::Running
-                    } else {
-                        ServiceStatus::Stopped
+                    let restore = match rt.pid {
+                        Some(pid) if pid > 0 => {
+                            let alive = {
+                                let mut sys = SYS.lock();
+                                sys.refresh_processes(
+                                    sysinfo::ProcessesToUpdate::Some(&[sysinfo::Pid::from_u32(pid)]),
+                                    false,
+                                );
+                                sys.process(sysinfo::Pid::from_u32(pid)).is_some()
+                            };
+                            if alive {
+                                ServiceStatus::Running
+                            } else {
+                                Self::emit_log(
+                                    &app, &service.id, LogSource::Mvn,
+                                    "[javaboot] 编译失败，且旧进程已退出",
+                                );
+                                ServiceStatus::Stopped
+                            }
+                        }
+                        _ => ServiceStatus::Stopped,
                     };
                     self.set_status(&app, &service.id, restore);
                     Err(e)
@@ -1539,8 +1660,11 @@ impl ProcessManager {
     /// - 强制 clean，清除 target 下旧编译产物
     /// - 强制走编译（忽略 classpath 缓存命中和 Skip 策略）
     /// - 先停旧进程再编译（clean 会删除 target/classes，旧进程可能持有 class 文件锁）
+    ///
+    /// `stop()` 会等待 Java 进程真正退出（轮询 sysinfo）再返回，确保 clean 时
+    /// 不会撞上 class 文件锁冲突。
     pub async fn recompile_and_start(&self, app: AppHandle, service: Service) -> AppResult<()> {
-        // 先停旧进程（clean 会删 target，避免 class 文件锁冲突）
+        // 先停旧进程并等待其真正退出（clean 会删 target，避免 class 文件锁冲突）
         self.stop(app.clone(), &service.id).await?;
         self.set_status(&app, &service.id, ServiceStatus::Recompiling);
 
@@ -1571,7 +1695,18 @@ impl ProcessManager {
         ).await?;
 
         // 编译成功，启动（mvn clean 已删除 target，classpath 缓存文件也随之删除）
-        // start() 会检测到 placeholder（pid==0），清理后创建新 handle
+        // 关键：清理编译期间插入的 placeholder handle（pid==0, kill_token=false），
+        // 否则 start() 会把它当作"并发启动中"的 placeholder 而拒绝启动
+        // （start() 仅在 kill_token 已 signal 或创建超 5 分钟时才清理 placeholder）。
+        {
+            let mut handles = self.handles.lock();
+            if let Some(h) = handles.get(&service.id) {
+                if h.pid == 0 {
+                    h.kill_token.store(true, Ordering::Relaxed);
+                    handles.remove(&service.id);
+                }
+            }
+        }
         self.start(app, service).await
     }
 
