@@ -11,6 +11,9 @@ pub struct Project {
     pub java_home: Option<String>,
     /// 项目级 Maven 路径（MAVEN_HOME），None 则用 mvnw 或系统 PATH
     pub maven_home: Option<String>,
+    /// 项目级自定义环境变量 JSON：`[{"key":"FOO","value":"bar"}]`
+    /// 启动时注入到该项目下所有服务的子进程（mvn 编译 + java 运行）
+    pub env_vars: Option<String>,
     pub created_at: String,
 }
 
@@ -34,6 +37,9 @@ pub struct Service {
     /// 配置覆盖属性 JSON：`[{"key":"spring.cloud.nacos.discovery.ip","value":"192.168.1.100"}]`
     /// 启动时转成 `-Dkey=value` 注入 JVM 系统属性，Spring Boot 优先级高于 application.yml
     pub override_properties: Option<String>,
+    /// 服务级自定义环境变量 JSON：`[{"key":"FOO","value":"bar"}]`
+    /// 启动时注入到子进程（mvn 编译 + java 运行），同名 key 覆盖项目级 env_vars
+    pub env_vars: Option<String>,
     pub created_at: String,
 }
 

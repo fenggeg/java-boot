@@ -22,23 +22,62 @@ pub struct EnvConfig {
     pub maven_home: Option<String>,
     /// 项目根路径（用于多模块 install）
     pub project_root: Option<String>,
+    /// 自定义环境变量（项目级 + 服务级合并，服务级覆盖项目级同名 key）
+    /// 在 JAVA_HOME/MAVEN_HOME/PATH/MAVEN_OPTS 之后注入，可覆盖内置变量
+    pub env_vars: Vec<(String, String)>,
 }
 
-/// 从服务的 project_id 查项目，解析出项目级 JDK / Maven 配置
+/// 从服务的 project_id 查项目，解析出项目级 JDK / Maven / 环境变量配置
 pub fn resolve_env_config(service: &Service) -> AppResult<EnvConfig> {
     let mut cfg = EnvConfig {
         java_home: None,
         maven_home: None,
         project_root: None,
+        env_vars: Vec::new(),
     };
     if let Some(pid) = &service.project_id {
         if let Ok(project) = db::get_project(pid) {
             cfg.java_home = project.java_home.and_then(non_empty);
             cfg.maven_home = project.maven_home.and_then(non_empty);
             cfg.project_root = Some(project.root_path);
+            // 项目级环境变量
+            cfg.env_vars = parse_env_vars(&project.env_vars);
+        }
+    }
+    // 服务级环境变量覆盖项目级同名 key
+    let service_env = parse_env_vars(&service.env_vars);
+    if !service_env.is_empty() {
+        for (k, v) in service_env {
+            if let Some(entry) = cfg.env_vars.iter_mut().find(|(ek, _)| ek == &k) {
+                entry.1 = v;
+            } else {
+                cfg.env_vars.push((k, v));
+            }
         }
     }
     Ok(cfg)
+}
+
+/// 解析环境变量 JSON：`[{"key":"FOO","value":"bar"}]` → `[(FOO, bar)]`
+/// 跳过 key 为空或非字符串的条目；value 缺失视为空串
+pub fn parse_env_vars(json: &Option<String>) -> Vec<(String, String)> {
+    let Some(s) = json.as_deref() else { return Vec::new() };
+    let s = s.trim();
+    if s.is_empty() {
+        return Vec::new();
+    }
+    let parsed: Result<Vec<EnvVarEntry>, _> = serde_json::from_str(s);
+    let Ok(arr) = parsed else { return Vec::new() };
+    arr.into_iter()
+        .filter(|e| !e.key.trim().is_empty())
+        .map(|e| (e.key.trim().to_string(), e.value))
+        .collect()
+}
+
+#[derive(serde::Deserialize)]
+struct EnvVarEntry {
+    key: String,
+    value: String,
 }
 
 fn non_empty(s: String) -> Option<String> {
@@ -309,7 +348,8 @@ impl CmdEnv for std::process::Command {
     }
 }
 
-/// 为子进程注入环境变量：只覆盖 JAVA_HOME / MAVEN_HOME / PATH，其余走系统继承
+/// 为子进程注入环境变量：先注入 JAVA_HOME / MAVEN_HOME / PATH / MAVEN_OPTS，
+/// 再注入用户自定义环境变量（项目级 + 服务级合并），后者可覆盖前者。
 /// （原实现 env_clear + 全量复制 std::env::vars() 是负优化，`Command` 默认就继承父进程）
 pub fn inject_env<C: CmdEnv>(cmd: &mut C, cfg: &EnvConfig) {
     let mut path_prefix = String::new();
@@ -334,6 +374,11 @@ pub fn inject_env<C: CmdEnv>(cmd: &mut C, cfg: &EnvConfig) {
         _ => MAVEN_OPTS_BASE.to_string(),
     };
     cmd.set_env("MAVEN_OPTS", &merged);
+
+    // 用户自定义环境变量（项目级 + 服务级），在内置变量之后注入，可覆盖 JAVA_HOME/PATH 等
+    for (k, v) in &cfg.env_vars {
+        cmd.set_env(k, v);
+    }
 }
 
 // ================================================================

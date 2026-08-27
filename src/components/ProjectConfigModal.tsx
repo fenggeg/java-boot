@@ -1,6 +1,6 @@
 import {useEffect, useState} from "react";
-import {App, AutoComplete, Form, Input, Modal, Typography} from "antd";
-import {FolderOpen} from "./Icons";
+import {App, AutoComplete, Button, Divider, Form, Input, Modal, Typography} from "antd";
+import {FolderOpen, Plus, Trash} from "./Icons";
 import {open} from "@tauri-apps/plugin-dialog";
 import * as api from "../api";
 import type {JdkInfo, MavenInfo, Project} from "../types";
@@ -13,6 +13,46 @@ interface Props {
   onSaved: () => void;
 }
 
+// ── 环境变量 解析 / 序列化 ──────────────────────────────────
+
+/** 带唯一 id 的环境变量条目（id 仅前端使用，不序列化） */
+interface EnvVarEntry {
+  id: string;
+  key: string;
+  value: string;
+}
+
+let envVarIdCounter = 0;
+function newEnvVarId(): string {
+  envVarIdCounter += 1;
+  return `env-${envVarIdCounter}`;
+}
+
+function parseEnvVars(json: string | null | undefined): EnvVarEntry[] {
+  if (!json || !json.trim()) return [];
+  try {
+    const arr = JSON.parse(json) as unknown;
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((x): x is Record<string, unknown> => !!x && typeof x === "object" && typeof x.key === "string" && (x.key as string).trim().length > 0)
+      .map((x) => ({
+        id: newEnvVarId(),
+        key: (x.key as string).trim(),
+        value: String(x.value ?? ""),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function serializeEnvVars(list: EnvVarEntry[]): string | null {
+  const cleaned = list
+    .filter((x) => x.key.trim())
+    .map(({ key, value }) => ({ key, value }));
+  if (cleaned.length === 0) return null;
+  return JSON.stringify(cleaned);
+}
+
 export default function ProjectConfigModal({
   project,
   onClose,
@@ -22,6 +62,7 @@ export default function ProjectConfigModal({
   const { message } = App.useApp();
   const [jdks, setJdks] = useState<JdkInfo[]>([]);
   const [mavens, setMavens] = useState<MavenInfo[]>([]);
+  const [envVars, setEnvVars] = useState<EnvVarEntry[]>([]);
   const [saving, setSaving] = useState(false);
   const isOpen = !!project;
 
@@ -31,6 +72,7 @@ export default function ProjectConfigModal({
         java_home: project.java_home ?? "",
         maven_home: project.maven_home ?? "",
       });
+      setEnvVars(parseEnvVars(project.env_vars));
       api.detectJdks().then(setJdks).catch(() => setJdks([]));
       api.detectMavens().then(setMavens).catch(() => setMavens([]));
     } else {
@@ -38,6 +80,7 @@ export default function ProjectConfigModal({
       form.resetFields();
       setJdks([]);
       setMavens([]);
+      setEnvVars([]);
     }
   }, [project, form]);
 
@@ -71,7 +114,8 @@ export default function ProjectConfigModal({
       await api.updateProjectEnv(
         project.id,
         values.java_home?.trim() || null,
-        values.maven_home?.trim() || null
+        values.maven_home?.trim() || null,
+        serializeEnvVars(envVars),
       );
       message.success("项目配置已保存");
       onSaved();
@@ -189,6 +233,64 @@ export default function ProjectConfigModal({
             />
           </AutoComplete>
         </Form.Item>
+
+        <Divider style={{ marginTop: 16, marginBottom: 12 }}>环境变量</Divider>
+
+        <div style={{ marginBottom: 8, fontSize: 11, color: "var(--text-3)", lineHeight: 1.6 }}>
+          以 <code style={{ color: "var(--blue)" }}>KEY=VALUE</code> 注入子进程环境变量，
+          对该项目下所有服务生效（mvn 编译 + java 运行）。服务级同名变量会覆盖此处配置。
+        </div>
+
+        {/* 环境变量 key-value 编辑器 */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {envVars.map((item) => (
+            <div key={item.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <Input
+                placeholder="key，如 FOO"
+                value={item.key}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setEnvVars((list) =>
+                    list.map((x) => (x.id === item.id ? { ...x, key: v } : x))
+                  );
+                }}
+                style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 12 }}
+              />
+              <span style={{ color: "var(--text-3)", fontSize: 12 }}>=</span>
+              <Input
+                placeholder="value，如 bar"
+                value={item.value}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setEnvVars((list) =>
+                    list.map((x) => (x.id === item.id ? { ...x, value: v } : x))
+                  );
+                }}
+                style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 12 }}
+              />
+              <Button
+                size="small"
+                type="text"
+                danger
+                onClick={() =>
+                  setEnvVars((list) => list.filter((x) => x.id !== item.id))
+                }
+                style={{ flexShrink: 0, padding: "0 6px" }}
+              >
+                <Trash size={13} />
+              </Button>
+            </div>
+          ))}
+          <Button
+            size="small"
+            type="dashed"
+            block
+            onClick={() => setEnvVars((list) => [...list, { id: newEnvVarId(), key: "", value: "" }])}
+            style={{ marginTop: 2 }}
+          >
+            <Plus size={12} /> 添加环境变量
+          </Button>
+        </div>
       </Form>
     </Modal>
   );

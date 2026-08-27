@@ -165,6 +165,46 @@ function serializeOverrideProperties(list: OverrideEntry[]): string | null {
   return JSON.stringify(cleaned);
 }
 
+// ── 环境变量 解析 / 序列化 ──────────────────────────────────
+
+/** 带唯一 id 的环境变量条目（id 仅前端使用，不序列化） */
+interface EnvVarEntry {
+  id: string;
+  key: string;
+  value: string;
+}
+
+let envVarIdCounter = 0;
+function newEnvVarId(): string {
+  envVarIdCounter += 1;
+  return `env-${envVarIdCounter}`;
+}
+
+function parseEnvVars(json: string | null | undefined): EnvVarEntry[] {
+  if (!json || !json.trim()) return [];
+  try {
+    const arr = JSON.parse(json) as unknown;
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((x): x is Record<string, unknown> => !!x && typeof x === "object" && typeof x.key === "string" && (x.key as string).trim().length > 0)
+      .map((x) => ({
+        id: newEnvVarId(),
+        key: (x.key as string).trim(),
+        value: String(x.value ?? ""),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function serializeEnvVars(list: EnvVarEntry[]): string | null {
+  const cleaned = list
+    .filter((x) => x.key.trim())
+    .map(({ key, value }) => ({ key, value }));
+  if (cleaned.length === 0) return null;
+  return JSON.stringify(cleaned);
+}
+
 export default function ServiceConfigModal({ service, onClose, onSaved }: Props) {
   const [form] = Form.useForm();
   const { message } = App.useApp();
@@ -179,6 +219,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
   const [restOpts, setRestOpts] = useState<string>("");
   const [devMode, setDevMode] = useState<boolean>(false);
   const [overrides, setOverrides] = useState<OverrideEntry[]>([]);
+  const [envVars, setEnvVars] = useState<EnvVarEntry[]>([]);
   const [dependencies, setDependencies] = useState<string[]>([]);
 
   // 获取同项目的其他服务列表（用于依赖编排下拉选项）
@@ -196,6 +237,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
       setDebugCfg(p.debug.enabled ? p.debug : { enabled: false, port: 5005, suspend: false });
       setDevMode(!!service.dev_mode);
       setOverrides(parseOverrideProperties(service.override_properties));
+      setEnvVars(parseEnvVars(service.env_vars));
 
       // 加载依赖列表
       api.getServiceDependencies(service.id)
@@ -239,6 +281,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
         devMode,
         undefined,
         serializeOverrideProperties(overrides),
+        serializeEnvVars(envVars),
       );
       // 保存依赖配置
       await api.setServiceDependencies(service.id, dependencies);
@@ -545,6 +588,64 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
             style={{ marginTop: 2 }}
           >
             <Plus size={12} /> 添加属性
+          </Button>
+        </div>
+
+        <Divider style={{ marginTop: 16, marginBottom: 12 }}>环境变量</Divider>
+
+        <div style={{ marginBottom: 8, fontSize: 11, color: "var(--text-3)", lineHeight: 1.6 }}>
+          以 <code style={{ color: "var(--blue)" }}>KEY=VALUE</code> 注入子进程环境变量（mvn 编译 + java 运行）。
+          服务级配置会覆盖项目级同名变量；也可覆盖 Launcher 内置的 JAVA_HOME / MAVEN_HOME / PATH 等。
+        </div>
+
+        {/* 环境变量 key-value 编辑器 */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {envVars.map((item) => (
+            <div key={item.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <Input
+                placeholder="key，如 FOO"
+                value={item.key}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setEnvVars((list) =>
+                    list.map((x) => (x.id === item.id ? { ...x, key: v } : x))
+                  );
+                }}
+                style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 12 }}
+              />
+              <span style={{ color: "var(--text-3)", fontSize: 12 }}>=</span>
+              <Input
+                placeholder="value，如 bar"
+                value={item.value}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setEnvVars((list) =>
+                    list.map((x) => (x.id === item.id ? { ...x, value: v } : x))
+                  );
+                }}
+                style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 12 }}
+              />
+              <Button
+                size="small"
+                type="text"
+                danger
+                onClick={() =>
+                  setEnvVars((list) => list.filter((x) => x.id !== item.id))
+                }
+                style={{ flexShrink: 0, padding: "0 6px" }}
+              >
+                <Trash size={13} />
+              </Button>
+            </div>
+          ))}
+          <Button
+            size="small"
+            type="dashed"
+            block
+            onClick={() => setEnvVars((list) => [...list, { id: newEnvVarId(), key: "", value: "" }])}
+            style={{ marginTop: 2 }}
+          >
+            <Plus size={12} /> 添加环境变量
           </Button>
         </div>
 

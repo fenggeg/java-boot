@@ -41,6 +41,7 @@ export const updateService = (
   devMode?: boolean,
   mainClass?: string | null,
   overrideProperties?: string | null,
+  envVars?: string | null,
 ) =>
   invoke<void>("update_service", {
     id,
@@ -51,18 +52,21 @@ export const updateService = (
     devMode: devMode ?? null,
     mainClass: mainClass ?? null,
     overrideProperties: overrideProperties ?? null,
+    envVars: envVars ?? null,
   });
 
-/// 更新项目级 JDK / Maven 配置
+/// 更新项目级 JDK / Maven / 环境变量配置
 export const updateProjectEnv = (
   projectId: string,
   javaHome?: string | null,
-  mavenHome?: string | null
+  mavenHome?: string | null,
+  envVars?: string | null,
 ) =>
   invoke<void>("update_project_env", {
     projectId,
     javaHome: javaHome ?? null,
     mavenHome: mavenHome ?? null,
+    envVars: envVars ?? null,
   });
 export const deleteService = (id: string) =>
   invoke<void>("delete_service", { id });

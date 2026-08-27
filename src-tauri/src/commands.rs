@@ -135,6 +135,7 @@ pub async fn add_project(path: String, selected_modules: Vec<ScannedModule>) -> 
             &project.id,
             jdk_home.as_deref().map(Some),
             maven_home.as_deref().map(Some),
+            None,
         )?;
         if let Some(j) = jdk_home {
             project.java_home = Some(j);
@@ -290,6 +291,7 @@ pub fn update_service(
     dev_mode: Option<bool>,
     main_class: Option<Option<String>>,
     override_properties: Option<Option<String>>,
+    env_vars: Option<Option<String>>,
 ) -> AppResult<()> {
     db::update_service(
         &id,
@@ -300,15 +302,17 @@ pub fn update_service(
         dev_mode,
         main_class.as_ref().map(|o| o.as_deref()),
         override_properties.as_ref().map(|o| o.as_deref()),
+        env_vars.as_ref().map(|o| o.as_deref()),
     )
 }
 
-/// 更新项目级 JDK / Maven 配置
+/// 更新项目级 JDK / Maven / 环境变量配置
 #[tauri::command]
 pub fn update_project_env(
     project_id: String,
     java_home: Option<Option<String>>,
     maven_home: Option<Option<String>>,
+    env_vars: Option<Option<String>>,
 ) -> AppResult<()> {
     // 路径规范化：去除首尾空白，统一正斜杠为反斜杠（Windows），去除多余分隔符
     let normalize = |s: Option<Option<String>>| -> Option<Option<String>> {
@@ -347,6 +351,7 @@ pub fn update_project_env(
         &project_id,
         normalize(java_home).as_ref().map(|o| o.as_deref()),
         normalize(maven_home).as_ref().map(|o| o.as_deref()),
+        env_vars.as_ref().map(|o| o.as_deref()),
     )
 }
 
@@ -361,7 +366,7 @@ pub async fn delete_service(id: String, app: AppHandle) -> AppResult<()> {
 /// 切换自动重启开关
 #[tauri::command]
 pub fn toggle_auto_restart(id: String, enabled: bool, app: AppHandle) -> AppResult<()> {
-    db::update_service(&id, None, Some(enabled), None, None, None, None, None)?;
+    db::update_service(&id, None, Some(enabled), None, None, None, None, None, None)?;
     let service = db::get_service(&id)?;
     if enabled {
         let _ = watcher::get_watch_manager().watch(app, service);

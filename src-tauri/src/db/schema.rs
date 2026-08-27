@@ -91,6 +91,16 @@ fn migrate_v5(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// v6：项目级 & 服务级自定义环境变量（JSON 数组 `[{"key":"K","value":"V"}]`）
+///
+/// 项目级对该项目下所有服务生效；服务级同名 key 覆盖项目级。
+/// 启动时由 `inject_env` 注入到 mvn 编译进程与 java 运行进程。
+fn migrate_v6(conn: &Connection) -> rusqlite::Result<()> {
+    add_column(conn, "projects", "env_vars", "TEXT")?;
+    add_column(conn, "services", "env_vars", "TEXT")?;
+    Ok(())
+}
+
 pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
     for sql in MIGRATIONS {
         conn.execute_batch(sql)?;
@@ -99,6 +109,7 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
     migrate_v3(conn)?;
     migrate_v4(conn)?;
     migrate_v5(conn)?;
+    migrate_v6(conn)?;
     // seed default config
     let defaults = [
         ("port_refresh_interval_secs", "2"),

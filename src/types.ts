@@ -7,6 +7,8 @@ export interface Project {
   git_available: boolean;
   java_home: string | null;
   maven_home: string | null;
+  /** 项目级环境变量 JSON：`[{"key":"FOO","value":"bar"}]`，注入到该项目下所有服务子进程 */
+  env_vars: string | null;
   created_at: string;
 }
 
@@ -25,6 +27,8 @@ export interface Service {
   dev_mode: boolean;
   /** 配置覆盖属性 JSON：`[{"key":"...","value":"..."}]`，启动时转 -Dkey=value */
   override_properties: string | null;
+  /** 服务级环境变量 JSON：`[{"key":"FOO","value":"bar"}]`，同名 key 覆盖项目级 env_vars */
+  env_vars: string | null;
   created_at: string;
 }
 

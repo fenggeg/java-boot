@@ -68,7 +68,7 @@ where
 
 // ============================ Project CRUD ============================
 
-const PROJECT_COLS: &str = "id, name, root_path, git_available, java_home, maven_home, created_at";
+const PROJECT_COLS: &str = "id, name, root_path, git_available, java_home, maven_home, env_vars, created_at";
 
 macro_rules! row_to_project {
     ($row:expr) => {
@@ -79,7 +79,8 @@ macro_rules! row_to_project {
             git_available: $row.get::<_, i64>(3)? != 0,
             java_home: $row.get(4)?,
             maven_home: $row.get(5)?,
-            created_at: $row.get(6)?,
+            env_vars: $row.get(6)?,
+            created_at: $row.get(7)?,
         }
     };
 }
@@ -114,14 +115,15 @@ pub fn insert_project(name: &str, root_path: &str, git_available: bool) -> AppRe
         git_available,
         java_home: None,
         maven_home: None,
+        env_vars: None,
         created_at: Utc::now().to_rfc3339(),
     };
     with_conn(|conn| {
         conn.execute(
-            "INSERT INTO projects (id, name, root_path, git_available, java_home, maven_home, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO projects (id, name, root_path, git_available, java_home, maven_home, env_vars, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 project.id, project.name, project.root_path, project.git_available as i32,
-                project.java_home, project.maven_home, project.created_at
+                project.java_home, project.maven_home, project.env_vars, project.created_at
             ],
         )?;
         Ok(())
@@ -160,7 +162,7 @@ pub fn delete_project(id: &str) -> AppResult<()> {
 
 // ============================ Service CRUD ============================
 
-const SERVICE_COLS: &str = "id, name, pom_path, working_dir, project_id, auto_restart, maven_opts, profiles, main_class, dev_mode, override_properties, created_at";
+const SERVICE_COLS: &str = "id, name, pom_path, working_dir, project_id, auto_restart, maven_opts, profiles, main_class, dev_mode, override_properties, env_vars, created_at";
 
 macro_rules! row_to_service {
     ($row:expr) => {
@@ -176,7 +178,8 @@ macro_rules! row_to_service {
             main_class: $row.get(8)?,
             dev_mode: $row.get::<_, i64>(9)? != 0,
             override_properties: $row.get(10)?,
-            created_at: $row.get(11)?,
+            env_vars: $row.get(11)?,
+            created_at: $row.get(12)?,
         }
     };
 }
@@ -235,17 +238,19 @@ pub fn insert_service(
         main_class: main_class.map(String::from),
         dev_mode: false,
         override_properties: None,
+        env_vars: None,
         created_at: Utc::now().to_rfc3339(),
     };
     with_conn(|conn| {
         conn.execute(
-            "INSERT INTO services (id, name, pom_path, working_dir, project_id, auto_restart, maven_opts, profiles, main_class, dev_mode, override_properties, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO services (id, name, pom_path, working_dir, project_id, auto_restart, maven_opts, profiles, main_class, dev_mode, override_properties, env_vars, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             rusqlite::params![
                 service.id, service.name, service.pom_path, service.working_dir,
                 service.project_id, service.auto_restart as i32,
                 service.maven_opts, service.profiles,
                 service.main_class, service.dev_mode as i32,
                 service.override_properties,
+                service.env_vars,
                 service.created_at
             ],
         )?;
@@ -277,6 +282,7 @@ pub fn update_service(
     dev_mode: Option<bool>,
     main_class: Option<Option<&str>>,
     override_properties: Option<Option<&str>>,
+    env_vars: Option<Option<&str>>,
 ) -> AppResult<()> {
     with_conn(|conn| {
         let mut sets: Vec<String> = vec![];
@@ -311,6 +317,10 @@ pub fn update_service(
             sets.push("override_properties = ?".to_string());
             values.push(op.map(|s| s.to_string()).into());
         }
+        if let Some(ev) = env_vars {
+            sets.push("env_vars = ?".to_string());
+            values.push(ev.map(|s| s.to_string()).into());
+        }
 
         if sets.is_empty() {
             return Ok(());
@@ -338,11 +348,12 @@ pub fn set_service_main_class(id: &str, main_class: &str) -> AppResult<()> {
     })
 }
 
-/// 更新项目级 JDK / Maven 配置
+/// 更新项目级 JDK / Maven / 环境变量配置
 pub fn update_project_env(
     id: &str,
     java_home: Option<Option<&str>>,
     maven_home: Option<Option<&str>>,
+    env_vars: Option<Option<&str>>,
 ) -> AppResult<()> {
     with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
@@ -356,6 +367,12 @@ pub fn update_project_env(
             tx.execute(
                 "UPDATE projects SET maven_home = ?1 WHERE id = ?2",
                 rusqlite::params![mh, id],
+            )?;
+        }
+        if let Some(ev) = env_vars {
+            tx.execute(
+                "UPDATE projects SET env_vars = ?1 WHERE id = ?2",
+                rusqlite::params![ev, id],
             )?;
         }
         tx.commit()?;
