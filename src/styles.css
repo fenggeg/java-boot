@@ -2951,7 +2951,9 @@ body {
   bottom: 0;
   /* 宽度留足点击余量：视觉条仅 3px，整列经 diff-bar::after 扩为可点区域 */
   width: 12px;
-  z-index: 3;
+  /* 必须高于输入层(.file-editor-input z-index:3，为搜索选区抬升过)，
+     否则同层时 DOM 靠后的 textarea 会盖住标记条、拦截全部点击 */
+  z-index: 4;
   pointer-events: none;
   overflow: hidden;
 }
