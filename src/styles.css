@@ -2949,7 +2949,8 @@ body {
   left: 0;
   top: 0;
   bottom: 0;
-  width: 5px;
+  /* 宽度留足点击余量：视觉条仅 3px，整列经 diff-bar::after 扩为可点区域 */
+  width: 12px;
   z-index: 3;
   pointer-events: none;
   overflow: hidden;
@@ -2989,9 +2990,21 @@ body {
   transform: translateY(2px);
 }
 
-/* diff 标记条可点击：弹出文件历史 / 回滚浮层 */
+/* diff 标记条可点击：弹出文件历史 / 回滚浮层。
+   父容器 pointer-events:none 挡事件，条自身重新开启；
+   ::after 把 3px 视觉条扩成 ~12x20 的易点中热区（不改变外观） */
 .diff-bar {
+  pointer-events: auto;
   cursor: pointer;
+}
+
+.diff-bar::after {
+  content: "";
+  position: absolute;
+  left: -5px;
+  right: -4px;
+  top: -3px;
+  bottom: -3px;
 }
 
 /* —— 文件历史 / 回滚浮层（点击 diff 标记条唤起）—— */
