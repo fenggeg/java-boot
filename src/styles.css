@@ -3007,6 +3007,13 @@ body {
   bottom: -3px;
 }
 
+/* 悬停反馈：加宽发光，明确「可点击」（也是肉眼区分新旧前端的标志） */
+.diff-bar:hover {
+  width: 5px;
+  left: 0;
+  box-shadow: 0 0 6px currentColor;
+}
+
 /* —— 文件历史 / 回滚浮层（点击 diff 标记条唤起）—— */
 .git-hist-pop {
   position: absolute;
