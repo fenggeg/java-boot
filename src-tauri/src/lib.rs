@@ -178,6 +178,8 @@ pub fn run() {
             commands::git_write_file,
             commands::git_file_head,
             commands::git_diff_hunks,
+            commands::git_file_log,
+            commands::git_show_file,
             commands::git_conflict_versions,
             commands::git_resolve_side,
             commands::git_mark_resolved,

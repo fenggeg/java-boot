@@ -126,6 +126,12 @@ export const gitLog = (projectId: string, limit = 50) =>
   invoke<GitCommitInfo[]>("git_log", { projectId, limit });
 export const gitShow = (projectId: string, hash: string) =>
   invoke<string>("git_show", { projectId, hash });
+// 单文件提交历史（--follow 跟随重命名），编辑器「文件历史 / 回滚」浮层用
+export const gitFileLog = (projectId: string, path: string, limit = 100) =>
+  invoke<GitCommitInfo[]>("git_file_log", { projectId, path, limit });
+// 读取指定提交中某文件的内容（历史预览 / 整文件回滚）
+export const gitShowFile = (projectId: string, hash: string, path: string) =>
+  invoke<string>("git_show_file", { projectId, hash, path });
 export const gitReadFile = (projectId: string, path: string) =>
   invoke<string>("git_read_file", { projectId, path });
 export const gitWriteFile = (

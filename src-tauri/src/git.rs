@@ -971,6 +971,54 @@ pub fn diff_hunks(project_id: &str, path: &str) -> AppResult<Vec<DiffHunk>> {
     Ok(parse_diff_hunks(&crate::util::decode_output(&out.stdout)))
 }
 
+/// 单文件的提交历史（--follow 跟随重命名），编辑器「文件历史 / 回滚」浮层用。
+/// 输出格式与 log() 相同的 \x1f 分隔五段，解析逻辑保持一致。
+pub fn file_log(project_id: &str, path: &str, limit: u32) -> AppResult<Vec<GitCommitInfo>> {
+    let root = repo_root(project_id)?;
+    safe_join(&root, path)?;
+    let n = limit.min(200).to_string();
+    let out = run_git(
+        &root,
+        &[
+            "log",
+            "--follow",
+            "--no-color",
+            "-n",
+            n.as_str(),
+            "--pretty=format:%H%x1f%h%x1f%an%x1f%aI%x1f%s",
+            "--",
+            path,
+        ],
+    )?;
+    let text = crate::util::decode_output(&out.stdout);
+    let mut commits = vec![];
+    for line in text.lines() {
+        let f: Vec<&str> = line.split('\x1f').collect();
+        if f.len() >= 5 {
+            commits.push(GitCommitInfo {
+                hash: f[0].to_string(),
+                short_hash: f[1].to_string(),
+                author: f[2].to_string(),
+                date: f[3].to_string(),
+                message: f[4..].join("\x1f"),
+            });
+        }
+    }
+    Ok(commits)
+}
+
+/// 读取指定提交中某文件的内容（`git show <hash>:<path>`），
+/// 用于历史版本预览与整文件回滚。该提交中不存在此文件时报错。
+pub fn show_file(project_id: &str, hash: &str, path: &str) -> AppResult<String> {
+    let root = repo_root(project_id)?;
+    if hash.is_empty() || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(AppError::Git("无效的提交哈希".to_string()));
+    }
+    safe_join(&root, path)?;
+    let out = run_git(&root, &["show", &format!("{}:{}", hash, path)])?;
+    Ok(crate::util::decode_output(&out.stdout))
+}
+
 // ================================================================
 // 冲突合并（pull/merge 产生冲突后的解决流程）
 //

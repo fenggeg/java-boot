@@ -29,6 +29,7 @@ import type {
   FileContent,
   FileGitStatus,
   GitChange,
+  GitCommitInfo,
   Project,
 } from "../types";
 import {gitChangeKind} from "../types";
@@ -140,6 +141,8 @@ interface OpenTab {
   fileType: FileType;
   /** 图片 / 二进制的 asset 协议 URL */
   assetUrl?: string;
+  /** 磁盘原始换行风格；保存时按原样还原（缓冲区内一律 LF） */
+  eol?: "\n" | "\r\n";
 }
 
 /** 剪贴板：记录待复制 / 剪切的条目 */
@@ -172,6 +175,20 @@ type LineKind = 0 | 1 | 2 | 3;
 /** 行比较的归一化：忽略行尾 CR，抵消 core.autocrlf 的 CRLF/LF 差异 */
 function normLine(l: string): string {
   return l.endsWith("\r") ? l.slice(0, -1) : l;
+}
+
+/**
+ * 统一缓冲区换行为 LF，并记录磁盘原始 EOL。
+ * 受控 textarea 的 DOM 值会被浏览器强制归一化为 LF：state 里保留 CRLF 会让
+ * value prop 与 DOM 值永久不一致，任何一次无关 re-render（CPU 监控等每秒刷新）
+ * 都会触发 React 重写 textarea.value，打断光标位置与输入法组合，
+ * 表现为插入内容落在光标错位处。缓冲区内一律 LF，保存时按记录的 EOL 还原。
+ */
+function toBufferEol(raw: string): { content: string; eol: "\n" | "\r\n" } {
+  if (raw.includes("\r\n")) {
+    return { content: raw.replace(/\r\n?/g, "\n"), eol: "\r\n" };
+  }
+  return { content: raw.replace(/\r/g, "\n"), eol: "\n" };
 }
 
 /**
@@ -701,6 +718,21 @@ export default function FilePanel({
 
   // 行级 diff 标记（工作区内容 vs HEAD）：与激活文件行号对齐
   const [lineKinds, setLineKinds] = useState<LineKind[] | null>(null);
+
+  // ================================================================
+  // 文件历史 / 回滚浮层（点击左缘 diff 标记条唤起，交互类似 IDEA 的行标记历史）
+  // ================================================================
+  /** 浮层锚点：触发行的下标（0 基）；null=关闭 */
+  const [histAnchor, setHistAnchor] = useState<number | null>(null);
+  const [histLoading, setHistLoading] = useState(false);
+  const [histErr, setHistErr] = useState<string | null>(null);
+  const [histCommits, setHistCommits] = useState<GitCommitInfo[]>([]);
+  /** 预览中的提交 */
+  const [histPreviewHash, setHistPreviewHash] = useState<string | null>(null);
+  const [histPreviewLoading, setHistPreviewLoading] = useState(false);
+  const [histPreviewText, setHistPreviewText] = useState("");
+  /** 回滚二次确认 armed 的提交哈希（3 秒未确认自动复位） */
+  const [rollbackArm, setRollbackArm] = useState<string | null>(null);
   // diff 刷新序号：保存成功 / 面板重新可见时递增，强制重算行标记
   const [diffRev, setDiffRev] = useState(0);
   const gutterInnerRef = useRef<HTMLDivElement | null>(null);
@@ -866,10 +898,16 @@ export default function FilePanel({
     for (const t of clean) {
       try {
         const fresh = await api.readProjectFile(project.id, t.path);
+        const buf = toBufferEol(fresh.content);
         setTabs((prev) =>
           prev.map((tb) =>
             tb.path === t.path && tb.content === tb.meta.content
-              ? {...tb, content: fresh.content, meta: fresh}
+              ? {
+                  ...tb,
+                  content: buf.content,
+                  meta: {...fresh, content: buf.content},
+                  eol: tb.eol ?? buf.eol,
+                }
               : tb
           )
         );
@@ -1059,9 +1097,16 @@ export default function FilePanel({
         } else {
           // 文本文件
           const meta = await api.readProjectFile(project.id, path);
+          const buf = toBufferEol(meta.content);
           setTabs((prev) => [
             ...prev,
-            { path, fileType, content: meta.content, meta },
+            {
+              path,
+              fileType,
+              content: buf.content,
+              meta: {...meta, content: buf.content},
+              eol: buf.eol,
+            },
           ]);
           setActivePath(path);
         }
@@ -1174,7 +1219,12 @@ export default function FilePanel({
     if (!activeTab || activeTab.meta.readonly) return;
     setSaving(true);
     try {
-      await api.writeProjectFile(project.id, activeTab.path, activeTab.content);
+      // CRLF 文件按磁盘原样还原换行，缓冲区内归一化的 LF 不落盘
+      const out =
+        activeTab.eol === "\r\n"
+          ? activeTab.content.replace(/\n/g, "\r\n")
+          : activeTab.content;
+      await api.writeProjectFile(project.id, activeTab.path, out);
       const size = new Blob([activeTab.content]).size;
       setTabs((prev) =>
         prev.map((t) =>
@@ -1274,7 +1324,90 @@ export default function FilePanel({
     syncGutter(0);
   }, [activePath, lineKinds, syncGutter]);
 
-  /** 左缘 diff 条（绿=新增行，橙=修改行，红=行删除点）；left 为行号栏宽度偏移 */
+  /** 打开浮层并异步拉取该文件的提交历史（--follow，跟随重命名） */
+  const openHist = (lineIdx: number) => {
+    const path = activeTab?.path;
+    if (!path) return;
+    setHistAnchor(lineIdx);
+    setRollbackArm(null);
+    setHistPreviewHash(null);
+    setHistPreviewText("");
+    setHistErr(null);
+    setHistCommits([]);
+    setHistLoading(true);
+    api
+      .gitFileLog(project.id, path)
+      .then((cs) => setHistCommits(cs))
+      .catch((e) => setHistErr(String(e)))
+      .finally(() => setHistLoading(false));
+  };
+
+  // 回滚确认 3 秒未点击自动复位；切文件 / 关浮层同样复位
+  useEffect(() => {
+    if (!rollbackArm) return;
+    const t = window.setTimeout(() => setRollbackArm(null), 3000);
+    return () => window.clearTimeout(t);
+  }, [rollbackArm]);
+  useEffect(() => setRollbackArm(null), [activePath]);
+
+  /** 展开/收起某个提交的文件内容预览 */
+  const toggleHistPreview = async (hash: string) => {
+    const path = activeTab?.path;
+    if (!path || !project.git_available) return;
+    if (histPreviewHash === hash) {
+      setHistPreviewHash(null);
+      return;
+    }
+    setHistPreviewHash(hash);
+    setHistPreviewLoading(true);
+    setHistPreviewText("");
+    try {
+      setHistPreviewText(await api.gitShowFile(project.id, hash, path));
+    } catch (e) {
+      message.error(`读取历史版本失败: ${e}`);
+      setHistPreviewHash(null);
+    } finally {
+      setHistPreviewLoading(false);
+    }
+  };
+
+  /**
+   * 整文件回滚到指定提交：`git show hash:path` 的内容原样写回磁盘
+   * （保留该版本的原始换行），并同步当前标签缓冲区、清除 dirty 标记。
+   * 当前未保存编辑会被覆盖——由「确认回滚」二次确认兜底。
+   */
+  const rollbackToFile = async (hash: string) => {
+    const path = activeTab?.path;
+    if (!path) return;
+    try {
+      const raw = await api.gitShowFile(project.id, hash, path);
+      await api.writeProjectFile(project.id, path, raw);
+      const buf = toBufferEol(raw);
+      const size = new Blob([raw]).size;
+      setTabs((prev) =>
+        prev.map((t) =>
+          t.path === path
+            ? {
+                ...t,
+                content: buf.content,
+                meta: {...t.meta, content: buf.content, size},
+                eol: buf.eol,
+              }
+            : t
+        )
+      );
+      const short = histCommits.find((c) => c.hash === hash)?.short_hash ?? "";
+      message.success(`已回滚到 ${short}`);
+      setHistAnchor(null);
+      setDiffRev((v) => v + 1);
+      scheduleGitRefresh();
+    } catch (e) {
+      message.error(`回滚失败: ${e}`);
+    }
+  };
+
+  /** 左缘 diff 条（绿=新增行，橙=修改行，红=行删除点）；left 为行号栏宽度偏移。
+   *  标记条可点击：弹出文件历史 / 回滚浮层 */
   const renderDiffGutter = (left: number) => {
     if (!lineKinds || !lineKinds.some((k) => k !== 0)) return null;
     const bars: React.ReactNode[] = [];
@@ -1286,14 +1419,103 @@ export default function FilePanel({
           key={idx}
           className={`diff-bar ${k === 2 ? "add" : k === 3 ? "del" : "mod"}`}
           style={{ top: GUTTER_PAD + idx * LINE_H }}
+          title="查看文件历史 / 回滚"
+          onClick={(e) => {
+            e.stopPropagation();
+            openHist(idx);
+          }}
         />
       );
     }
     return (
-      <div className="file-diff-gutter" aria-hidden style={{ left }}>
+      <div className="file-diff-gutter" role="group" aria-label="git 变更标记" style={{ left }}>
         <div className="file-diff-gutter-inner" ref={gutterInnerRef}>
           {bars}
         </div>
+      </div>
+    );
+  };
+
+  /** 文件历史 / 回滚浮层：锚在触发 diff 条附近，列出该文件提交历史，
+   *  支持展开预览历史内容与整文件回滚（交互类似 IDEA 的行标记历史） */
+  const renderHistPopover = () => {
+    if (histAnchor === null || !activeTab) return null;
+    const top = Math.max(
+      8,
+      Math.min(GUTTER_PAD + histAnchor * LINE_H - 10, window.innerHeight * 0.4)
+    );
+    const name = activeTab.path.replace(/\\/g, "/").split("/").pop();
+    return (
+      <div className="git-hist-pop" style={{top}} onClick={(e) => e.stopPropagation()}>
+        <div className="git-hist-head">
+          <span className="git-hist-title" title={activeTab.path}>
+            文件历史 · {name}
+          </span>
+          <button
+            className="icon-btn sm"
+            aria-label="关闭历史"
+            onClick={() => setHistAnchor(null)}
+          >
+            ✕
+          </button>
+        </div>
+        <div className="git-hist-list">
+          {histLoading && <div className="git-hist-empty">加载中…</div>}
+          {!histLoading && histErr && (
+            <div className="git-hist-empty">{histErr}</div>
+          )}
+          {!histLoading && !histErr && histCommits.length === 0 && (
+            <div className="git-hist-empty">暂无提交历史</div>
+          )}
+          {histCommits.map((c) => (
+            <div
+              key={c.hash}
+              className={`git-hist-item${histPreviewHash === c.hash ? " active" : ""}`}
+            >
+              <button
+                className="git-hist-msg"
+                title={c.message}
+                onClick={() => void toggleHistPreview(c.hash)}
+              >
+                {c.message || "(无提交信息)"}
+              </button>
+              <div className="git-hist-meta">
+                <code>{c.short_hash}</code>
+                <span>{c.author}</span>
+                <span>{c.date.slice(0, 10)}</span>
+                <span className="git-hist-actions">
+                  {rollbackArm === c.hash ? (
+                    <>
+                      <a
+                        className="git-hist-danger"
+                        onClick={() => void rollbackToFile(c.hash)}
+                      >
+                        确认回滚
+                      </a>
+                      <a onClick={() => setRollbackArm(null)}>取消</a>
+                    </>
+                  ) : (
+                    <a
+                      className="git-hist-danger"
+                      onClick={() => setRollbackArm(c.hash)}
+                    >
+                      回滚到此版本
+                    </a>
+                  )}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+        {histPreviewHash && (
+          <pre className="git-hist-preview">
+            {histPreviewLoading
+              ? "加载中…"
+              : histPreviewText.length > 200_000
+                ? `${histPreviewText.slice(0, 200_000)}\n…（预览已截断）`
+                : histPreviewText}
+          </pre>
+        )}
       </div>
     );
   };
@@ -2067,7 +2289,7 @@ export default function FilePanel({
                   </div>
                 </div>
               ) : activeTab.meta.readonly ? (
-                <div className="file-code-wrap">
+                <div className="file-code-wrap" onClick={() => setHistAnchor(null)}>
                   {renderDiffGutter(lnWidth)}
                   {showLineNumbers && (
                     <div className="file-ln-gutter" aria-hidden style={{width: lnWidth}}>
@@ -2091,9 +2313,10 @@ export default function FilePanel({
                     }}
                   />
                   {renderHitLayer(16 + lnWidth)}
+                  {renderHistPopover()}
                 </div>
               ) : (
-                <div className="file-editor-overlay">
+                <div className="file-editor-overlay" onClick={() => setHistAnchor(null)}>
                   {/* 左缘 git diff 标记条 */}
                   {renderDiffGutter(lnWidth)}
                   {showLineNumbers && (
@@ -2147,6 +2370,7 @@ export default function FilePanel({
                       }
                     }}
                   />
+                  {renderHistPopover()}
                 </div>
               )}
             </>

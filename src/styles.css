@@ -2989,6 +2989,130 @@ body {
   transform: translateY(2px);
 }
 
+/* diff 标记条可点击：弹出文件历史 / 回滚浮层 */
+.diff-bar {
+  cursor: pointer;
+}
+
+/* —— 文件历史 / 回滚浮层（点击 diff 标记条唤起）—— */
+.git-hist-pop {
+  position: absolute;
+  z-index: 30;
+  width: 420px;
+  max-width: calc(100% - 32px);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+
+.git-hist-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.git-hist-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-hist-list {
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.git-hist-empty {
+  padding: 16px 12px;
+  font-size: 12px;
+  color: var(--text-2);
+  text-align: center;
+}
+
+.git-hist-item {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.git-hist-item:last-child {
+  border-bottom: none;
+}
+
+.git-hist-item.active {
+  background: color-mix(in srgb, var(--blue) 10%, transparent);
+}
+
+.git-hist-msg {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-hist-msg:hover {
+  color: var(--blue);
+}
+
+.git-hist-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.git-hist-meta code {
+  color: var(--blue);
+}
+
+.git-hist-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+
+.git-hist-actions a {
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.git-hist-actions a:hover {
+  text-decoration: underline;
+}
+
+.git-hist-actions a.git-hist-danger {
+  color: var(--red);
+}
+
+.git-hist-preview {
+  margin: 0;
+  max-height: 32vh;
+  overflow: auto;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre;
+}
+
 /* ========================================================
    文件标签栏（已打开文件快速切换）
    ======================================================== */

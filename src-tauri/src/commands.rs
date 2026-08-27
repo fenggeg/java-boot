@@ -632,6 +632,26 @@ pub async fn git_diff_hunks(project_id: String, path: String) -> AppResult<Vec<c
         .map_err(|e| AppError::Other(format!("diff hunk 任务失败: {}", e)))?
 }
 
+/// 单文件提交历史（--follow 跟随重命名），编辑器「文件历史 / 回滚」浮层用
+#[tauri::command]
+pub async fn git_file_log(
+    project_id: String,
+    path: String,
+    limit: Option<u32>,
+) -> AppResult<Vec<crate::git::GitCommitInfo>> {
+    tokio::task::spawn_blocking(move || git::file_log(&project_id, &path, limit.unwrap_or(50)))
+        .await
+        .map_err(|e| AppError::Other(format!("文件历史任务失败: {}", e)))?
+}
+
+/// 读取指定提交中某文件的内容（历史预览 / 整文件回滚）
+#[tauri::command]
+pub async fn git_show_file(project_id: String, hash: String, path: String) -> AppResult<String> {
+    tokio::task::spawn_blocking(move || git::show_file(&project_id, &hash, &path))
+        .await
+        .map_err(|e| AppError::Other(format!("读取历史版本任务失败: {}", e)))?
+}
+
 // ============================ Files（项目文件浏览/编辑） ============================
 
 /// 列出项目根下某目录（单层，惰性加载用）
