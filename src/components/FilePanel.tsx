@@ -192,15 +192,39 @@ function toBufferEol(raw: string): { content: string; eol: "\n" | "\r\n" } {
 }
 
 /**
- * 行级 LCS diff（HEAD 内容 → 当前编辑器内容），返回与编辑器行号精确对齐的标记。
- * 不再使用 git hunk 行号映射磁盘文件——那在缓冲区与磁盘不一致（未保存编辑、
- * 外部修改）时整体错位。这里直接对显示中的内容做 diff，位置永远正确。
- * 策略：公共前后缀裁剪 + 中间区 suffix-DP 正向贪心；中间区过大时降级为整段「修改」。
+ * 单个差异块的块级映射（HEAD 行区间 ↔ 缓冲区行区间）：
+ * 撤销本块时，把缓冲区 [bufStart, bufStart+addN) 替换回
+ * HEAD 的 [headStart, headStart+delN) 即可精确还原本块。
  */
-function diffLineKinds(head: string, buf: string): LineKind[] {
+export interface DiffBlock {
+  /** 缓冲区中新增行的起始行号（纯删除块为删除点后第一行） */
+  bufStart: number;
+  /** 缓冲区中被新增/修改的行数 */
+  addN: number;
+  /** HEAD 中被该块替换的起始行号 */
+  headStart: number;
+  /** HEAD 中被删除的行数 */
+  delN: number;
+}
+
+interface DiffResult {
+  kinds: LineKind[];
+  blocks: DiffBlock[];
+}
+
+/**
+ * 行级 LCS diff（HEAD 内容 → 当前编辑器内容），返回与编辑器行号精确对齐的标记，
+ * 以及用于「撤销此更改」的块级映射。不再使用 git hunk 行号映射磁盘文件——那在
+ * 缓冲区与磁盘不一致（未保存编辑、外部修改）时整体错位。这里直接对显示中的内容
+ * 做 diff，位置永远正确。
+ * 策略：公共前后缀裁剪 + 中间区 suffix-DP 正向贪心；中间区过大时降级为整段「修改」
+ * （此时无法给出精确块映射，blocks 为空）。
+ */
+function diffLineKinds(head: string, buf: string): DiffResult {
   const a = head.split("\n");
   const b = buf.split("\n");
   const kinds: LineKind[] = new Array(b.length).fill(0);
+  const blocks: DiffBlock[] = [];
   let pre = 0;
   while (
     pre < a.length &&
@@ -222,19 +246,23 @@ function diffLineKinds(head: string, buf: string): LineKind[] {
   if (bm === 0) {
     // 纯删除：缓冲区无行可标，删除条落在紧随删除点的第一行（贴文件尾则用最后一行）
     if (am > 0 && b.length > 0) {
-      kinds[Math.min(pre, b.length - 1)] = 3;
+      const at = Math.min(pre, b.length - 1);
+      kinds[at] = 3;
+      // 还原插入点用真实行号 pre（可能等于 b.length，表示补回文件尾），不做钳制
+      blocks.push({bufStart: pre, addN: 0, headStart: pre, delN: am});
     }
-    return kinds;
+    return {kinds, blocks};
   }
   if (am === 0) {
     // 纯新增
     for (let i = pre; i < pre + bm; i++) kinds[i] = 2;
-    return kinds;
+    blocks.push({bufStart: pre, addN: bm, headStart: pre, delN: 0});
+    return {kinds, blocks};
   }
   if (am * bm > 1_600_000) {
-    // 差异区过大：整段标为修改（位置仍精确，只是不细分橙/绿）
+    // 差异区过大：整段标为修改（位置仍精确，只是不细分橙/绿，也不提供块操作）
     for (let i = pre; i < pre + bm; i++) kinds[i] = 1;
-    return kinds;
+    return {kinds, blocks};
   }
   // 中间区 suffix-DP（dp[i][j] = a[i..] 与 b[j..] 的 LCS 长度），
   // 随后从左上角正向贪心走位。不能用「前向填表+箭头回溯」：
@@ -283,12 +311,14 @@ function diffLineKinds(head: string, buf: string): LineKind[] {
   }
   // 正向走位得到的已是文档顺序，无需翻转（旧的箭头回溯从尾部出发才需要）
   let row = pre;
+  let hi = pre; // HEAD 中间区当前行号，与缓冲区行号并行推进
   let t = 0;
   while (t < ops.length) {
     const op = ops[t]!;
     if (op === 2) {
       // 相同行占缓冲区一行，必须推进标记行号，否则后续差异块整体上移
       row++;
+      hi++;
       t++;
       continue;
     }
@@ -304,7 +334,9 @@ function diffLineKinds(head: string, buf: string): LineKind[] {
     for (let k = 0; k < addN; k++) {
       kinds[row + k] = k < modN ? 1 : 2;
     }
+    blocks.push({bufStart: row, addN, headStart: hi, delN});
     row += addN;
+    hi += delN;
     // 块内净删除：在该差异块缓冲区末行的下一行标「删除」（EOF 处贴最后一行）；
     // 目标行只会是后续公共行或尾缀行（kind 0），不会覆盖已打的修改/新增
     if (delN > addN) {
@@ -313,7 +345,7 @@ function diffLineKinds(head: string, buf: string): LineKind[] {
     }
     t = t2;
   }
-  return kinds;
+  return {kinds, blocks};
 }
 
 /** 紧凑路径最大合并层数（防止极端深目录导致请求风暴） */
@@ -718,12 +750,23 @@ export default function FilePanel({
 
   // 行级 diff 标记（工作区内容 vs HEAD）：与激活文件行号对齐
   const [lineKinds, setLineKinds] = useState<LineKind[] | null>(null);
+  /** 当前 diff 的块级映射（与 lineKinds 同步刷新），供撤销本块 / 变更间跳转使用 */
+  const diffBlocksRef = useRef<DiffBlock[]>([]);
+  /** 最近一次拉取到的 HEAD 内容（撤销本块 / 复制原文用） */
+  const headContentRef = useRef<string | null>(null);
+  /**
+   * 标记条弹层：quick = IDEA 式快捷操作条（↑↓ 切换 / 撤销本块 / 复制原文 / 历史），
+   * hist = 文件历史浮层；line 为触发行（0 基）
+   */
+  const [markerPanel, setMarkerPanel] = useState<{
+    type: "quick" | "hist";
+    line: number;
+  } | null>(null);
 
   // ================================================================
   // 文件历史 / 回滚浮层（点击左缘 diff 标记条唤起，交互类似 IDEA 的行标记历史）
   // ================================================================
   /** 浮层锚点：触发行的下标（0 基）；null=关闭 */
-  const [histAnchor, setHistAnchor] = useState<number | null>(null);
   const [histLoading, setHistLoading] = useState(false);
   const [histErr, setHistErr] = useState<string | null>(null);
   const [histCommits, setHistCommits] = useState<GitCommitInfo[]>([]);
@@ -1283,10 +1326,16 @@ export default function FilePanel({
           setLineKinds(lines.map(() => 2 as LineKind));
           return;
         }
-        const kinds = diffLineKinds(head.head, activeTab.content);
-        setLineKinds(kinds.some((k) => k !== 0) ? kinds : null);
+        const res = diffLineKinds(head.head, activeTab.content);
+        diffBlocksRef.current = res.blocks;
+        headContentRef.current = head.head;
+        setLineKinds(res.kinds.some((k) => k !== 0) ? res.kinds : null);
       } catch {
-        if (!cancelled) setLineKinds(null);
+        if (!cancelled) {
+          setLineKinds(null);
+          diffBlocksRef.current = [];
+          headContentRef.current = null;
+        }
       }
     }, 400);
     return () => {
@@ -1324,11 +1373,11 @@ export default function FilePanel({
     syncGutter(0);
   }, [activePath, lineKinds, syncGutter]);
 
-  /** 打开浮层并异步拉取该文件的提交历史（--follow，跟随重命名） */
+  /** 打开文件历史浮层并异步拉取提交历史（--follow，跟随重命名） */
   const openHist = (lineIdx: number) => {
     const path = activeTab?.path;
     if (!path) return;
-    setHistAnchor(lineIdx);
+    setMarkerPanel({type: "hist", line: lineIdx});
     setRollbackArm(null);
     setHistPreviewHash(null);
     setHistPreviewText("");
@@ -1340,6 +1389,104 @@ export default function FilePanel({
       .then((cs) => setHistCommits(cs))
       .catch((e) => setHistErr(String(e)))
       .finally(() => setHistLoading(false));
+  };
+
+  // ================================================================
+  // IDEA 式快捷操作条：↑↓ 变更间跳转 / 撤销此更改 / 复制原文 / 历史入口
+  // ================================================================
+
+  /** 找到触发行所属（或最近的上一个）差异块 */
+  const blockAtLine = (line: number): DiffBlock | null => {
+    const blocks = diffBlocksRef.current;
+    if (!blocks.length) return null;
+    let best: DiffBlock | null = null;
+    for (const blk of blocks) {
+      if (line >= blk.bufStart && line < blk.bufStart + Math.max(blk.addN, 1)) {
+        return blk;
+      }
+      if (blk.bufStart <= line) best = blk;
+    }
+    return best ?? blocks[0]!;
+  };
+
+  /** 跳转到上一处 / 下一处变更（按块的缓冲区位置排序） */
+  const jumpBlock = (line: number, dir: -1 | 1) => {
+    const blocks = [...diffBlocksRef.current].sort((a, b) => a.bufStart - b.bufStart);
+    if (!blocks.length) return;
+    const cur = blockAtLine(line);
+    const curStart = cur?.bufStart ?? line;
+    let target: DiffBlock | undefined;
+    if (dir === 1) {
+      target = blocks.find((b) => b.bufStart > curStart);
+    } else {
+      const before = blocks.filter((b) => b.bufStart < curStart);
+      target = before[before.length - 1];
+    }
+    if (!target) {
+      message.info(dir === 1 ? "已是最后一处变更" : "已是第一处变更");
+      return;
+    }
+    setMarkerPanel({type: "quick", line: target.bufStart});
+    // 把目标行滚动到编辑器中部
+    const el = editorInputRef.current ?? readonlyPreRef.current;
+    if (el) {
+      el.scrollTop = Math.max(0, target.bufStart * LINE_H - el.clientHeight / 2);
+    }
+  };
+
+  /**
+   * 撤销单个差异块：把缓冲区 [bufStart, bufStart+addN) 替换回 HEAD 的
+   * [headStart, headStart+delN)，写盘并同步缓冲区（IDEA Rollback 语义）。
+   */
+  const revertBlock = async (blk: DiffBlock) => {
+    const tab = activeTab;
+    const head = headContentRef.current;
+    if (!tab || !head || !project.git_available) return;
+    try {
+      const lines = tab.content.split("\n");
+      const headLines = head.split("\n");
+      lines.splice(
+        blk.bufStart,
+        blk.addN,
+        ...headLines.slice(blk.headStart, blk.headStart + blk.delN)
+      );
+      const nextContent = lines.join("\n");
+      const out =
+        tab.eol === "\r\n" ? nextContent.replace(/\n/g, "\r\n") : nextContent;
+      await api.writeProjectFile(project.id, tab.path, out);
+      const size = new Blob([out]).size;
+      setTabs((prev) =>
+        prev.map((t) =>
+          t.path === tab.path
+            ? {
+                ...t,
+                content: nextContent,
+                meta: {...t.meta, content: nextContent, size},
+              }
+            : t
+        )
+      );
+      message.success("已撤销此更改");
+      setMarkerPanel(null);
+      setDiffRev((v) => v + 1);
+      scheduleGitRefresh();
+    } catch (e) {
+      message.error(`撤销失败: ${e}`);
+    }
+  };
+
+  /** 复制该块在 HEAD 中的原始内容 */
+  const copyBlockOriginal = async (blk: DiffBlock) => {
+    const head = headContentRef.current;
+    if (!head) return;
+    try {
+      await navigator.clipboard.writeText(
+        head.split("\n").slice(blk.headStart, blk.headStart + blk.delN).join("\n")
+      );
+      message.success("已复制原始内容");
+    } catch {
+      message.error("复制失败");
+    }
   };
 
   // 回滚确认 3 秒未点击自动复位；切文件 / 关浮层同样复位
@@ -1398,7 +1545,7 @@ export default function FilePanel({
       );
       const short = histCommits.find((c) => c.hash === hash)?.short_hash ?? "";
       message.success(`已回滚到 ${short}`);
-      setHistAnchor(null);
+      setMarkerPanel(null);
       setDiffRev((v) => v + 1);
       scheduleGitRefresh();
     } catch (e) {
@@ -1407,7 +1554,7 @@ export default function FilePanel({
   };
 
   /** 左缘 diff 条（绿=新增行，橙=修改行，红=行删除点）；left 为行号栏宽度偏移。
-   *  标记条可点击：弹出文件历史 / 回滚浮层 */
+   *  标记条可点击：弹出 IDEA 式快捷操作条 */
   const renderDiffGutter = (left: number) => {
     if (!lineKinds || !lineKinds.some((k) => k !== 0)) return null;
     const bars: React.ReactNode[] = [];
@@ -1419,10 +1566,10 @@ export default function FilePanel({
           key={idx}
           className={`diff-bar ${k === 2 ? "add" : k === 3 ? "del" : "mod"}`}
           style={{ top: GUTTER_PAD + idx * LINE_H }}
-          title="查看文件历史 / 回滚"
+          title="变更操作：跳转 / 撤销 / 历史"
           onClick={(e) => {
             e.stopPropagation();
-            openHist(idx);
+            setMarkerPanel({type: "quick", line: idx});
           }}
         />
       );
@@ -1438,11 +1585,11 @@ export default function FilePanel({
 
   /** 文件历史 / 回滚浮层：锚在触发 diff 条附近，列出该文件提交历史，
    *  支持展开预览历史内容与整文件回滚（交互类似 IDEA 的行标记历史） */
-  const renderHistPopover = () => {
-    if (histAnchor === null || !activeTab) return null;
+  const renderHistPopover = (anchorLine: number) => {
+    if (!activeTab) return null;
     const top = Math.max(
       8,
-      Math.min(GUTTER_PAD + histAnchor * LINE_H - 10, window.innerHeight * 0.4)
+      Math.min(GUTTER_PAD + anchorLine * LINE_H - 10, window.innerHeight * 0.4)
     );
     const name = activeTab.path.replace(/\\/g, "/").split("/").pop();
     return (
@@ -1454,7 +1601,7 @@ export default function FilePanel({
           <button
             className="icon-btn sm"
             aria-label="关闭历史"
-            onClick={() => setHistAnchor(null)}
+            onClick={() => setMarkerPanel(null)}
           >
             ✕
           </button>
@@ -1518,6 +1665,70 @@ export default function FilePanel({
         )}
       </div>
     );
+  };
+
+  /** IDEA 式快捷操作条：贴在触发行的下方，↑↓ 变更间跳转 / 撤销此更改 /
+   *  复制原文 / 查看历史。撤销/复制依赖精确块映射，超大差异区降级时隐藏。 */
+  const renderQuickBar = (anchorLine: number) => {
+    if (!activeTab) return null;
+    const blk = blockAtLine(anchorLine);
+    const hasBlockOps = !!blk && !!headContentRef.current;
+    const top = Math.min(
+      GUTTER_PAD + anchorLine * LINE_H + LINE_H + 2,
+      window.innerHeight * 0.55
+    );
+    return (
+      <div className="git-quick-bar" style={{top}} onClick={(e) => e.stopPropagation()}>
+        <button
+          className="git-quick-btn"
+          title="上一处变更"
+          aria-label="上一处变更"
+          onClick={() => jumpBlock(anchorLine, -1)}
+        >
+          ↑
+        </button>
+        <button
+          className="git-quick-btn"
+          title="下一处变更"
+          aria-label="下一处变更"
+          onClick={() => jumpBlock(anchorLine, 1)}
+        >
+          ↓
+        </button>
+        <span className="git-quick-sep" />
+        <button
+          className="git-quick-btn"
+          title="撤销此更改：把这一块恢复为 HEAD 内容并保存"
+          disabled={!hasBlockOps}
+          onClick={() => blk && void revertBlock(blk)}
+        >
+          ↩ 撤销此更改
+        </button>
+        <button
+          className="git-quick-btn"
+          title="复制 HEAD 中该块的原始内容"
+          disabled={!hasBlockOps || !blk || blk.delN === 0}
+          onClick={() => blk && void copyBlockOriginal(blk)}
+        >
+          ⧉ 复制原文
+        </button>
+        <span className="git-quick-sep" />
+        <button
+          className="git-quick-btn"
+          title="查看文件完整提交历史"
+          onClick={() => openHist(anchorLine)}
+        >
+          ☰ 历史
+        </button>
+      </div>
+    );
+  };
+
+  /** 标记条弹层统一入口：quick 操作条 / hist 历史浮层互斥显示 */
+  const renderMarkerPanels = () => {
+    if (!markerPanel) return null;
+    if (markerPanel.type === "hist") return renderHistPopover(markerPanel.line);
+    return renderQuickBar(markerPanel.line);
   };
 
   // ================================================================
@@ -2289,7 +2500,7 @@ export default function FilePanel({
                   </div>
                 </div>
               ) : activeTab.meta.readonly ? (
-                <div className="file-code-wrap" onClick={() => setHistAnchor(null)}>
+                <div className="file-code-wrap" onClick={() => setMarkerPanel(null)}>
                   {renderDiffGutter(lnWidth)}
                   {showLineNumbers && (
                     <div className="file-ln-gutter" aria-hidden style={{width: lnWidth}}>
@@ -2313,10 +2524,10 @@ export default function FilePanel({
                     }}
                   />
                   {renderHitLayer(16 + lnWidth)}
-                  {renderHistPopover()}
+                  {renderMarkerPanels()}
                 </div>
               ) : (
-                <div className="file-editor-overlay" onClick={() => setHistAnchor(null)}>
+                <div className="file-editor-overlay" onClick={() => setMarkerPanel(null)}>
                   {/* 左缘 git diff 标记条 */}
                   {renderDiffGutter(lnWidth)}
                   {showLineNumbers && (
@@ -2370,7 +2581,7 @@ export default function FilePanel({
                       }
                     }}
                   />
-                  {renderHistPopover()}
+                  {renderMarkerPanels()}
                 </div>
               )}
             </>

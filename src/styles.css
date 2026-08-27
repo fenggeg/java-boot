@@ -3016,6 +3016,49 @@ body {
   box-shadow: 0 0 6px currentColor;
 }
 
+/* —— IDEA 式快捷操作条：贴在变更行下方 —— */
+.git-quick-bar {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  background: var(--surface);
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.18);
+  white-space: nowrap;
+}
+
+.git-quick-btn {
+  padding: 3px 8px;
+  border: none;
+  background: none;
+  border-radius: 5px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.git-quick-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--blue) 12%, transparent);
+  color: var(--blue);
+}
+
+.git-quick-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.git-quick-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--border-2);
+}
+
 /* —— 文件历史 / 回滚浮层（点击 diff 标记条唤起）—— */
 .git-hist-pop {
   position: absolute;
