@@ -1677,6 +1677,19 @@ export default function FilePanel({
       GUTTER_PAD + anchorLine * LINE_H + LINE_H + 2,
       window.innerHeight * 0.55
     );
+    // 该块的「改动前(HEAD) ↔ 当前」内容，用于内联迷你对比
+    const headLines =
+      blk && headContentRef.current ? headContentRef.current.split("\n") : [];
+    const curLines = activeTab.content.split("\n");
+    const oldLines = blk
+      ? headLines.slice(blk.headStart, blk.headStart + blk.delN)
+      : [];
+    const newLines = blk
+      ? curLines.slice(blk.bufStart, blk.bufStart + blk.addN)
+      : [];
+    const trimLine = (l: string) =>
+      l.length > 200 ? `${l.slice(0, 200)}…` : l || " ";
+
     return (
       <div className="git-quick-bar" style={{top}} onClick={(e) => e.stopPropagation()}>
         <button
@@ -1720,6 +1733,30 @@ export default function FilePanel({
         >
           ☰ 历史
         </button>
+        {blk && (blk.delN > 0 || blk.addN > 0) && (
+          <div className="git-quick-diff">
+            {oldLines.length > 0 && (
+              <>
+                <div className="gqd-title">改动前（HEAD）</div>
+                {oldLines.map((l, i) => (
+                  <div key={`o${i}`} className="gqd-old">
+                    − {trimLine(l)}
+                  </div>
+                ))}
+              </>
+            )}
+            {newLines.length > 0 && (
+              <>
+                <div className="gqd-title">当前</div>
+                {newLines.map((l, i) => (
+                  <div key={`n${i}`} className="gqd-new">
+                    + {trimLine(l)}
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+        )}
       </div>
     );
   };

@@ -3059,6 +3059,49 @@ body {
   background: var(--border-2);
 }
 
+/* 快捷条内的改动前 / 当前迷你对比 */
+.git-quick-diff {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 320px;
+  max-width: 640px;
+  max-height: 40vh;
+  overflow: auto;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.18);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.gqd-title {
+  font-size: 11px;
+  color: var(--text-2);
+  margin-bottom: 3px;
+}
+
+.gqd-old {
+  background: color-mix(in srgb, var(--red) 14%, transparent);
+  border-radius: 3px;
+  padding: 0 5px;
+  white-space: pre;
+}
+
+.gqd-new {
+  background: color-mix(in srgb, var(--green) 16%, transparent);
+  border-radius: 3px;
+  padding: 0 5px;
+  white-space: pre;
+}
+
+.gqd-title:not(:first-child) {
+  margin-top: 8px;
+}
+
 /* —— 文件历史 / 回滚浮层（点击 diff 标记条唤起）—— */
 .git-hist-pop {
   position: absolute;
