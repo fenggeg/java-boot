@@ -12,6 +12,9 @@ metadata:
 不轮询 CI、不做发布后验证（构建结果由 GitHub Actions 自行反馈）。
 每一步有硬性校验点，未通过不得进入下一步。
 
+> 本技能唯一副本位于 `.agents/skills/`（agent 通用目录）：
+> ZCode、OpenCode、Claude Code 等工具均从该位置发现并加载，请勿在其他目录再放副本。
+
 ## 流程总览
 
 ```
@@ -80,7 +83,10 @@ npm run lint    # 0 error 即通过，存量 warning 不阻断
 cargo check     # workdir: src-tauri
 ```
 
-## 第 5 步：提交（遵循 git-commit-standard 技能）
+## 第 5 步：提交（遵循用户级 git-commit-standard 技能）
+
+提交信息遵循全局技能 `~/.zcode/skills/git-commit-standard` 的 Gitmoji + 云效分类标准；
+发版固定为该标准中的「发布 / release / :tada:」一类。
 
 暂存范围（仅限本次发布相关文件，逐个 add，禁止 `git add .`）：
 
