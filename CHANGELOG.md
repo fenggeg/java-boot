@@ -7,6 +7,12 @@
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-08-28
+
+### 修复
+
+- **Monaco 编辑器首次加载失败（CSP 拦截 CDN）**：`@monaco-editor/react` 默认通过 `loader` 从 jsdelivr CDN 注入 monaco 脚本，被应用 CSP `script-src 'self' ...` 拦截，导致首次打开代码编辑器/Diff 弹窗时永远停留在加载状态；改为在 `monaco-setup.ts` 中调用 `loader.config({ monaco })` 注入本地已由 Vite 打包的 ESM monaco 实例，`init()` 检测到后直接 resolve 本地实例，完全跳过 CDN script 注入
+
 ## [0.12.0] - 2026-08-28
 
 ### 新增
