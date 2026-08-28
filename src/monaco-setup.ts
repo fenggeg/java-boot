@@ -2,10 +2,17 @@
 // 主题配色对齐原有 Prism Xcode 风格（亮色 / 暗色）
 
 import * as monaco from "monaco-editor";
+import { loader } from "@monaco-editor/react";
 // @ts-expect-error — Vite ?worker 后缀在 tsc 下无类型声明
 import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 
-// Vite 环境下配置 Worker 入口
+// 关键：让 @monaco-editor/react 的 loader 使用本地 ESM 打包的 monaco 实例，
+// 而不是默认的 jsdelivr CDN（CSP 会拦截 CDN 脚本，导致首次打开编辑器永远加载不出来）。
+// loader.config({ monaco }) 是官方支持的注入方式：init() 检测到 monaco 已提供，
+// 直接 resolve 本地实例，完全跳过 CDN script 注入。
+loader.config({ monaco });
+
+// Vite 环境下配置 Worker 环境
 // WebView2 支持 Worker，经 Vite 打包后为同源脚本
 self.MonacoEnvironment = {
   getWorker() {
