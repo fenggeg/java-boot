@@ -3,7 +3,9 @@ import {App, Dropdown, Input, Modal, Segmented, Spin, Tooltip} from "antd";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {convertFileSrc} from "@tauri-apps/api/core";
+import {isMarkdown} from "../languages";
 import {
+  ArrowDown,
   Binary,
   CaretDown,
   CaretRight,
@@ -15,14 +17,13 @@ import {
   Folder,
   FolderOpen,
   GitBranch,
+  History,
   Image as ImageIcon,
   Save,
   Scissors,
   Terminal,
   X,
 } from "./Icons";
-import {Prism} from "../prism-langs";
-import {getPrismLang, isMarkdown} from "../languages";
 import * as api from "../api";
 import type {
   DirGitAgg,
@@ -34,6 +35,8 @@ import type {
 } from "../types";
 import {gitChangeKind} from "../types";
 import TerminalView from "./TerminalView";
+import MonacoCodeEditor from "./MonacoCodeEditor";
+import type {MonacoCodeEditorHandle} from "./MonacoCodeEditor";
 
 interface Props {
   project: Project;
@@ -48,11 +51,6 @@ interface Props {
 const LINE_H = 22;
 /** 代码区顶部内边距（px），与 CSS 保持一致 */
 const GUTTER_PAD = 12;
-/**
- * 编辑器搜索内容上限（字符）：与后端 MAX_EDIT_SIZE(2MB) 对齐——
- * 后端 2MB 内均可编辑/预览，搜索应当可用；再大则禁扫防按键卡顿
- */
-const SEARCH_LIMIT = 2_000_000;
 
 // ================================================================
 // 文件类型分类
@@ -97,27 +95,6 @@ function FileTypeIcon({name, size}: {name: string; size: number}) {
       )}
     </span>
   );
-}
-
-/** 语法高亮：返回 HTML 字符串（无匹配语言时返回转义后的纯文本） */
-function highlightCode(code: string, lang: string | null): string {
-  if (!lang) return escapeHtml(code);
-  const grammar = Prism.languages[lang];
-  if (!grammar) return escapeHtml(code);
-  try {
-    return Prism.highlight(code, grammar, lang);
-  } catch {
-    return escapeHtml(code);
-  }
-}
-
-/** HTML 转义，防止代码内容被当作标签解析 */
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
 
 // ================================================================
@@ -170,7 +147,7 @@ function classifyChange(ch: GitChange): FileGitStatus {
  * 3=删除：该位置上方相对 HEAD 有行被移除（缓冲区中已无对应行），
  * 标记画在删除点之后的第一行上，与 Git 面板的「-N」口径对应
  */
-type LineKind = 0 | 1 | 2 | 3;
+export type LineKind = 0 | 1 | 2 | 3;
 
 /** 行比较的归一化：忽略行尾 CR，抵消 core.autocrlf 的 CRLF/LF 差异 */
 function normLine(l: string): string {
@@ -697,28 +674,12 @@ export default function FilePanel({
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // 编辑态语法高亮底层（与输入层滚动同步）
-  const editorUnderlayRef = useRef<HTMLPreElement>(null);
-  // 防抖高亮：输入时不立即跑 Prism，而是延迟 150ms 后批量高亮
-  const [highlightedHtml, setHighlightedHtml] = useState("");
-  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 文本/标记文件的查看模式：仅 Markdown 使用（预览 ↔ 编辑）；
   // 其他文本文件无需切换，直接在单页内编辑（只读文件静态展示）
   const [viewMode, setViewMode] = useState<"view" | "edit">("view");
 
-  // ---- 行号栏 ----
-  /** 等宽字符实测宽度（画布测量），供行号宽与搜索高亮定位使用 */
-  const [charW, setCharW] = useState(7.8);
-  const lnGutterRef = useRef<HTMLDivElement>(null);
-  const editorInputRef = useRef<HTMLTextAreaElement>(null);
-  const readonlyPreRef = useRef<HTMLPreElement>(null);
-
-  // ---- 编辑器内搜索 ----
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [matchIdx, setMatchIdx] = useState(0);
-  const matchLayerRef = useRef<HTMLDivElement>(null);
-  const searchInputRef = useRef<HTMLInputElement>(null);
+  // ---- Monaco 编辑器 ref（暴露 getValue/setValue/revealLine/getEditor） ----
+  const monacoRef = useRef<MonacoCodeEditorHandle | null>(null);
 
   // 右键菜单 / 剪贴板 / 重命名弹窗 / 拖拽
   const [ctxMenu, setCtxMenu] = useState<{
@@ -781,7 +742,6 @@ export default function FilePanel({
   const [rollbackArm, setRollbackArm] = useState<string | null>(null);
   // diff 刷新序号：保存成功 / 面板重新可见时递增，强制重算行标记
   const [diffRev, setDiffRev] = useState(0);
-  const gutterInnerRef = useRef<HTMLDivElement | null>(null);
 
   // 集成终端抽屉
   const [termOpen, setTermOpen] = useState(false);
@@ -1366,26 +1326,6 @@ export default function FilePanel({
     diffRev,
   ]);
 
-  // 滚动同步：diff 条 / 行号栏随代码区垂直滚动平移
-  const syncGutter = useCallback((top: number) => {
-    if (gutterInnerRef.current) {
-      gutterInnerRef.current.style.transform = `translateY(${-top}px)`;
-    }
-    if (lnGutterRef.current) {
-      lnGutterRef.current.style.transform = `translateY(${-top}px)`;
-    }
-    // 搜索命中层需双向平移，由 syncGutter 处理（含水平方向）
-    if (matchLayerRef.current) {
-      const sc = editorInputRef.current ?? readonlyPreRef.current;
-      const sl = sc ? sc.scrollLeft : 0;
-      matchLayerRef.current.style.transform = `translate(${-sl}px, ${-top}px)`;
-    }
-  }, []);
-
-  useEffect(() => {
-    syncGutter(0);
-  }, [activePath, lineKinds, syncGutter]);
-
   /** 打开文件历史浮层并异步拉取提交历史（--follow，跟随重命名） */
   const openHist = (lineIdx: number) => {
     const path = activeTab?.path;
@@ -1440,11 +1380,8 @@ export default function FilePanel({
       return;
     }
     setMarkerPanel({type: "quick", line: target.bufStart});
-    // 把目标行滚动到编辑器中部
-    const el = editorInputRef.current ?? readonlyPreRef.current;
-    if (el) {
-      el.scrollTop = Math.max(0, target.bufStart * LINE_H - el.clientHeight / 2);
-    }
+    // 把目标行滚动到编辑器中部（通过 Monaco editor ref）
+    monacoRef.current?.revealLine(target.bufStart);
   };
 
   /**
@@ -1483,6 +1420,8 @@ export default function FilePanel({
       setMarkerPanel(null);
       setDiffRev((v) => v + 1);
       scheduleGitRefresh();
+      // 同步 Monaco 编辑器内容（绕过 @monaco-editor/react 的 value prop 更新）
+      if (monacoRef.current) monacoRef.current.setValue(nextContent);
     } catch (e) {
       message.error(`撤销失败: ${e}`);
     }
@@ -1561,39 +1500,11 @@ export default function FilePanel({
       setMarkerPanel(null);
       setDiffRev((v) => v + 1);
       scheduleGitRefresh();
+      // 同步 Monaco 编辑器内容（绕过 @monaco-editor/react 的 value prop 更新）
+      if (monacoRef.current) monacoRef.current.setValue(buf.content);
     } catch (e) {
       message.error(`回滚失败: ${e}`);
     }
-  };
-
-  /** 左缘 diff 条（绿=新增行，橙=修改行，红=行删除点）；left 为行号栏宽度偏移。
-   *  标记条可点击：弹出 IDEA 式快捷操作条 */
-  const renderDiffGutter = (left: number) => {
-    if (!lineKinds || !lineKinds.some((k) => k !== 0)) return null;
-    const bars: React.ReactNode[] = [];
-    for (let idx = 0; idx < lineKinds.length; idx++) {
-      const k = lineKinds[idx]!;
-      if (k === 0) continue;
-      bars.push(
-        <div
-          key={idx}
-          className={`diff-bar ${k === 2 ? "add" : k === 3 ? "del" : "mod"}`}
-          style={{ top: GUTTER_PAD + idx * LINE_H }}
-          title="变更操作：跳转 / 撤销 / 历史"
-          onClick={(e) => {
-            e.stopPropagation();
-            setMarkerPanel({type: "quick", line: idx});
-          }}
-        />
-      );
-    }
-    return (
-      <div className="file-diff-gutter" role="group" aria-label="git 变更标记" style={{ left }}>
-        <div className="file-diff-gutter-inner" ref={gutterInnerRef}>
-          {bars}
-        </div>
-      </div>
-    );
   };
 
   /** 文件历史 / 回滚浮层：锚在触发 diff 条附近，列出该文件提交历史，
@@ -1616,7 +1527,7 @@ export default function FilePanel({
             aria-label="关闭历史"
             onClick={() => setMarkerPanel(null)}
           >
-            ✕
+            <X size={13} />
           </button>
         </div>
         <div className="git-hist-list">
@@ -1711,7 +1622,7 @@ export default function FilePanel({
           aria-label="上一处变更"
           onClick={() => jumpBlock(anchorLine, -1)}
         >
-          ↑
+          <ArrowDown size={13} style={{transform: "rotate(180deg)"}} />
         </button>
         <button
           className="git-quick-btn"
@@ -1719,16 +1630,17 @@ export default function FilePanel({
           aria-label="下一处变更"
           onClick={() => jumpBlock(anchorLine, 1)}
         >
-          ↓
+          <ArrowDown size={13} />
         </button>
         <span className="git-quick-sep" />
         <button
-          className="git-quick-btn"
+          className="git-quick-btn danger"
           title="撤销此更改：把这一块恢复为 HEAD 内容并保存"
           disabled={!hasBlockOps}
           onClick={() => blk && void revertBlock(blk)}
         >
-          ↩ 撤销此更改
+          <History size={13} style={{transform: "scaleX(-1)"}} />
+          撤销此更改
         </button>
         <button
           className="git-quick-btn"
@@ -1736,7 +1648,8 @@ export default function FilePanel({
           disabled={!hasBlockOps || !blk || blk.delN === 0}
           onClick={() => blk && void copyBlockOriginal(blk)}
         >
-          ⧉ 复制原文
+          <Copy size={13} />
+          复制原文
         </button>
         <span className="git-quick-sep" />
         <button
@@ -1744,7 +1657,15 @@ export default function FilePanel({
           title="查看文件完整提交历史"
           onClick={() => openHist(anchorLine)}
         >
-          ☰ 历史
+          <History size={13} />
+          历史
+        </button>
+        <button
+          className="git-quick-btn"
+          title="关闭"
+          onClick={() => setMarkerPanel(null)}
+        >
+          <X size={13} />
         </button>
         {blk && (blk.delN > 0 || blk.addN > 0) && (
           <div className="git-quick-diff">
@@ -1780,182 +1701,6 @@ export default function FilePanel({
     if (markerPanel.type === "hist") return renderHistPopover(markerPanel.line);
     return renderQuickBar(markerPanel.line);
   };
-
-  // ================================================================
-  // 行号栏 / 编辑器内搜索
-  // ================================================================
-
-  /** 活动文本文件总行数 */
-  const activeLines = useMemo(
-    () =>
-      activeTab && activeTab.fileType === "text"
-        ? activeTab.content.split("\n").length
-        : 0,
-    [activeTab?.content, activeTab?.fileType]
-  );
-
-  const isMdPreview =
-    !!activeTab &&
-    activeTab.fileType === "text" &&
-    isMarkdown(activeTab.path) &&
-    (activeTab.meta.readonly || viewMode === "view");
-
-  // 防抖高亮：内容变化后 150ms 才跑 Prism，大文件输入不卡顿
-  useEffect(() => {
-    if (!activeTab || activeTab.fileType !== "text" || isMdPreview) return;
-    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
-    highlightTimerRef.current = setTimeout(() => {
-      const content = activeTab.content;
-      const html = highlightCode(
-        content.endsWith("\n") ? content + " " : content,
-        getPrismLang(activeTab.path)
-      );
-      setHighlightedHtml(html);
-    }, 150);
-    return () => {
-      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab?.content, activeTab?.path, isMdPreview]);
-
-  /** 行号栏显示条件：文本文件、≤1 万行、非 Markdown 预览 */
-  const showLineNumbers =
-    !!activeTab &&
-    activeTab.fileType === "text" &&
-    activeLines > 0 &&
-    activeLines <= 10000 &&
-    !isMdPreview;
-
-  /** 行号栏宽度（右对齐数字 + 右侧间距） */
-  const lnWidth = showLineNumbers
-    ? Math.max(2, String(activeLines).length) * charW + 18
-    : 0;
-
-  // 等宽字符宽实测：行号宽与搜索高亮 x 定位都依赖它
-  useEffect(() => {
-    const el = editorInputRef.current ?? readonlyPreRef.current;
-    if (!el) return;
-    try {
-      const cs = getComputedStyle(el);
-      const ctx = document.createElement("canvas").getContext("2d");
-      if (!ctx) return;
-      ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
-      const w = ctx.measureText("0").width;
-      if (w > 0) setCharW(w);
-    } catch {
-      /* 测量失败沿用默认值 */
-    }
-  }, [activePath, viewMode, activeTab?.meta.readonly]);
-
-  interface SearchHit {
-    line: number;
-    visCol: number;
-    len: number;
-  }
-
-  /** 内容超上限（>2MB 只读大文件）时搜索禁用，输入框提示而非静默"无匹配" */
-  const searchTooLarge =
-    !!activeTab &&
-    activeTab.fileType === "text" &&
-    activeTab.content.length > SEARCH_LIMIT;
-
-  const searchHits = useMemo<SearchHit[]>(() => {
-    const src = searchOpen ? activeTab?.content : undefined;
-    if (!src || !searchQuery || src.length > SEARCH_LIMIT) return [];
-    const hay = src.toLowerCase();
-    const needle = searchQuery.toLowerCase();
-    const lineStarts: number[] = [0];
-    for (let i = 0; i < src.length; i++) {
-      if (src[i] === "\n") lineStarts.push(i + 1);
-    }
-    // 制表符按 tab-size=2 展开的可视宽度：段 [a, b) 自可视基点 v0 起累计
-    const visWidth = (a: number, b: number, v0: number): number => {
-      let v = v0;
-      for (let k = a; k < b; k++) {
-        v += src.charCodeAt(k) === 9 ? 2 - (v % 2) : 1;
-      }
-      return v;
-    };
-    const res: SearchHit[] = [];
-    let from = 0;
-    // 命中按位置递增：同行命中从上一命中处增量展开可视列，
-    // 避免 minified 单行大文件上 O(命中数 × 行首距离) 的重复回走（最坏 O(n²)）
-    let prevAt = -1;
-    let prevSegStart = -1;
-    let prevV = 0;
-    while (res.length < 2000) {
-      const at = hay.indexOf(needle, from);
-      if (at < 0) break;
-      let lo = 0;
-      let hi = lineStarts.length - 1;
-      while (lo < hi) {
-        const mid = (lo + hi + 1) >> 1;
-        if (lineStarts[mid]! <= at) lo = mid;
-        else hi = mid - 1;
-      }
-      const segStart = lineStarts[lo]!;
-      const v =
-        prevAt >= 0 && prevSegStart === segStart
-          ? visWidth(prevAt, at, prevV)
-          : visWidth(segStart, at, 0);
-      res.push({line: lo, visCol: v, len: needle.length});
-      prevAt = at;
-      prevSegStart = segStart;
-      prevV = v;
-      from = at + Math.max(needle.length, 1);
-    }
-    return res;
-  }, [searchOpen, searchQuery, activeTab?.content]);
-
-  // 命中列表变化时收敛当前索引
-  useEffect(() => {
-    setMatchIdx((i) => (searchHits.length ? i % searchHits.length : 0));
-  }, [searchHits.length]);
-
-  /** 滚动到指定命中（垂直取最近可视位置，水平按需露出） */
-  const gotoHit = useCallback(
-    (idx: number) => {
-      const m = searchHits[idx];
-      const sc = editorInputRef.current ?? readonlyPreRef.current;
-      if (!m || !sc) return;
-      const top = GUTTER_PAD + m.line * LINE_H;
-      const left = lnWidth + m.visCol * charW;
-      const ch = sc.clientHeight;
-      const cw = sc.clientWidth;
-      let st = sc.scrollTop;
-      if (top < st + GUTTER_PAD) st = Math.max(0, top - GUTTER_PAD);
-      else if (top + LINE_H > st + ch - GUTTER_PAD)
-        st = top - ch + LINE_H + GUTTER_PAD;
-      sc.scrollTop = st;
-      let sl = sc.scrollLeft;
-      if (left < sl + GUTTER_PAD) sl = Math.max(0, left - GUTTER_PAD);
-      else if (left + m.len * charW > sl + cw - GUTTER_PAD)
-        sl = left - cw + m.len * charW + GUTTER_PAD;
-      sc.scrollLeft = sl;
-    },
-    [searchHits, lnWidth, charW]
-  );
-
-  useEffect(() => {
-    gotoHit(matchIdx);
-  }, [matchIdx, gotoHit]);
-
-  const stepHit = useCallback(
-    (dir: number) => {
-      if (!searchHits.length) return;
-      setMatchIdx(
-        (i) => (i + dir + searchHits.length) % searchHits.length
-      );
-    },
-    [searchHits.length]
-  );
-
-  const closeSearch = useCallback(() => {
-    setSearchOpen(false);
-    setSearchQuery("");
-    setMatchIdx(0);
-    editorInputRef.current?.focus();
-  }, []);
 
   // ================================================================
   // 快速打开（Ctrl+P）：项目级文件名 / 路径过滤跳转
@@ -2077,49 +1822,6 @@ export default function FilePanel({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [openQuickOpen, quickOpen, closeQuickOpen]);
-
-  // Ctrl+F 打开编辑器搜索（全局默认查找已在 main.tsx 拦截）；Esc 关闭。
-  // 快速打开弹层存在时不响应，避免按键穿透到被遮罩的编辑器
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "f") {
-        if (
-          !quickOpen &&
-          activeTab &&
-          activeTab.fileType === "text" &&
-          !isMdPreview
-        ) {
-          e.preventDefault();
-          setSearchOpen(true);
-          requestAnimationFrame(() => searchInputRef.current?.select());
-        }
-      } else if (e.key === "Escape" && searchOpen) {
-        closeSearch();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [activeTab, isMdPreview, searchOpen, closeSearch, quickOpen]);
-
-  /** 搜索命中高亮层（绝对定位半透明色块；padLeft = 行号栏宽 + 内容左 padding） */
-  const renderHitLayer = (padLeft: number) => {
-    if (!searchOpen || searchHits.length === 0) return null;
-    return (
-      <div className="search-hit-layer" ref={matchLayerRef} aria-hidden>
-        {searchHits.map((m, i) => (
-          <span
-            key={i}
-            className={`search-hit${i === matchIdx ? " cur" : ""}`}
-            style={{
-              top: GUTTER_PAD + m.line * LINE_H + 3,
-              left: padLeft + m.visCol * charW,
-              width: Math.max(4, m.len * charW),
-            }}
-          />
-        ))}
-      </div>
-    );
-  };
 
   /** 文件树节点 → git 状态查找 */
   const statusFor = useCallback(
@@ -2537,26 +2239,8 @@ export default function FilePanel({
                       remarkPlugins={[remarkGfm]}
                       components={{
                         code({className, children, ...props}) {
-                          const match = /language-(\w+)/.exec(className ?? "");
-                          if (match) {
-                            const lang = match[1] ?? "";
-                            const grammar = Prism.languages[lang];
-                            const raw = Array.isArray(children)
-                              ? children.join("")
-                              : String(children ?? "");
-                            const html = grammar
-                              ? Prism.highlight(raw, grammar, lang)
-                              : escapeHtml(raw);
-                            return (
-                              <code
-                                className={`${className ?? ""} file-md-code`}
-                                dangerouslySetInnerHTML={{ __html: html }}
-                                {...props}
-                              />
-                            );
-                          }
                           return (
-                            <code className={className} {...props}>
+                            <code className={`${className ?? ""} file-md-code`} {...props}>
                               {children}
                             </code>
                           );
@@ -2567,86 +2251,19 @@ export default function FilePanel({
                     </ReactMarkdown>
                   </div>
                 </div>
-              ) : activeTab.meta.readonly ? (
-                <div className="file-code-wrap" onClick={() => setMarkerPanel(null)}>
-                  {renderDiffGutter(lnWidth)}
-                  {showLineNumbers && (
-                    <div className="file-ln-gutter" aria-hidden style={{width: lnWidth}}>
-                      <div className="file-ln-inner" ref={lnGutterRef} style={{paddingTop: GUTTER_PAD}}>
-                        {Array.from({length: activeLines}, (_, i) => (
-                          <div key={i} className="file-ln">{i + 1}</div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  <pre
-                    ref={readonlyPreRef}
-                    className="file-code-view"
-                    style={{paddingLeft: 16 + lnWidth}}
-                    onScroll={(e) => syncGutter(e.currentTarget.scrollTop)}
-                    dangerouslySetInnerHTML={{
-                      __html: highlightCode(
-                        activeTab.content,
-                        getPrismLang(activeTab.path)
-                      ),
-                    }}
-                  />
-                  {renderHitLayer(16 + lnWidth)}
-                  {renderMarkerPanels()}
-                </div>
               ) : (
-                <div className="file-editor-overlay" onClick={() => setMarkerPanel(null)}>
-                  {/* 左缘 git diff 标记条 */}
-                  {renderDiffGutter(lnWidth)}
-                  {showLineNumbers && (
-                    <div className="file-ln-gutter" aria-hidden style={{width: lnWidth}}>
-                      <div className="file-ln-inner" ref={lnGutterRef} style={{paddingTop: GUTTER_PAD}}>
-                        {Array.from({length: activeLines}, (_, i) => (
-                          <div key={i} className="file-ln">{i + 1}</div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {/* 高亮底层：随内容实时渲染语法颜色 */}
-                  <pre
-                    ref={editorUnderlayRef}
-                    className="file-code-view file-code-underlay"
-                    aria-hidden
-                    style={{paddingLeft: 12 + lnWidth}}
-                    dangerouslySetInnerHTML={{
-                      __html: highlightedHtml || highlightCode(
-                        activeTab.content.endsWith("\n")
-                          ? activeTab.content + " "
-                          : activeTab.content,
-                        getPrismLang(activeTab.path)
-                      ),
-                    }}
-                  />
-                  {renderHitLayer(12 + lnWidth)}
-                  {/* 输入层：文字透明，仅显示光标与选区 */}
-                  <textarea
-                    ref={editorInputRef}
-                    className="file-editor-textarea file-editor-input"
+                <div className="file-code-wrap" style={{position: "relative", height: "100%", overflow: "hidden"}}>
+                  <MonacoCodeEditor
+                    path={activeTab.path}
                     value={activeTab.content}
-                    style={{paddingLeft: 12 + lnWidth}}
-                    onChange={(e) => updateActiveContent(e.target.value)}
-                    onScroll={(e) => {
-                      const el = e.currentTarget;
-                      const under = editorUnderlayRef.current;
-                      if (under) {
-                        under.scrollTop = el.scrollTop;
-                        under.scrollLeft = el.scrollLeft;
-                      }
-                      syncGutter(el.scrollTop);
-                    }}
-                    wrap="off"
-                    spellCheck={false}
-                    onKeyDown={(e) => {
-                      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-                        e.preventDefault();
-                        handleSave();
-                      }
-                    }}
+                    readonly={activeTab.meta.readonly}
+                    eol={activeTab.eol ?? "\n"}
+                    onChange={updateActiveContent}
+                    onSave={handleSave}
+                    lineKinds={lineKinds}
+                    onGutterClick={(line) => setMarkerPanel({type: "quick", line})}
+                    onContentClick={() => setMarkerPanel(null)}
+                    editorRef={monacoRef}
                   />
                   {renderMarkerPanels()}
                 </div>
@@ -2660,68 +2277,6 @@ export default function FilePanel({
             <div className="file-editor-empty">
               <File size={40} />
               <div>从左侧文件树选择文件进行预览 / 编辑</div>
-            </div>
-          )}
-          {searchOpen && activeTab?.fileType === "text" && !isMdPreview && (
-            <div className="editor-search">
-              <input
-                ref={searchInputRef}
-                className="editor-search-input"
-                value={searchQuery}
-                onChange={(e) => {
-                  setSearchQuery(e.target.value);
-                  setMatchIdx(0);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    stepHit(e.shiftKey ? -1 : 1);
-                  } else if (e.key === "Escape") {
-                    e.stopPropagation();
-                    closeSearch();
-                  }
-                }}
-                placeholder="搜索内容…"
-                spellCheck={false}
-                autoComplete="off"
-              />
-              <span
-                className={`editor-search-count ${searchQuery && !searchHits.length ? "none" : ""}`}
-                title={
-                  searchTooLarge ? "文件超过 2MB，已禁用内容搜索" : undefined
-                }
-              >
-                {searchQuery
-                  ? searchTooLarge
-                    ? "文件过大"
-                    : searchHits.length
-                      ? `${matchIdx + 1}/${searchHits.length}`
-                      : "无匹配"
-                  : ""}
-              </span>
-              <button
-                className="icon-btn sm"
-                onClick={() => stepHit(-1)}
-                disabled={!searchHits.length}
-                aria-label="上一个匹配"
-              >
-                <CaretDown size={12} style={{transform: "rotate(180deg)"}} />
-              </button>
-              <button
-                className="icon-btn sm"
-                onClick={() => stepHit(1)}
-                disabled={!searchHits.length}
-                aria-label="下一个匹配"
-              >
-                <CaretDown size={12} />
-              </button>
-              <button
-                className="icon-btn sm"
-                onClick={closeSearch}
-                aria-label="关闭搜索"
-              >
-                <X size={12} />
-              </button>
             </div>
           )}
           {saving && (

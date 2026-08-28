@@ -120,6 +120,17 @@ export const gitStatus = (projectId: string) =>
   invoke<GitStatus>("git_status", { projectId });
 export const gitDiff = (projectId: string, path: string, staged: boolean) =>
   invoke<string>("git_diff", { projectId, path, staged });
+
+/** diff 两侧文件内容（供 Monaco DiffEditor 渲染） */
+export interface DiffVersions {
+  /** 原始版本（HEAD）；新增文件为 null */
+  original: string | null;
+  /** 修改后版本（工作区或暂存区文件内容） */
+  modified: string;
+}
+
+export const gitDiffVersions = (projectId: string, path: string, staged: boolean) =>
+  invoke<DiffVersions>("git_diff_versions", { projectId, path, staged });
 export const gitStage = (projectId: string, paths: string[]) =>
   invoke<void>("git_stage", { projectId, paths });
 export const gitUnstage = (projectId: string, paths: string[]) =>

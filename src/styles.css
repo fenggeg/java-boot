@@ -1768,94 +1768,22 @@ body {
   padding: 4px 6px 10px 6px;
 }
 
-.git-history-diff-pre {
-  max-height: 40vh;
-  overflow: auto;
-  margin: 0;
-  padding: 10px;
-  border-radius: var(--r-sm);
-  background: var(--surface-2);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--text);
-  white-space: pre;
-}
-
-/* diff 查看 */
-.diff-view {
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-  line-height: 1.5;
-}
-
-.diff-line {
-  display: flex;
-  min-height: 18px;
-}
-
-.diff-content {
-  white-space: pre;
-  word-break: break-all;
-  color: var(--text);
-}
-
-.diff-line.add .diff-content {
-  color: #1d7f3c;
-  background: rgba(29, 127, 60, 0.08);
-}
-
-.diff-line.del .diff-content {
-  color: #d13438;
-  background: rgba(209, 52, 56, 0.08);
-}
-
-.diff-line.hunk .diff-content {
-  color: var(--blue);
-  background: rgba(0, 113, 227, 0.06);
-}
-
-.diff-line.meta .diff-content {
-  color: var(--text-3);
-}
-
-/* 内联编辑 */
-.diff-editor {
+/* Git diff 面板路径栏 */
+.git-diff-editor-wrap {
   display: flex;
   flex-direction: column;
-  height: 60vh;
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   overflow: hidden;
 }
 
-.diff-editor-toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 6px 10px;
+.git-diff-editor-path {
+  padding: 6px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-2);
-}
-
-.diff-editor-path {
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text-2);
-}
-
-.diff-editor-textarea {
-  flex: 1;
-  width: 100%;
-  border: none;
-  outline: none;
-  resize: none;
-  padding: 12px;
-  font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--text);
-  background: var(--surface);
 }
 
 /* ========================================================
@@ -2043,174 +1971,6 @@ body {
   color: var(--text-3);
 }
 
-.file-editor-textarea {
-  flex: 1;
-  width: 100%;
-  border: none;
-  outline: none;
-  resize: none;
-  padding: 12px;
-  font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 22px;
-  color: var(--text);
-  background: var(--surface);
-  tab-size: 2;
-}
-
-.file-editor-textarea[readonly] {
-  color: var(--text-2);
-}
-
-/* —— 编辑态语法高亮叠加层 —— */
-/* 高亮底层与输入层必须保持完全一致的字体/字号/行高/内边距/换行，否则文字错位 */
-.file-editor-overlay {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.file-editor-overlay .file-code-underlay {
-  position: absolute;
-  inset: 0;
-  padding: 12px;
-  font-size: 13px;
-  /* 必须与输入层(.file-editor-textarea)及 diff 标记定位(LINE_H=22)一致，
-     用 1.6 这类相对值会随行号线性漂移，长文件下 diff 条明显错位 */
-  line-height: 22px;
-  /* overflow: auto（非 hidden）：与 textarea 的 overflow: auto 保持一致，
-     确保两层同时出现/消失滚动条，内容区宽度始终相同 */
-  overflow: auto;
-  pointer-events: none;
-  z-index: 0;
-}
-
-/* 底层滚动条不可见：宽度与全局 ::-webkit-scrollbar(10px) 一致，
-   确保预留的滚动条空间与 textarea 完全相同；thumb/track 透明实现视觉隐藏。
-   滚动位置由 textarea 的 onScroll 同步，底层仅做占位 */
-.file-editor-overlay .file-code-underlay::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-.file-editor-overlay .file-code-underlay::-webkit-scrollbar-track {
-  background: transparent;
-}
-.file-editor-overlay .file-code-underlay::-webkit-scrollbar-thumb {
-  background: transparent;
-  border: none;
-}
-
-.file-editor-overlay .file-editor-input {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  color: transparent;
-  caret-color: var(--text);
-  background: transparent;
-  overflow: auto;
-  /* 显式声明与 .file-code-underlay 完全一致的 padding 与字体参数，
-     确保两层文字位置严格重合（光标不会与高亮文字错位） */
-  padding: 12px;
-  font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 22px;
-  tab-size: 2;
-  border: none;
-  outline: none;
-  resize: none;
-}
-
-/* 选区重影修复：浏览器默认 ::selection 会用不透明前景色绘制输入层文字，
-   与下方高亮底层的同一份文字叠加形成「重影」。强制选区内文字仍透明，
-   只显示半透明蓝色选区背景，可见文字始终只有底层一份。 */
-.file-editor-overlay .file-editor-input::selection {
-  color: transparent;
-  background: rgba(0, 113, 227, 0.32);
-}
-
-.file-editor-overlay .file-editor-input::-moz-selection {
-  color: transparent;
-  background: rgba(0, 113, 227, 0.32);
-}
-
-/* —— 语法高亮代码视图 —— */
-/* 行高固定 22px：与 FilePanel 的 diff 标记定位（LINE_H）保持一致 */
-.file-code-view {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  margin: 0;
-  padding: 12px 16px;
-  font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 22px;
-  color: var(--text);
-  background: var(--surface);
-  tab-size: 2;
-  white-space: pre;
-}
-
-/* Prism token 着色（亮色：Apple Xcode 风格） */
-.file-code-view .token.comment,
-.file-code-view .token.prolog,
-.file-code-view .token.doctype,
-.file-code-view .token.cdata {
-  color: #6e6e73;
-  font-style: italic;
-}
-.file-code-view .token.punctuation {
-  color: #48484a;
-}
-.file-code-view .token.property,
-.file-code-view .token.tag,
-.file-code-view .token.boolean,
-.file-code-view .token.number,
-.file-code-view .token.constant,
-.file-code-view .token.symbol,
-.file-code-view .token.deleted {
-  color: #c93400;
-}
-.file-code-view .token.selector,
-.file-code-view .token.attr-name,
-.file-code-view .token.string,
-.file-code-view .token.char,
-.file-code-view .token.builtin,
-.file-code-view .token.inserted {
-  color: #248a3d;
-}
-.file-code-view .token.operator,
-.file-code-view .token.entity,
-.file-code-view .token.url,
-.file-code-view .language-css .token.string,
-.file-code-view .style .token.string {
-  color: #6f42c1;
-}
-.file-code-view .token.atrule,
-.file-code-view .token.attr-value,
-.file-code-view .token.keyword {
-  color: #0071e3;
-}
-.file-code-view .token.function,
-.file-code-view .token.class-name {
-  color: #ad3da4;
-}
-.file-code-view .token.regex,
-.file-code-view .token.important,
-.file-code-view .token.variable {
-  color: #e28d0a;
-}
-.file-code-view .token.important,
-.file-code-view .token.bold {
-  font-weight: 600;
-}
-.file-code-view .token.italic {
-  font-style: italic;
-}
-.file-code-view .token.comment .token.url {
-  color: #6e6e73;
-}
-
 /* —— Markdown 预览 —— */
 .file-preview-scroll {
   flex: 1;
@@ -2312,53 +2072,6 @@ body {
   background: transparent;
   font-size: 12.5px;
   line-height: 1.6;
-}
-/* Markdown 代码块内的 Prism token 着色（复用亮色主题） */
-.file-preview-markdown .token.comment,
-.file-preview-markdown .token.prolog,
-.file-preview-markdown .token.doctype,
-.file-preview-markdown .token.cdata {
-  color: #6e6e73;
-  font-style: italic;
-}
-.file-preview-markdown .token.punctuation {
-  color: #48484a;
-}
-.file-preview-markdown .token.property,
-.file-preview-markdown .token.tag,
-.file-preview-markdown .token.boolean,
-.file-preview-markdown .token.number,
-.file-preview-markdown .token.constant,
-.file-preview-markdown .token.symbol,
-.file-preview-markdown .token.deleted {
-  color: #c93400;
-}
-.file-preview-markdown .token.selector,
-.file-preview-markdown .token.attr-name,
-.file-preview-markdown .token.string,
-.file-preview-markdown .token.char,
-.file-preview-markdown .token.builtin,
-.file-preview-markdown .token.inserted {
-  color: #248a3d;
-}
-.file-preview-markdown .token.operator,
-.file-preview-markdown .token.entity,
-.file-preview-markdown .token.url {
-  color: #6f42c1;
-}
-.file-preview-markdown .token.atrule,
-.file-preview-markdown .token.attr-value,
-.file-preview-markdown .token.keyword {
-  color: #0071e3;
-}
-.file-preview-markdown .token.function,
-.file-preview-markdown .token.class-name {
-  color: #ad3da4;
-}
-.file-preview-markdown .token.regex,
-.file-preview-markdown .token.important,
-.file-preview-markdown .token.variable {
-  color: #e28d0a;
 }
 .file-preview-markdown table {
   border-collapse: collapse;
@@ -2640,21 +2353,6 @@ body {
   background: rgba(10, 132, 255, 0.12);
 }
 
-/* Diff line colors → dark */
-[data-theme="dark"] .diff-line.add .diff-content {
-  color: #30d158;
-  background: rgba(48, 209, 88, 0.1);
-}
-
-[data-theme="dark"] .diff-line.del .diff-content {
-  color: #ff453a;
-  background: rgba(255, 69, 58, 0.1);
-}
-
-[data-theme="dark"] .diff-line.hunk .diff-content {
-  background: rgba(10, 132, 255, 0.08);
-}
-
 /* Log search highlight → dark */
 [data-theme="dark"] .log-highlight {
   background: rgba(255, 214, 10, 0.2);
@@ -2673,56 +2371,6 @@ body {
 /* Binary file type icon → dark */
 [data-theme="dark"] .file-tree-icon.file-type-binary {
   color: var(--text-4);
-}
-
-/* Syntax highlight tokens → dark (Xcode dark palette) */
-[data-theme="dark"] .file-code-view .token.comment,
-[data-theme="dark"] .file-code-view .token.prolog,
-[data-theme="dark"] .file-code-view .token.doctype,
-[data-theme="dark"] .file-code-view .token.cdata {
-  color: #7c7c80;
-}
-[data-theme="dark"] .file-code-view .token.punctuation {
-  color: #98989d;
-}
-[data-theme="dark"] .file-code-view .token.property,
-[data-theme="dark"] .file-code-view .token.tag,
-[data-theme="dark"] .file-code-view .token.boolean,
-[data-theme="dark"] .file-code-view .token.number,
-[data-theme="dark"] .file-code-view .token.constant,
-[data-theme="dark"] .file-code-view .token.symbol,
-[data-theme="dark"] .file-code-view .token.deleted {
-  color: #ff7ab2;
-}
-[data-theme="dark"] .file-code-view .token.selector,
-[data-theme="dark"] .file-code-view .token.attr-name,
-[data-theme="dark"] .file-code-view .token.string,
-[data-theme="dark"] .file-code-view .token.char,
-[data-theme="dark"] .file-code-view .token.builtin,
-[data-theme="dark"] .file-code-view .token.inserted {
-  color: #69e4a6;
-}
-[data-theme="dark"] .file-code-view .token.operator,
-[data-theme="dark"] .file-code-view .token.entity,
-[data-theme="dark"] .file-code-view .token.url {
-  color: #d2a8ff;
-}
-[data-theme="dark"] .file-code-view .token.atrule,
-[data-theme="dark"] .file-code-view .token.attr-value,
-[data-theme="dark"] .file-code-view .token.keyword {
-  color: #4fa8ff;
-}
-[data-theme="dark"] .file-code-view .token.function,
-[data-theme="dark"] .file-code-view .token.class-name {
-  color: #ff9f0a;
-}
-[data-theme="dark"] .file-code-view .token.regex,
-[data-theme="dark"] .file-code-view .token.important,
-[data-theme="dark"] .file-code-view .token.variable {
-  color: #ffd60a;
-}
-[data-theme="dark"] .file-code-view .token.comment .token.url {
-  color: #7c7c80;
 }
 
 /* Markdown 预览 → dark */
@@ -2751,53 +2399,6 @@ body {
 }
 [data-theme="dark"] .file-preview-markdown tr:nth-child(2n) td {
   background: var(--surface-2);
-}
-
-/* Markdown 代码块 Prism token → dark */
-[data-theme="dark"] .file-preview-markdown .token.comment,
-[data-theme="dark"] .file-preview-markdown .token.prolog,
-[data-theme="dark"] .file-preview-markdown .token.doctype,
-[data-theme="dark"] .file-preview-markdown .token.cdata {
-  color: #7c7c80;
-}
-[data-theme="dark"] .file-preview-markdown .token.punctuation {
-  color: #98989d;
-}
-[data-theme="dark"] .file-preview-markdown .token.property,
-[data-theme="dark"] .file-preview-markdown .token.tag,
-[data-theme="dark"] .file-preview-markdown .token.boolean,
-[data-theme="dark"] .file-preview-markdown .token.number,
-[data-theme="dark"] .file-preview-markdown .token.constant,
-[data-theme="dark"] .file-preview-markdown .token.symbol,
-[data-theme="dark"] .file-preview-markdown .token.deleted {
-  color: #ff7ab2;
-}
-[data-theme="dark"] .file-preview-markdown .token.selector,
-[data-theme="dark"] .file-preview-markdown .token.attr-name,
-[data-theme="dark"] .file-preview-markdown .token.string,
-[data-theme="dark"] .file-preview-markdown .token.char,
-[data-theme="dark"] .file-preview-markdown .token.builtin,
-[data-theme="dark"] .file-preview-markdown .token.inserted {
-  color: #69e4a6;
-}
-[data-theme="dark"] .file-preview-markdown .token.operator,
-[data-theme="dark"] .file-preview-markdown .token.entity,
-[data-theme="dark"] .file-preview-markdown .token.url {
-  color: #d2a8ff;
-}
-[data-theme="dark"] .file-preview-markdown .token.atrule,
-[data-theme="dark"] .file-preview-markdown .token.attr-value,
-[data-theme="dark"] .file-preview-markdown .token.keyword {
-  color: #4fa8ff;
-}
-[data-theme="dark"] .file-preview-markdown .token.function,
-[data-theme="dark"] .file-preview-markdown .token.class-name {
-  color: #ff9f0a;
-}
-[data-theme="dark"] .file-preview-markdown .token.regex,
-[data-theme="dark"] .file-preview-markdown .token.important,
-[data-theme="dark"] .file-preview-markdown .token.variable {
-  color: #ffd60a;
 }
 
 /* ========================================================
@@ -2961,8 +2562,7 @@ body {
 }
 
 /* ========================================================
-   行级 diff 标记条（代码区左缘）
-   与 LINE_H=22 / GUTTER_PAD=12 保持一致
+   Monaco glyph margin diff 装饰 + 行内背景色
    ======================================================== */
 .file-code-wrap {
   position: relative;
@@ -2971,76 +2571,60 @@ body {
   display: flex;
 }
 
-.file-diff-gutter {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  /* 宽度留足点击余量：视觉条仅 3px，整列经 diff-bar::after 扩为可点区域 */
-  width: 12px;
-  /* 必须高于输入层(.file-editor-input z-index:3，为搜索选区抬升过)，
-     否则同层时 DOM 靠后的 textarea 会盖住标记条、拦截全部点击 */
-  z-index: 4;
-  pointer-events: none;
-  overflow: hidden;
-}
-
-.file-diff-gutter-inner {
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 100%;
-  will-change: transform;
-}
-
-.diff-bar {
-  position: absolute;
-  left: 1px;
-  width: 3px;
-  height: 14px;
+/* glyph margin 色条（绿=新增 / 橙=修改 / 红=删除点） */
+/* —— Git diff glyph margin 颜色条（左侧变更标记）—— */
+.jb-glyph {
   border-radius: 2px;
+  margin: 1px 0;
+  transition: opacity 0.15s;
 }
 
-.diff-bar.add {
-  background: var(--green);
-  opacity: 0.75;
+.jb-glyph.jb-diff-add {
+  background: #28a745;
+  opacity: 0.85;
 }
 
-.diff-bar.mod {
-  background: var(--orange);
-  opacity: 0.8;
+.jb-glyph.jb-diff-mod {
+  background: #d29922;
+  opacity: 0.85;
 }
 
-/* 删除条：行已被移除、缓冲区无对应行，用矮条贴在删除点之后那行的顶部，
-   视觉上呈现在上一行与该行之间的间隙，区别于整行的修改/新增 */
-.diff-bar.del {
-  background: var(--red);
-  height: 6px;
-  transform: translateY(2px);
+.jb-glyph.jb-diff-del {
+  background: #d73a49;
+  opacity: 0.85;
 }
 
-/* diff 标记条可点击：弹出文件历史 / 回滚浮层。
-   父容器 pointer-events:none 挡事件，条自身重新开启；
-   ::after 把 3px 视觉条扩成 ~12x20 的易点中热区（不改变外观） */
-.diff-bar {
-  pointer-events: auto;
-  cursor: pointer;
+.jb-glyph:hover {
+  opacity: 1;
 }
 
-.diff-bar::after {
-  content: "";
-  position: absolute;
-  left: -5px;
-  right: -4px;
-  top: -3px;
-  bottom: -3px;
+/* 行内背景色 */
+.jb-line-add {
+  background: rgba(40, 167, 69, 0.08);
 }
 
-/* 悬停反馈：加宽发光，明确「可点击」（也是肉眼区分新旧前端的标志） */
-.diff-bar:hover {
-  width: 5px;
-  left: 0;
-  box-shadow: 0 0 6px currentColor;
+.jb-line-mod {
+  background: rgba(210, 153, 34, 0.08);
+}
+
+[data-theme="dark"] .jb-glyph.jb-diff-add {
+  background: #3fb950;
+}
+
+[data-theme="dark"] .jb-glyph.jb-diff-mod {
+  background: #d29922;
+}
+
+[data-theme="dark"] .jb-glyph.jb-diff-del {
+  background: #f85149;
+}
+
+[data-theme="dark"] .jb-line-add {
+  background: rgba(63, 185, 80, 0.10);
+}
+
+[data-theme="dark"] .jb-line-mod {
+  background: rgba(210, 153, 34, 0.10);
 }
 
 /* —— IDEA 式快捷操作条：贴在变更行下方 —— */
@@ -3051,39 +2635,64 @@ body {
   z-index: 20;
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 6px;
+  gap: 2px;
+  padding: 5px 6px;
   background: var(--surface);
   border: 1px solid var(--border-2);
   border-radius: 8px;
-  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14), 0 1px 4px rgba(0, 0, 0, 0.06);
   white-space: nowrap;
 }
 
 .git-quick-btn {
-  padding: 3px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
   border: none;
   background: none;
   border-radius: 5px;
   font-size: 12px;
   color: var(--text);
   cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.git-quick-btn svg {
+  flex-shrink: 0;
 }
 
 .git-quick-btn:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--blue) 12%, transparent);
+  background: rgba(0, 113, 227, 0.10);
   color: var(--blue);
 }
 
 .git-quick-btn:disabled {
-  opacity: 0.4;
+  opacity: 0.35;
   cursor: default;
+}
+
+.git-quick-btn.danger:hover:not(:disabled) {
+  background: rgba(209, 52, 56, 0.10);
+  color: var(--red);
 }
 
 .git-quick-sep {
   width: 1px;
-  height: 14px;
+  height: 16px;
   background: var(--border-2);
+  margin: 0 2px;
+  flex-shrink: 0;
+}
+
+[data-theme="dark"] .git-quick-bar {
+  background: #2c2c2e;
+  border-color: #3a3a3c;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4), 0 1px 4px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme="dark"] .git-quick-btn:hover:not(:disabled) {
+  background: rgba(79, 168, 255, 0.12);
 }
 
 /* 快捷条内的改动前 / 当前迷你对比 */
@@ -3099,46 +2708,68 @@ body {
   background: var(--surface);
   border: 1px solid var(--border-2);
   border-radius: 8px;
-  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14), 0 1px 4px rgba(0, 0, 0, 0.06);
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 18px;
 }
 
 .gqd-title {
-  font-size: 11px;
-  color: var(--text-2);
-  margin-bottom: 3px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 4px;
 }
 
 .gqd-old {
-  background: color-mix(in srgb, var(--red) 14%, transparent);
-  border-radius: 3px;
-  padding: 0 5px;
+  background: rgba(209, 52, 56, 0.08);
+  border-left: 2px solid rgba(209, 52, 56, 0.4);
+  border-radius: 0 3px 3px 0;
+  padding: 1px 6px 1px 8px;
   white-space: pre;
+  color: var(--text-2);
 }
 
 .gqd-new {
-  background: color-mix(in srgb, var(--green) 16%, transparent);
-  border-radius: 3px;
-  padding: 0 5px;
+  background: rgba(40, 167, 69, 0.08);
+  border-left: 2px solid rgba(40, 167, 69, 0.4);
+  border-radius: 0 3px 3px 0;
+  padding: 1px 6px 1px 8px;
   white-space: pre;
+  color: var(--text-2);
 }
 
 .gqd-title:not(:first-child) {
   margin-top: 8px;
 }
 
+[data-theme="dark"] .git-quick-diff {
+  background: #2c2c2e;
+  border-color: #3a3a3c;
+}
+
+[data-theme="dark"] .gqd-old {
+  background: rgba(248, 81, 73, 0.08);
+  border-left-color: rgba(248, 81, 73, 0.4);
+}
+
+[data-theme="dark"] .gqd-new {
+  background: rgba(63, 185, 80, 0.08);
+  border-left-color: rgba(63, 185, 80, 0.4);
+}
+
 /* —— 文件历史 / 回滚浮层（点击 diff 标记条唤起）—— */
 .git-hist-pop {
   position: absolute;
   z-index: 30;
-  width: 420px;
+  width: 440px;
   max-width: calc(100% - 32px);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0, 0, 0, 0.08);
   overflow: hidden;
 }
 
@@ -3146,8 +2777,9 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
+  padding: 9px 14px;
   border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
 }
 
 .git-hist-title {
@@ -3165,23 +2797,28 @@ body {
 }
 
 .git-hist-empty {
-  padding: 16px 12px;
+  padding: 20px 12px;
   font-size: 12px;
-  color: var(--text-2);
+  color: var(--text-3);
   text-align: center;
 }
 
 .git-hist-item {
-  padding: 6px 12px;
+  padding: 7px 14px;
   border-bottom: 1px solid var(--border);
+  transition: background 0.12s;
 }
 
 .git-hist-item:last-child {
   border-bottom: none;
 }
 
+.git-hist-item:hover {
+  background: rgba(0, 113, 227, 0.04);
+}
+
 .git-hist-item.active {
-  background: color-mix(in srgb, var(--blue) 10%, transparent);
+  background: rgba(0, 113, 227, 0.08);
 }
 
 .git-hist-msg {
@@ -3209,11 +2846,12 @@ body {
   gap: 8px;
   margin-top: 3px;
   font-size: 11px;
-  color: var(--text-2);
+  color: var(--text-3);
 }
 
 .git-hist-meta code {
   color: var(--blue);
+  font-size: 11px;
 }
 
 .git-hist-actions {
@@ -3225,6 +2863,7 @@ body {
 .git-hist-actions a {
   cursor: pointer;
   white-space: nowrap;
+  font-size: 11px;
 }
 
 .git-hist-actions a:hover {
@@ -3233,19 +2872,49 @@ body {
 
 .git-hist-actions a.git-hist-danger {
   color: var(--red);
+  font-weight: 500;
 }
 
 .git-hist-preview {
   margin: 0;
   max-height: 32vh;
   overflow: auto;
-  padding: 10px 12px;
+  padding: 10px 14px;
   border-top: 1px solid var(--border);
-  background: transparent;
+  background: var(--surface-2);
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 18px;
   white-space: pre;
+  color: var(--text-2);
+}
+
+[data-theme="dark"] .git-hist-pop {
+  background: #2c2c2e;
+  border-color: #3a3a3c;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="dark"] .git-hist-head {
+  background: #3a3a3c;
+  border-color: #48484a;
+}
+
+[data-theme="dark"] .git-hist-item {
+  border-color: #3a3a3c;
+}
+
+[data-theme="dark"] .git-hist-item:hover {
+  background: rgba(79, 168, 255, 0.06);
+}
+
+[data-theme="dark"] .git-hist-item.active {
+  background: rgba(79, 168, 255, 0.10);
+}
+
+[data-theme="dark"] .git-hist-preview {
+  background: #1c1c1e;
+  border-color: #3a3a3c;
 }
 
 /* ========================================================
@@ -3605,102 +3274,6 @@ body {
   position: relative;
 }
 
-/* ── 行号栏（编辑器 / 只读视图共用） ── */
-.file-ln-gutter {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  overflow: hidden;
-  z-index: 1;
-  pointer-events: none;
-  background: var(--surface);
-  border-right: 1px solid var(--border);
-}
-
-.file-ln-inner {
-  will-change: transform;
-}
-
-.file-ln {
-  height: 22px;
-  line-height: 22px;
-  text-align: right;
-  padding-right: 8px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-4);
-  user-select: none;
-}
-
-/* ── 编辑器内搜索 ── */
-.editor-search {
-  position: absolute;
-  top: 40px;
-  right: 18px;
-  z-index: 6;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 5px 7px;
-  border-radius: var(--r-md);
-  border: 1px solid var(--border-2);
-  background: var(--surface);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
-}
-
-.editor-search-input {
-  width: 190px;
-  border: none;
-  outline: none;
-  background: transparent;
-  color: var(--text);
-  font-size: 12.5px;
-}
-
-.editor-search-input::placeholder {
-  color: var(--text-4);
-}
-
-.editor-search-count {
-  min-width: 46px;
-  text-align: center;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-3);
-}
-
-.editor-search-count.none {
-  color: #ff9500;
-}
-
-.search-hit-layer {
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  pointer-events: none;
-  will-change: transform;
-}
-
-.search-hit {
-  position: absolute;
-  height: 17px;
-  border-radius: 2px;
-  background: rgba(255, 214, 10, 0.28);
-  border: 1px solid rgba(255, 149, 0, 0.35);
-}
-
-.search-hit.cur {
-  background: rgba(255, 160, 0, 0.45);
-  border-color: rgba(255, 120, 0, 0.8);
-  box-shadow: 0 0 0 1px rgba(255, 149, 0, 0.35);
-}
-
-/* 输入层抬升到命中层之上，保证光标/选区可见 */
-.file-editor-overlay .file-editor-input {
-  z-index: 3;
-}
-
 /* ── 变更文件 ± 行数标识 ── */
 .tree-lines {
   margin-left: auto;
@@ -3915,44 +3488,20 @@ body {
   color: var(--text-4);
 }
 
-.merge-pane {
-  margin: 0;
-  overflow: auto;
+.merge-pane-monaco {
   border: 1px solid var(--border);
   border-radius: var(--r-md);
-  background: var(--surface-2);
-  padding: 6px 0;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 1.5;
-  user-select: text;
+  overflow: hidden;
+  min-height: 0;
 }
 
-.merge-pane > div {
-  padding: 0 10px;
-  white-space: pre;
+/* 冲突合并面板变更行高亮（Monaco deltaDecorations className） */
+.jb-merge-changed {
+  background: rgba(52, 199, 89, 0.14) !important;
 }
 
-.merge-pane .ln-changed {
-  background: rgba(52, 199, 89, 0.14);
-}
-
-.merge-result {
-  resize: none;
-  border: 1px solid var(--border-2);
-  border-radius: var(--r-md);
-  background: var(--surface);
-  color: var(--text);
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 1.5;
-  padding: 6px 10px;
-  outline: none;
-  white-space: pre;
-}
-
-.merge-result:focus {
-  border-color: var(--blue);
+[data-theme="dark"] .jb-merge-changed {
+  background: rgba(48, 209, 88, 0.12) !important;
 }
 
 .merge-all-done {

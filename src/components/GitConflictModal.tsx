@@ -1,7 +1,11 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {App, Button, Modal, Spin} from "antd";
+import Editor from "@monaco-editor/react";
+import type {editor, IRange} from "monaco-editor";
 import {Check, Warning} from "./Icons";
 import * as api from "../api";
+import {getMonacoTheme, setMonacoTheme} from "../monaco-setup";
+import {getMonacoLang} from "../languages";
 
 interface Props {
   projectId: string;
@@ -60,6 +64,94 @@ function toLines(text: string): string[] {
   const lines = text.split("\n");
   if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
   return lines;
+}
+
+/** 只读 Monaco 面板（左侧 ours / 右侧 theirs），变更行高亮背景 */
+function MergeReadPane({
+  path,
+  text,
+  changedLines,
+}: {
+  path: string;
+  text: string;
+  changedLines: Set<number>;
+}) {
+  const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
+  const decosRef = useRef<string[]>([]);
+
+  const applyDecos = useCallback(
+    (ed: editor.IStandaloneCodeEditor, changed: Set<number>) => {
+      if (changed.size === 0) {
+        if (decosRef.current.length > 0) {
+          decosRef.current = ed.deltaDecorations(decosRef.current, []);
+        }
+        return;
+      }
+      const decos: editor.IModelDeltaDecoration[] = [];
+      for (const lineIdx of changed) {
+        const lineNumber = lineIdx + 1;
+        const range: IRange = {
+          startLineNumber: lineNumber,
+          startColumn: 1,
+          endLineNumber: lineNumber,
+          endColumn: 1,
+        };
+        decos.push({
+          range,
+          options: {
+            isWholeLine: true,
+            className: "jb-merge-changed",
+          },
+        });
+      }
+      decosRef.current = ed.deltaDecorations(decosRef.current, decos);
+    },
+    []
+  );
+
+  return (
+    <Editor
+      height="100%"
+      language={getMonacoLang(path)}
+      theme={getMonacoTheme()}
+      value={text}
+      onMount={(ed) => {
+        editorRef.current = ed;
+        applyDecos(ed, changedLines);
+      }}
+      onChange={() => {
+        // 只读面板不会触发，但安全起见重新 apply
+        const ed = editorRef.current;
+        if (ed) applyDecos(ed, changedLines);
+      }}
+      options={{
+        readOnly: true,
+        fontSize: 12.5,
+        fontFamily: "var(--font-mono)",
+        lineHeight: 20,
+        lineNumbers: "on",
+        lineNumbersMinChars: 3,
+        glyphMargin: false,
+        minimap: { enabled: false },
+        folding: false,
+        scrollBeyondLastLine: false,
+        wordWrap: "off",
+        automaticLayout: true,
+        scrollbar: {
+          verticalScrollbarSize: 8,
+          horizontalScrollbarSize: 8,
+          useShadows: false,
+        },
+        padding: { top: 8, bottom: 8 },
+        renderLineHighlight: "none",
+        stickyScroll: { enabled: false },
+        overviewRulerBorder: false,
+        cursorBlinking: "solid",
+        occurrencesHighlight: "off",
+        selectionHighlight: false,
+      }}
+    />
+  );
 }
 
 /**
@@ -175,8 +267,8 @@ export default function GitConflictModal({
       message.success("已标记为已解决");
       advance(activePath);
       await onChanged();
-} catch (e) {
-        message.error(`标记失败: ${api.toErrMsg(e)}`);
+    } catch (e) {
+      message.error(`标记失败: ${api.toErrMsg(e)}`);
     } finally {
       setBusy(false);
     }
@@ -234,6 +326,16 @@ export default function GitConflictModal({
     [baseLines, versions]
   );
 
+  // 主题切换监听
+  useEffect(() => {
+    const observer = new MutationObserver(() => setMonacoTheme());
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+    return () => observer.disconnect();
+  }, []);
+
   const renderPaneHeader = (label: string, hint?: string) => (
     <div className="merge-pane-head">
       <span>{label}</span>
@@ -241,21 +343,8 @@ export default function GitConflictModal({
     </div>
   );
 
-  const renderSidePane = (
-    text: string | undefined,
-    changed: Set<number>,
-    tone: "ours" | "theirs"
-  ) => (
-    <pre className={`merge-pane merge-pane-${tone}`}>
-      {text === undefined ? null : toLines(text).map((l, i) => (
-        <div key={i} className={changed.has(i) ? "ln-changed" : undefined}>
-          {l || "\u00A0"}
-        </div>
-      ))}
-    </pre>
-  );
-
   const allResolved = merging && remaining.length === 0;
+  const activeLang = activePath ? getMonacoLang(activePath) : "plaintext";
 
   return (
     <Modal
@@ -270,7 +359,7 @@ export default function GitConflictModal({
       }
       open={open}
       onCancel={busy ? undefined : onClose}
-      width={1080}
+      width={1180}
       footer={
         busy ? (
           <Spin size="small" />
@@ -364,15 +453,62 @@ export default function GitConflictModal({
                 {renderPaneHeader("本地修改 (Yours)", "只读")}
                 {renderPaneHeader("合并结果", "可直接编辑")}
                 {renderPaneHeader("远程修改 (Theirs)", "只读")}
-                {renderSidePane(versions?.ours, oursChanged, "ours")}
-                <textarea
-                  className="merge-result"
-                  value={resultText}
-                  onChange={(e) => setResultText(e.target.value)}
-                  spellCheck={false}
-                  disabled={!activePath || busy}
-                />
-                {renderSidePane(versions?.theirs, theirsChanged, "theirs")}
+                <div className="merge-pane-monaco">
+                  <MergeReadPane
+                    path={activePath ?? ""}
+                    text={versions?.ours ?? ""}
+                    changedLines={oursChanged}
+                  />
+                </div>
+                <div className="merge-pane-monaco">
+                  <Editor
+                    height="100%"
+                    language={activeLang}
+                    theme={getMonacoTheme()}
+                    value={resultText}
+                    onChange={(v) => setResultText(v ?? "")}
+                    options={{
+                      readOnly: !activePath || busy,
+                      fontSize: 12.5,
+                      fontFamily: "var(--font-mono)",
+                      lineHeight: 20,
+                      lineNumbers: "on",
+                      lineNumbersMinChars: 3,
+                      glyphMargin: false,
+                      minimap: { enabled: false },
+                      folding: true,
+                      scrollBeyondLastLine: false,
+                      wordWrap: "off",
+                      tabSize: 2,
+                      insertSpaces: true,
+                      automaticLayout: true,
+                      scrollbar: {
+                        verticalScrollbarSize: 8,
+                        horizontalScrollbarSize: 8,
+                        useShadows: false,
+                      },
+                      padding: { top: 8, bottom: 8 },
+                      smoothScrolling: true,
+                      cursorBlinking: "smooth",
+                      renderLineHighlight: "line",
+                      roundedSelection: true,
+                      selectionHighlight: true,
+                      occurrencesHighlight: "off",
+                      guides: { indentation: true, bracketPairs: true },
+                      bracketPairColorization: { enabled: true },
+                      stickyScroll: { enabled: false },
+                      fixedOverflowWidgets: true,
+                      overviewRulerBorder: false,
+                    }}
+                  />
+                </div>
+                <div className="merge-pane-monaco">
+                  <MergeReadPane
+                    path={activePath ?? ""}
+                    text={versions?.theirs ?? ""}
+                    changedLines={theirsChanged}
+                  />
+                </div>
               </div>
             )}
           </div>

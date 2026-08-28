@@ -1,4 +1,4 @@
-// 文件扩展名 → Prism 语言映射 + 语言组件加载
+// 文件扩展名 → Monaco 语言映射
 // 覆盖 Java/Spring Boot 项目中常见的文件类型
 
 const EXT_LANG_MAP: Record<string, string> = {
@@ -13,34 +13,34 @@ const EXT_LANG_MAP: Record<string, string> = {
   js: "javascript",
   mjs: "javascript",
   cjs: "javascript",
-  jsx: "jsx",
+  jsx: "javascript",
   ts: "typescript",
-  tsx: "tsx",
-  vue: "markup",
-  html: "markup",
-  htm: "markup",
-  xml: "markup",
-  svg: "markup",
+  tsx: "typescript",
+  vue: "html",
+  html: "html",
+  htm: "html",
+  xml: "xml",
+  svg: "xml",
   css: "css",
   scss: "scss",
-  sass: "sass",
+  sass: "scss",
   less: "less",
   // 配置 / 数据
   json: "json",
   yaml: "yaml",
   yml: "yaml",
-  toml: "toml",
+  toml: "ini",
   ini: "ini",
   cfg: "ini",
   conf: "ini",
-  properties: "properties",
-  env: "properties",
+  properties: "ini",
+  env: "ini",
   // 脚本 / 构建
-  sh: "bash",
-  bash: "bash",
-  zsh: "bash",
-  bat: "bash",
-  cmd: "bash",
+  sh: "shell",
+  bash: "shell",
+  zsh: "shell",
+  bat: "bat",
+  cmd: "bat",
   ps1: "powershell",
   // 数据库
   sql: "sql",
@@ -48,8 +48,7 @@ const EXT_LANG_MAP: Record<string, string> = {
   md: "markdown",
   markdown: "markdown",
   // 其他
-  dockerfile: "docker",
-  gitignore: "ignore",
+  dockerfile: "dockerfile",
   python: "python",
   py: "python",
   go: "go",
@@ -76,14 +75,14 @@ export function isMarkdown(filename: string): boolean {
   return MD_EXTS.has(getExt(filename));
 }
 
-/** 获取 Prism 语言名，未识别返回 null */
-export function getPrismLang(filename: string): string | null {
+/** 获取 Monaco 语言 ID，未识别返回 "plaintext" */
+export function getMonacoLang(filename: string): string {
   const ext = getExt(filename);
   // 特殊文件名处理
   const base = filename.split("/").pop() ?? filename;
   const lowerBase = base.toLowerCase();
-  if (lowerBase === "dockerfile") return "docker";
-  if (lowerBase === ".gitignore" || lowerBase === ".gitattributes") return "ignore";
+  if (lowerBase === "dockerfile") return "dockerfile";
+  if (lowerBase === ".gitignore" || lowerBase === ".gitattributes") return "plaintext";
   if (lowerBase === "makefile") return "makefile";
-  return EXT_LANG_MAP[ext] ?? null;
+  return EXT_LANG_MAP[ext] ?? "plaintext";
 }

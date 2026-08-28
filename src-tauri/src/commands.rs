@@ -560,6 +560,18 @@ pub async fn git_diff(project_id: String, path: String, staged: bool) -> AppResu
         .map_err(|e| AppError::Other(format!("git diff 任务失败: {}", e)))?
 }
 
+/// 返回 diff 两侧文件内容（供 Monaco DiffEditor 渲染）
+#[tauri::command]
+pub async fn git_diff_versions(
+    project_id: String,
+    path: String,
+    staged: bool,
+) -> AppResult<crate::git::DiffVersions> {
+    tokio::task::spawn_blocking(move || git::diff_versions(&project_id, &path, staged))
+        .await
+        .map_err(|e| AppError::Other(format!("git diff versions 任务失败: {}", e)))?
+}
+
 /// 暂存指定文件
 #[tauri::command]
 pub async fn git_stage(project_id: String, paths: Vec<String>) -> AppResult<()> {

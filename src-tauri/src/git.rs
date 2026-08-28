@@ -757,6 +757,48 @@ pub fn diff(project_id: &str, path: &str, staged: bool) -> AppResult<String> {
     }
 }
 
+/// diff 两侧文件内容（供 Monaco DiffEditor 渲染）
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DiffVersions {
+    /// 原始版本（HEAD 或暂存区）；新增文件为 None
+    pub original: Option<String>,
+    /// 修改后版本（工作区文件内容）
+    pub modified: String,
+}
+
+/// 获取 diff 两侧的文件内容：
+/// - staged=false：original=HEAD 版本，modified=工作区文件
+/// - staged=true：original=HEAD 版本，modified=暂存区版本
+/// 未跟踪文件：original=None，modified=工作区文件
+pub fn diff_versions(project_id: &str, path: &str, staged: bool) -> AppResult<DiffVersions> {
+    let root = repo_root(project_id)?;
+    safe_join(&root, path)?;
+
+    // HEAD 版本（可能与 unstaged/staged 都对比）
+    let head = run_git(&root, &["show", &format!("HEAD:{}", path)])
+        .ok()
+        .map(|o| crate::util::decode_output(&o.stdout));
+
+    let modified = if staged {
+        // 暂存区版本 :0:path
+        run_git(&root, &["show", &format!(":0:{}", path)])
+            .map(|o| crate::util::decode_output(&o.stdout))
+            .unwrap_or_default()
+    } else {
+        // 工作区文件
+        let full = safe_join(&root, path)?;
+        match std::fs::read(&full) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(_) => String::new(),
+        }
+    };
+
+    Ok(DiffVersions {
+        original: head,
+        modified,
+    })
+}
+
 /// 暂存指定文件
 pub fn stage(project_id: &str, paths: &[String]) -> AppResult<()> {
     let root = repo_root(project_id)?;

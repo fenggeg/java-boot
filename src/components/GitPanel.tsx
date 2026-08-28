@@ -1,6 +1,9 @@
-import {useCallback, useEffect, useMemo, useState} from "react";
+import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {App, Button, Empty, Input, Segmented, Spin, Tooltip} from "antd";
 import dayjs from "dayjs";
+import Editor from "@monaco-editor/react";
+import type {editor} from "monaco-editor";
+import {getMonacoTheme, setMonacoTheme} from "../monaco-setup";
 import {
   Check,
   ChevronLeft,
@@ -52,6 +55,7 @@ export default function GitPanel({ project, onClose, onBackFiles }: Props) {
   const [expandedHash, setExpandedHash] = useState<string | null>(null);
   const [showDiff, setShowDiff] = useState<string>("");
   const [diffError, setDiffError] = useState<string | null>(null);
+  const diffEditorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -80,6 +84,16 @@ export default function GitPanel({ project, onClose, onBackFiles }: Props) {
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [refresh]);
+
+  // 主题切换时同步 Monaco diff 编辑器
+  useEffect(() => {
+    const observer = new MutationObserver(() => setMonacoTheme());
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+    return () => observer.disconnect();
+  }, []);
 
   const stagedChanges = useMemo(
     () => (status?.changes ?? []).filter((c) => c.staged),
@@ -486,7 +500,37 @@ export default function GitPanel({ project, onClose, onBackFiles }: Props) {
                          加载 diff 失败: {diffError}
                        </div>
                      ) : showDiff ? (
-                       <pre className="git-history-diff-pre">{showDiff}</pre>
+                       <div style={{height: "40vh"}}>
+                         <Editor
+                           height="100%"
+                           language="diff"
+                           theme={getMonacoTheme()}
+                           value={showDiff}
+                           onMount={(ed) => { diffEditorRef.current = ed; }}
+                           options={{
+                             readOnly: true,
+                             fontSize: 12.5,
+                             fontFamily: "var(--font-mono)",
+                             lineHeight: 20,
+                             lineNumbers: "off",
+                             glyphMargin: false,
+                             minimap: { enabled: false },
+                             folding: false,
+                             scrollBeyondLastLine: false,
+                             wordWrap: "off",
+                             automaticLayout: true,
+                             scrollbar: {
+                               verticalScrollbarSize: 8,
+                               horizontalScrollbarSize: 8,
+                               useShadows: false,
+                             },
+                             padding: { top: 8, bottom: 8 },
+                             renderLineHighlight: "none",
+                             stickyScroll: { enabled: false },
+                             overviewRulerBorder: false,
+                           }}
+                         />
+                       </div>
                      ) : (
                        <Spin size="small" />
                      )}

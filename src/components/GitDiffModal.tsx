@@ -1,9 +1,10 @@
-import {useCallback, useEffect, useMemo, useState} from "react";
+import {useCallback, useEffect, useRef, useState} from "react";
 import {App, Button, Empty, Modal, Segmented, Spin, Tooltip} from "antd";
 import {Check, Edit, X} from "./Icons";
 import * as api from "../api";
 import type {GitChange} from "../types";
 import {gitChangeKind} from "../types";
+import MonacoDiffEditor, {type MonacoDiffEditorHandle} from "./MonacoDiffEditor";
 
 interface Props {
   projectId: string;
@@ -13,32 +14,6 @@ interface Props {
   onChanged: () => void;
 }
 
-/** 简单按行着色的 diff 渲染（+ 绿 / - 红 / 元信息灰 / hunk 蓝） */
-function DiffText({ text }: { text: string }) {
-  const lines = useMemo(() => text.split("\n"), [text]);
-  return (
-    <div className="diff-view">
-      {lines.map((l, i) => {
-        let cls = "diff-line";
-        if (l.startsWith("+") && !l.startsWith("+++")) cls += " add";
-        else if (l.startsWith("-") && !l.startsWith("---")) cls += " del";
-        else if (l.startsWith("@")) cls += " hunk";
-        else if (
-          /^(diff |index |--- |\+\+\+ )/.test(l) ||
-          l.startsWith("new file") ||
-          l.startsWith("deleted file")
-        )
-          cls += " meta";
-        return (
-          <div key={i} className={cls}>
-            <span className="diff-content">{l || " "}</span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 export default function GitDiffModal({
   projectId,
   change,
@@ -46,13 +21,14 @@ export default function GitDiffModal({
   onChanged,
 }: Props) {
   const { message } = App.useApp();
-  const [diffText, setDiffText] = useState("");
+  const [versions, setVersions] = useState<api.DiffVersions | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [staged, setStaged] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [content, setContent] = useState("");
+  const [editContent, setEditContent] = useState("");
   const [saving, setSaving] = useState(false);
+  const diffRef = useRef<MonacoDiffEditorHandle | null>(null);
 
   const isUntracked = change ? gitChangeKind(change) === "untracked" : false;
   const isDeleted = change ? gitChangeKind(change) === "deleted" : false;
@@ -63,18 +39,12 @@ export default function GitDiffModal({
       setError(null);
       try {
         if (gitChangeKind(target) === "untracked") {
-          // 未跟踪文件：合成「整文件新增」diff，与文件树行级标记（全部绿行）一致
+          // 未跟踪文件：original=null（左侧空），modified=工作区文件内容
           const c = await api.gitReadFile(projectId, target.path);
-          const lines = c.split("\n");
-          if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
-          setDiffText(
-            [`diff --git a/${target.path} b/${target.path}`, `+++ b/${target.path}`]
-              .concat(lines.map((l) => `+${l}`))
-              .join("\n")
-          );
+          setVersions({ original: null, modified: c });
         } else {
-          const d = await api.gitDiff(projectId, target.path, useStaged);
-          setDiffText(d || "(无差异)");
+          const v = await api.gitDiffVersions(projectId, target.path, useStaged);
+          setVersions(v);
         }
       } catch (e) {
         setError(api.toErrMsg(e));
@@ -91,7 +61,7 @@ export default function GitDiffModal({
     setStaged(change.staged);
     setEditing(false);
     setError(null);
-    setDiffText("");
+    setVersions(null);
     loadDiff(change, change.staged);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [change, projectId]);
@@ -106,7 +76,7 @@ export default function GitDiffModal({
     if (!change) return;
     try {
       const c = await api.gitReadFile(projectId, change.path);
-      setContent(c);
+      setEditContent(c);
       setEditing(true);
     } catch (e) {
       message.error(`读取文件失败: ${api.toErrMsg(e)}`);
@@ -117,12 +87,12 @@ export default function GitDiffModal({
     if (!change) return;
     setSaving(true);
     try {
-      await api.gitWriteFile(projectId, change.path, content);
+      await api.gitWriteFile(projectId, change.path, editContent);
       message.success("已保存到工作区");
       setEditing(false);
-      // 保存后可能产生新的 unstaged diff，重取并通知父级刷新 status
-      const d = await api.gitDiff(projectId, change.path, false);
-      setDiffText(d || "(无差异)");
+      // 保存后重新加载 diff 并通知父级刷新 status
+      await loadDiff(change, false);
+      setStaged(false);
       onChanged();
     } catch (e) {
       message.error(`保存失败: ${api.toErrMsg(e)}`);
@@ -141,12 +111,12 @@ export default function GitDiffModal({
       open={!!change}
       onCancel={onClose}
       title={title}
-      width={860}
+      width={960}
       footer={null}
       destroyOnClose
       style={{ top: 40 }}
     >
-      {loading && !diffText && !error ? (
+      {loading && !versions && !error ? (
         <div style={{ padding: 60, textAlign: "center" }}>
           <Spin />
         </div>
@@ -172,23 +142,7 @@ export default function GitDiffModal({
                   { label: "已暂存改动", value: "staged" },
                 ]}
               />
-              <Tooltip title="在编辑器中打开该文件（工作区）">
-                <Button
-                  size="small"
-                  icon={<Edit size={13} />}
-                  onClick={startEdit}
-                  disabled={saving}
-                >
-                  编辑文件
-                </Button>
-              </Tooltip>
-            </div>
-          )}
-
-          {editing ? (
-            <div className="diff-editor">
-              <div className="diff-editor-toolbar">
-                <span className="diff-editor-path">{change?.path}</span>
+              {editing ? (
                 <span style={{ display: "flex", gap: 6 }}>
                   <Button
                     size="small"
@@ -208,18 +162,45 @@ export default function GitDiffModal({
                     保存
                   </Button>
                 </span>
-              </div>
-              <textarea
-                className="diff-editor-textarea"
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
-                spellCheck={false}
-                disabled={saving}
+              ) : (
+                <Tooltip title="在编辑器中打开该文件（工作区）">
+                  <Button
+                    size="small"
+                    icon={<Edit size={13} />}
+                    onClick={startEdit}
+                    disabled={saving}
+                  >
+                    编辑文件
+                  </Button>
+                </Tooltip>
+              )}
+            </div>
+          )}
+
+          {editing ? (
+            <div className="git-diff-editor-wrap">
+              <div className="git-diff-editor-path">{change?.path}</div>
+              <MonacoDiffEditor
+                path={change?.path ?? ""}
+                original={versions?.original ?? null}
+                modified={editContent}
+                editable
+                onModifiedChange={setEditContent}
+                height="58vh"
               />
             </div>
           ) : (
-            <div style={{ maxHeight: "60vh", overflow: "auto" }}>
-              <DiffText text={diffText} />
+            <div style={{ height: "58vh" }}>
+              {versions && (
+                <MonacoDiffEditor
+                  path={change?.path ?? ""}
+                  original={versions.original}
+                  modified={versions.modified}
+                  editable={false}
+                  diffEditorRef={diffRef}
+                  height="100%"
+                />
+              )}
             </div>
           )}
         </>

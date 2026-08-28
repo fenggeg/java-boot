@@ -33,6 +33,8 @@ export default defineConfig({
           react: ["react", "react-dom"],
           // Tauri API 层
           tauri: ["@tauri-apps/api", "@tauri-apps/plugin-dialog", "@tauri-apps/plugin-opener"],
+          // Monaco Editor 体积大且独立，独立 chunk 避免主包膨胀
+          monaco: ["monaco-editor", "@monaco-editor/react"],
         },
       },
     },

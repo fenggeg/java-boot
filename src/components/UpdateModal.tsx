@@ -4,7 +4,6 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {ArrowDown, Check, Download, Refresh, Warning} from "./Icons";
 import {checkForUpdate, downloadAndInstall, cancelUpdate, formatSize, relaunchAndInstall, type UpdateInfo,} from "../update";
-import {Prism} from "../prism-langs";
 import {toErrMsg} from "../api";
 
 interface Props {
@@ -20,14 +19,6 @@ interface Props {
  *  error      检查失败（可重试）
  */
 type Phase = "checking" | "available" | "latest" | "error";
-
-function escapeHtml(raw: string): string {
-  return raw
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
 
 export default function UpdateModal({open, onClose}: Props) {
   const {message} = App.useApp();
@@ -133,33 +124,6 @@ export default function UpdateModal({open, onClose}: Props) {
     <div className="file-preview-markdown">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        components={{
-          code({className, children, ...props}) {
-            const match = /language-(\w+)/.exec(className ?? "");
-            if (match) {
-              const lang = match[1] ?? "";
-              const grammar = Prism.languages[lang];
-              const raw = Array.isArray(children)
-                ? children.join("")
-                : String(children ?? "");
-              const html = grammar
-                ? Prism.highlight(raw, grammar, lang)
-                : escapeHtml(raw);
-              return (
-                <code
-                  className={`${className ?? ""} file-md-code`}
-                  dangerouslySetInnerHTML={{__html: html}}
-                  {...props}
-                />
-              );
-            }
-            return (
-              <code className={className} {...props}>
-                {children}
-              </code>
-            );
-          },
-        }}
       >
         {notes}
       </ReactMarkdown>
