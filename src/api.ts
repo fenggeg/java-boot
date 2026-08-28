@@ -4,12 +4,9 @@ import type {
     BatchStartResult,
     FileContent,
     FileEntry,
-    GitCommitInfo,
-    GitStatus,
     JdkInfo,
     MavenInfo,
     Project,
-    PullResult,
     ScannedModule,
     Service,
     ServiceRuntime,
@@ -106,110 +103,6 @@ export const getRuntime = (id: string) =>
 export const getAllRuntimes = () =>
   invoke<ServiceRuntime[]>("get_all_runtimes");
 export const refreshPortConflicts = () => invoke<void>("refresh_port_conflicts");
-
-// ============================ Git ============================
-
-export const gitAvailable = () => invoke<boolean>("git_available");
-export const gitPull = (projectId: string) =>
-  invoke<PullResult>("git_pull", { projectId });
-export const gitPullAndRestart = (projectId: string) =>
-  invoke<PullResult>("git_pull_and_restart", { projectId });
-export const gitPush = (projectId: string) =>
-  invoke<PullResult>("git_push", { projectId });
-export const gitStatus = (projectId: string) =>
-  invoke<GitStatus>("git_status", { projectId });
-export const gitDiff = (projectId: string, path: string, staged: boolean) =>
-  invoke<string>("git_diff", { projectId, path, staged });
-
-/** diff 两侧文件内容（供 Monaco DiffEditor 渲染） */
-export interface DiffVersions {
-  /** 原始版本（HEAD）；新增文件为 null */
-  original: string | null;
-  /** 修改后版本（工作区或暂存区文件内容） */
-  modified: string;
-}
-
-export const gitDiffVersions = (projectId: string, path: string, staged: boolean) =>
-  invoke<DiffVersions>("git_diff_versions", { projectId, path, staged });
-export const gitStage = (projectId: string, paths: string[]) =>
-  invoke<void>("git_stage", { projectId, paths });
-export const gitUnstage = (projectId: string, paths: string[]) =>
-  invoke<void>("git_unstage", { projectId, paths });
-export const gitCommit = (projectId: string, message: string) =>
-  invoke<void>("git_commit", { projectId, message });
-export const gitLog = (projectId: string, limit = 50) =>
-  invoke<GitCommitInfo[]>("git_log", { projectId, limit });
-export const gitShow = (projectId: string, hash: string) =>
-  invoke<string>("git_show", { projectId, hash });
-// 单文件提交历史（--follow 跟随重命名），编辑器「文件历史 / 回滚」浮层用
-export const gitFileLog = (projectId: string, path: string, limit = 100) =>
-  invoke<GitCommitInfo[]>("git_file_log", { projectId, path, limit });
-// 读取指定提交中某文件的内容（历史预览 / 整文件回滚）
-export const gitShowFile = (projectId: string, hash: string, path: string) =>
-  invoke<string>("git_show_file", { projectId, hash, path });
-export const gitReadFile = (projectId: string, path: string) =>
-  invoke<string>("git_read_file", { projectId, path });
-export const gitWriteFile = (
-  projectId: string,
-  path: string,
-  content: string,
-) =>
-  invoke<void>("git_write_file", { projectId, path, content });
-/** HEAD 文件信息 + 行级标记抑制标志（ignored / skip-worktree 时 suppress=true） */
-export interface FileHeadInfo {
-  /** HEAD 中内容；未跟踪 / 不在 HEAD 为 null */
-  head: string | null;
-  /** true = 不显示行级 diff 标记（与 Git 面板口径一致） */
-  suppress: boolean;
-}
-
-/// 读取 HEAD 中某文件内容（含 ignored / skip-worktree 抑制判定），用于行级 diff
-export const gitFileHead = (projectId: string, path: string) =>
-  invoke<FileHeadInfo>("git_file_head", { projectId, path });
-/// 工作区 vs HEAD 的 diff hunk（unified=0，与 Git 面板同引擎）
-export const gitDiffHunks = (projectId: string, path: string) =>
-  invoke<{new_start: number; new_lines: number; del_lines: number}[]>(
-    "git_diff_hunks",
-    { projectId, path }
-  );
-
-// ---- 冲突合并 ----
-
-/** 冲突文件三方版本 */
-export interface ConflictVersions {
-  /** 共同祖先（双方新增时为 null） */
-  base: string | null;
-  /** 本地版本 */
-  ours: string;
-  /** 远程版本 */
-  theirs: string;
-}
-
-/** 冲突文件三方内容（base / ours / theirs） */
-export const gitConflictVersions = (projectId: string, path: string) =>
-  invoke<ConflictVersions>("git_conflict_versions", { projectId, path });
-
-/** 快捷采用某侧解决冲突：ours / theirs / both */
-export const gitResolveSide = (
-  projectId: string,
-  path: string,
-  side: "ours" | "theirs" | "both"
-) => invoke<void>("git_resolve_side", { projectId, path, side });
-
-/** 标记冲突已解决：写回编辑后的内容并暂存 */
-export const gitMarkResolved = (
-  projectId: string,
-  path: string,
-  content: string
-) => invoke<void>("git_mark_resolved", { projectId, path, content });
-
-/** 全部冲突解决后完成合并提交（message 为空用默认合并信息） */
-export const gitCompleteMerge = (projectId: string, message?: string | null) =>
-  invoke<void>("git_complete_merge", { projectId, message: message ?? null });
-
-/** 中止本次合并，恢复合并前状态 */
-export const gitAbortMerge = (projectId: string) =>
-  invoke<void>("git_abort_merge", { projectId });
 
 // ============================ Files（项目文件浏览/编辑） ============================
 

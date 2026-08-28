@@ -68,7 +68,7 @@ where
 
 // ============================ Project CRUD ============================
 
-const PROJECT_COLS: &str = "id, name, root_path, git_available, java_home, maven_home, env_vars, created_at";
+const PROJECT_COLS: &str = "id, name, root_path, java_home, maven_home, env_vars, created_at";
 
 macro_rules! row_to_project {
     ($row:expr) => {
@@ -76,11 +76,10 @@ macro_rules! row_to_project {
             id: $row.get(0)?,
             name: $row.get(1)?,
             root_path: $row.get(2)?,
-            git_available: $row.get::<_, i64>(3)? != 0,
-            java_home: $row.get(4)?,
-            maven_home: $row.get(5)?,
-            env_vars: $row.get(6)?,
-            created_at: $row.get(7)?,
+            java_home: $row.get(3)?,
+            maven_home: $row.get(4)?,
+            env_vars: $row.get(5)?,
+            created_at: $row.get(6)?,
         }
     };
 }
@@ -107,12 +106,11 @@ pub fn get_project(id: &str) -> AppResult<Project> {
     })
 }
 
-pub fn insert_project(name: &str, root_path: &str, git_available: bool) -> AppResult<Project> {
+pub fn insert_project(name: &str, root_path: &str) -> AppResult<Project> {
     let project = Project {
         id: Uuid::new_v4().to_string(),
         name: name.to_string(),
         root_path: root_path.to_string(),
-        git_available,
         java_home: None,
         maven_home: None,
         env_vars: None,
@@ -120,9 +118,9 @@ pub fn insert_project(name: &str, root_path: &str, git_available: bool) -> AppRe
     };
     with_conn(|conn| {
         conn.execute(
-            "INSERT INTO projects (id, name, root_path, git_available, java_home, maven_home, env_vars, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO projects (id, name, root_path, java_home, maven_home, env_vars, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
-                project.id, project.name, project.root_path, project.git_available as i32,
+                project.id, project.name, project.root_path,
                 project.java_home, project.maven_home, project.env_vars, project.created_at
             ],
         )?;

@@ -1,12 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-/// 项目（Project）— 分组 + Git 单元
+/// 项目（Project）— 分组单元
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub id: String,
     pub name: String,
     pub root_path: String,
-    pub git_available: bool,
     /// 项目级 JDK 路径（覆盖系统 JAVA_HOME），None 则用系统默认
     pub java_home: Option<String>,
     /// 项目级 Maven 路径（MAVEN_HOME），None 则用 mvnw 或系统 PATH

@@ -7,6 +7,21 @@
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-08-28
+
+### 变更
+
+- **移除 Git 功能**：彻底删除项目内所有 Git 相关功能（前端 + 后端），包括 Git 工作区面板（状态/暂存/提交/历史/Diff）、文件树 Git 状态着色与目录聚合改动计数、编辑器行级 diff 标记条与 glyph margin 装饰、文件历史/回滚浮层、Git 拉取与拉取后重启、TopBar 的 Git 可用性检测提示
+- **后端清理**：删除 `git.rs` 模块及 `lib.rs` 中全部 Git 命令注册；`commands.rs` 移除 Git 命令区块、`add_project` 中 `find_git_root`/`git_available` 探测、`add_service` 中 Git 归属逻辑（改为 `project_id = None`）、`delete_project` 中 `Pulling` 状态检查；`db/models.rs` 移除 `Project.git_available` 字段；`db/mod.rs` 同步 CRUD 与列投影；`pom/mod.rs` 删除 `find_git_root`；`error.rs` 删除 `AppError::Git` 变体
+- **前端清理**：删除 `GitPanel`/`GitDiffModal`/`GitConflictModal`/`MonacoDiffEditor` 组件；`FilePanel.tsx` 移除全部 Git 集成（状态表、行级 diff、历史浮层、回滚、快速操作条）；`MonacoCodeEditor.tsx` 移除 diff glyph margin 装饰相关 props 与逻辑（`glyphMargin` 改为 false）；`Icons.tsx` 删除 GitPull/GitPush/GitPullRestart/GitBranch/History 图标；`TopBar.tsx` 移除 Git 不可用提示；`LogViewer.tsx` 移除 `sourceClass` 的 git 分支；`api.ts`/`types.ts`/`store.ts`/`App.tsx` 清理全部 Git API、类型与状态
+- **样式清理**：`styles.css` 删除约 940 行 Git 相关样式（git-panel、文件树 Git 着色、glyph margin diff 装饰、git-quick-bar、git-hist 浮层、tree-lines、git-conflict 等）
+- **数据库兼容**：`db/schema.rs` 保留 `git_available` 列定义（v1 migration 兼容旧库，列有 DEFAULT 0），model/CRUD 不再读写；`ServiceStatus::Pulling` enum 变体保留（序列化兼容）
+
+### 优化
+
+- **文件浏览器精简**：移除 Git 集成后，文件树、标签栏、编辑器工具栏不再渲染 Git 状态标记与行级 diff，界面更聚焦于文件浏览与编辑本身
+- **README 更新**：移除 Git 工作区面板章节、文件浏览器 Git 着色/diff 标记条描述、项目结构中的 `GitPanel.tsx`/`git.rs`、FAQ 中 Git 相关问答
+
 ## [0.12.1] - 2026-08-28
 
 ### 修复
@@ -307,7 +322,10 @@
 
 - 基于 Tauri 2 + React + Zustand 构建，Windows x64 NSIS 安装器（免管理员权限）
 
-[Unreleased]: https://github.com/fenggeg/java-boot/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/fenggeg/java-boot/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/fenggeg/java-boot/compare/v0.12.1...v0.13.0
+[0.12.1]: https://github.com/fenggeg/java-boot/compare/v0.12.0...v0.12.1
+[0.12.0]: https://github.com/fenggeg/java-boot/compare/v0.1.2...v0.12.0
 [0.1.2]: https://github.com/fenggeg/java-boot/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/fenggeg/java-boot/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/fenggeg/java-boot/releases/tag/v0.1.0

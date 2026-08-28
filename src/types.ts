@@ -4,7 +4,6 @@ export interface Project {
   id: string;
   name: string;
   root_path: string;
-  git_available: boolean;
   java_home: string | null;
   maven_home: string | null;
   /** 项目级环境变量 JSON：`[{"key":"FOO","value":"bar"}]`，注入到该项目下所有服务子进程 */
@@ -99,13 +98,6 @@ export interface ScannedModule {
   children: ScannedModule[];
 }
 
-export interface PullResult {
-  project_id: string;
-  success: boolean;
-  up_to_date: boolean;
-  message: string;
-}
-
 // ============================ Files（项目文件浏览/编辑） ============================
 
 /** 项目根目录下的单层目录条目 */
@@ -127,93 +119,9 @@ export interface FileContent {
   size: number;
 }
 
-// ============================ Git ============================
-
-/** 单个文件改动（git status --porcelain 的 XY 状态） */
-export interface GitChange {
-  path: string;
-  old_path: string | null;
-  /** 暂存区状态码：`M`/`A`/`D`/`R`/`C`/`U`/`?`/` ` */
-  x: string;
-  /** 工作区状态码 */
-  y: string;
-  staged: boolean;
-  tracked: boolean;
-}
-
-/** 项目工作区状态 */
-export interface GitStatus {
-  branch: string | null;
-  ahead: number;
-  behind: number;
-  /** 是否处于合并中（存在待解决的冲突） */
-  merging: boolean;
-  changes: GitChange[];
-}
-
-/** 提交记录 */
-export interface GitCommitInfo {
-  hash: string;
-  short_hash: string;
-  author: string;
-  date: string;
-  message: string;
-}
-
-export type GitChangeKind =
-  | "added"
-  | "modified"
-  | "deleted"
-  | "renamed"
-  | "untracked"
-  | "conflict";
-
-/** 由 X/Y 状态码归一化为前端展示类型 */
-export function gitChangeKind(c: GitChange): GitChangeKind {
-  const code = c.x === " " ? c.y : c.x;
-  if (code === "?") return "untracked";
-  if (code === "A") return "added";
-  if (code === "D") return "deleted";
-  if (code === "R" || code === "C") return "renamed";
-  if (code === "U") return "conflict";
-  return "modified";
-}
-
-/**
- * 判定改动是否为合并冲突状态（porcelain v1 冲突码对）：
- * UU 双方修改、AA 双方新增、DD 双方删除、AU/UA/DU/UD 单侧删除或新增
- */
-export function isConflictChange(c: GitChange): boolean {
-  const x = c.x;
-  const y = c.y;
-  return (
-    x === "U" ||
-    y === "U" ||
-    (x === "A" && y === "A") ||
-    (x === "D" && y === "D")
-  );
-}
-
-// ============================ 文件树 / 编辑器 Git 状态标记 ============================
-
-/** 文件树与编辑器使用的归一化 git 状态：与 GitChangeKind 完全同源，
- *  保证文件树标记与 Git 面板徽标归类一致 */
-export type FileGitStatus = GitChangeKind;
-
-/** 目录聚合状态（含子孙所有改动的并集） */
-export interface DirGitAgg {
-  modified: boolean;
-  added: boolean;
-  deleted: boolean;
-  renamed: boolean;
-  conflict: boolean;
-  /** 该目录下改动条目总数 */
-  count: number;
-}
-
 export interface LogLine {
   service_id: string;
-  source: string; // [app] [mvn] [git]
+  source: string; // [app] [mvn]
   line: string;
   ts: string;
 }

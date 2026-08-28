@@ -7,7 +7,6 @@ import {STATUS_META} from "./types";
 import TopBar from "./components/TopBar";
 import ServiceList from "./components/ServiceList";
 import LogViewer from "./components/LogViewer";
-import GitPanel from "./components/GitPanel";
 import FilePanel from "./components/FilePanel";
 import AddProjectModal from "./components/AddProjectModal";
 import AddServiceModal from "./components/AddServiceModal";
@@ -44,9 +43,8 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     return localStorage.getItem("javaboot:sidebarCollapsed") === "1";
   });
-  // 右侧主视图：日志（默认）、Git 面板或文件浏览器
-  const [view, setView] = useState<"logs" | "git" | "files">("logs");
-  const [gitProjectId, setGitProjectId] = useState<string | null>(null);
+  // 右侧主视图：日志（默认）或文件浏览器
+  const [view, setView] = useState<"logs" | "files">("logs");
   const [fileProjectId, setFileProjectId] = useState<string | null>(null);
   // Tab 右键菜单上下文
   const [contextMenu, setContextMenu] = useState<{
@@ -107,12 +105,6 @@ export default function App() {
     });
   }, []);
 
-  // 打开某项目的 Git 面板
-  const handleOpenGit = useCallback((project: Project) => {
-    setGitProjectId(project.id);
-    setView("git");
-  }, []);
-
   // 打开某项目的文件浏览器
   const handleOpenFiles = useCallback((project: Project) => {
     setFileProjectId(project.id);
@@ -124,17 +116,13 @@ export default function App() {
     if (selectedServiceId) setView("logs");
   }, [selectedServiceId]);
 
-  // 项目被删除时关闭对应的 Git 面板 / 文件浏览器
+  // 项目被删除时关闭对应的文件浏览器
   useEffect(() => {
-    if (gitProjectId && !projects.some((p) => p.id === gitProjectId)) {
-      setGitProjectId(null);
-      setView("logs");
-    }
     if (fileProjectId && !projects.some((p) => p.id === fileProjectId)) {
       setFileProjectId(null);
       setView("logs");
     }
-  }, [projects, gitProjectId, fileProjectId]);
+  }, [projects, fileProjectId]);
 
   // Tab 右键菜单处理
   const handleContextMenu = useCallback((e: React.MouseEvent, serviceId: string) => {
@@ -278,22 +266,6 @@ export default function App() {
           ) : null}
 
           {(() => {
-            // Git / 文件面板常驻挂载，仅切换可见性：
-            // 从文件面板切到 Git 再切回时保留目录展开、打开的文件标签等状态
-            const gitProject = projects.find((p) => p.id === gitProjectId);
-            if (!gitProject) return null;
-            return (
-              <div className={`view-slot ${view === "git" ? "" : "hidden"}`}>
-                <GitPanel
-                  project={gitProject}
-                  onClose={() => setView("logs")}
-                  onBackFiles={() => setView("files")}
-                />
-              </div>
-            );
-          })()}
-
-          {(() => {
             const fileProject = projects.find((p) => p.id === fileProjectId);
             if (!fileProject) return null;
             return (
@@ -302,7 +274,6 @@ export default function App() {
                   project={fileProject}
                   visible={view === "files"}
                   onClose={() => setView("logs")}
-                  onOpenGit={handleOpenGit}
                 />
               </div>
             );

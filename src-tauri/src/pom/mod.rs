@@ -236,16 +236,3 @@ pub fn flatten_modules(modules: &[ScannedModule]) -> Vec<ScannedModule> {
     }
     out
 }
-
-/// 从某路径向上查找 .git 目录，返回仓库根
-pub fn find_git_root(start: &Path) -> Option<PathBuf> {
-    let mut cur = start.to_path_buf();
-    loop {
-        if cur.join(".git").exists() {
-            return Some(cur);
-        }
-        if !cur.pop() {
-            return None;
-        }
-    }
-}

@@ -20,7 +20,6 @@ interface Store {
   selectedServiceId: string | null;
   /** 已打开的日志 Tab (IDE-like)，按打开顺序；只有在这里的 service 才会在日志区顶部显示 Tab */
   openedTabs: string[];
-  gitAvailable: boolean;
   loading: boolean;
   /** 初始化失败时的错误信息，UI 据此展示提示 */
   initError: string | null;
@@ -137,19 +136,17 @@ export const useStore = create<Store>((set, get) => {
   },
   selectedServiceId: null,
   openedTabs: loadOpenedTabs(),
-  gitAvailable: false,
   loading: false,
   initError: null,
 
   init: async () => {
     set({ loading: true, initError: null });
     try {
-      const [projects, services, runtimes, config, gitOk] = await Promise.all([
+      const [projects, services, runtimes, config] = await Promise.all([
         api.listProjects(),
         api.listServices(),
         api.getAllRuntimes(),
         api.getConfig(),
-        api.gitAvailable(),
       ]);
       const rtMap: Record<string, ServiceRuntime> = {};
       for (const r of runtimes) rtMap[r.service_id] = r;
@@ -189,7 +186,6 @@ export const useStore = create<Store>((set, get) => {
         runtimes: rtMap,
         logs: logMap,
         config,
-        gitAvailable: gitOk,
         loading: false,
         selectedServiceId: openedTabs[0] ?? null,
         openedTabs,

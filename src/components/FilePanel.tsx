@@ -5,7 +5,6 @@ import remarkGfm from "remark-gfm";
 import {convertFileSrc} from "@tauri-apps/api/core";
 import {isMarkdown} from "../languages";
 import {
-  ArrowDown,
   Binary,
   CaretDown,
   CaretRight,
@@ -16,8 +15,6 @@ import {
   File,
   Folder,
   FolderOpen,
-  GitBranch,
-  History,
   Image as ImageIcon,
   Save,
   Scissors,
@@ -25,15 +22,7 @@ import {
   X,
 } from "./Icons";
 import * as api from "../api";
-import type {
-  DirGitAgg,
-  FileContent,
-  FileGitStatus,
-  GitChange,
-  GitCommitInfo,
-  Project,
-} from "../types";
-import {gitChangeKind} from "../types";
+import type {FileContent, Project} from "../types";
 import TerminalView from "./TerminalView";
 import MonacoCodeEditor from "./MonacoCodeEditor";
 import type {MonacoCodeEditorHandle} from "./MonacoCodeEditor";
@@ -41,16 +30,9 @@ import type {MonacoCodeEditorHandle} from "./MonacoCodeEditor";
 interface Props {
   project: Project;
   onClose: () => void;
-  /** 打开同项目的 Git 工作区面板 */
-  onOpenGit: (project: Project) => void;
-  /** 面板是否可见（重新可见时刷新 git 状态） */
+  /** 面板是否可见（重新可见时刷新文件树） */
   visible?: boolean;
 }
-
-/** 代码区行高（px）：视图 / 编辑底层 / 输入层必须一致，diff 标记按此定位 */
-const LINE_H = 22;
-/** 代码区顶部内边距（px），与 CSS 保持一致 */
-const GUTTER_PAD = 12;
 
 // ================================================================
 // 文件类型分类
@@ -135,194 +117,6 @@ interface QuickHit {
   dir: string;
   /** 排序分：越小越靠前 */
   score: number;
-}
-
-/** 由 porcelain 记录归一化状态：与 Git 面板共用 gitChangeKind，保证两处归类一致 */
-function classifyChange(ch: GitChange): FileGitStatus {
-  return gitChangeKind(ch);
-}
-
-/**
- * 行级 diff 标记：0=未变 1=修改 2=新增
- * 3=删除：该位置上方相对 HEAD 有行被移除（缓冲区中已无对应行），
- * 标记画在删除点之后的第一行上，与 Git 面板的「-N」口径对应
- */
-export type LineKind = 0 | 1 | 2 | 3;
-
-/** 行比较的归一化：忽略行尾 CR，抵消 core.autocrlf 的 CRLF/LF 差异 */
-function normLine(l: string): string {
-  return l.endsWith("\r") ? l.slice(0, -1) : l;
-}
-
-/**
- * 统一缓冲区换行为 LF，并记录磁盘原始 EOL。
- * 受控 textarea 的 DOM 值会被浏览器强制归一化为 LF：state 里保留 CRLF 会让
- * value prop 与 DOM 值永久不一致，任何一次无关 re-render（CPU 监控等每秒刷新）
- * 都会触发 React 重写 textarea.value，打断光标位置与输入法组合，
- * 表现为插入内容落在光标错位处。缓冲区内一律 LF，保存时按记录的 EOL 还原。
- */
-function toBufferEol(raw: string): { content: string; eol: "\n" | "\r\n" } {
-  if (raw.includes("\r\n")) {
-    return { content: raw.replace(/\r\n?/g, "\n"), eol: "\r\n" };
-  }
-  return { content: raw.replace(/\r/g, "\n"), eol: "\n" };
-}
-
-/**
- * 单个差异块的块级映射（HEAD 行区间 ↔ 缓冲区行区间）：
- * 撤销本块时，把缓冲区 [bufStart, bufStart+addN) 替换回
- * HEAD 的 [headStart, headStart+delN) 即可精确还原本块。
- */
-export interface DiffBlock {
-  /** 缓冲区中新增行的起始行号（纯删除块为删除点后第一行） */
-  bufStart: number;
-  /** 缓冲区中被新增/修改的行数 */
-  addN: number;
-  /** HEAD 中被该块替换的起始行号 */
-  headStart: number;
-  /** HEAD 中被删除的行数 */
-  delN: number;
-}
-
-interface DiffResult {
-  kinds: LineKind[];
-  blocks: DiffBlock[];
-}
-
-/**
- * 行级 LCS diff（HEAD 内容 → 当前编辑器内容），返回与编辑器行号精确对齐的标记，
- * 以及用于「撤销此更改」的块级映射。不再使用 git hunk 行号映射磁盘文件——那在
- * 缓冲区与磁盘不一致（未保存编辑、外部修改）时整体错位。这里直接对显示中的内容
- * 做 diff，位置永远正确。
- * 策略：公共前后缀裁剪 + 中间区 suffix-DP 正向贪心；中间区过大时降级为整段「修改」
- * （此时无法给出精确块映射，blocks 为空）。
- */
-function diffLineKinds(head: string, buf: string): DiffResult {
-  const a = head.split("\n");
-  const b = buf.split("\n");
-  const kinds: LineKind[] = new Array(b.length).fill(0);
-  const blocks: DiffBlock[] = [];
-  let pre = 0;
-  while (
-    pre < a.length &&
-    pre < b.length &&
-    normLine(a[pre]!) === normLine(b[pre]!)
-  ) {
-    pre++;
-  }
-  let suf = 0;
-  while (
-    suf < a.length - pre &&
-    suf < b.length - pre &&
-    normLine(a[a.length - 1 - suf]!) === normLine(b[b.length - 1 - suf]!)
-  ) {
-    suf++;
-  }
-  const am = a.length - pre - suf;
-  const bm = b.length - pre - suf;
-  if (bm === 0) {
-    // 纯删除：缓冲区无行可标，删除条落在紧随删除点的第一行（贴文件尾则用最后一行）
-    if (am > 0 && b.length > 0) {
-      const at = Math.min(pre, b.length - 1);
-      kinds[at] = 3;
-      // 还原插入点用真实行号 pre（可能等于 b.length，表示补回文件尾），不做钳制
-      blocks.push({bufStart: pre, addN: 0, headStart: pre, delN: am});
-    }
-    return {kinds, blocks};
-  }
-  if (am === 0) {
-    // 纯新增
-    for (let i = pre; i < pre + bm; i++) kinds[i] = 2;
-    blocks.push({bufStart: pre, addN: bm, headStart: pre, delN: 0});
-    return {kinds, blocks};
-  }
-  if (am * bm > 1_600_000) {
-    // 差异区过大：整段标为修改（位置仍精确，只是不细分橙/绿，也不提供块操作）
-    for (let i = pre; i < pre + bm; i++) kinds[i] = 1;
-    return {kinds, blocks};
-  }
-  // 中间区 suffix-DP（dp[i][j] = a[i..] 与 b[j..] 的 LCS 长度），
-  // 随后从左上角正向贪心走位。不能用「前向填表+箭头回溯」：
-  // 在重复行密集的配置文件里它会选中合法但劣质的最长公共子序列——
-  // 把分散的多处变更挤成一段连续块、行号整体漂移（实测 yml 三段变一段）。
-  // 正向走位每步优先消费相同行、并列时先删除后新增，分块与 git diff 一致。
-  const m = am;
-  const n = bm;
-  const dp: Uint32Array[] = Array.from({length: m + 1}, () => new Uint32Array(n + 1));
-  for (let i = m - 1; i >= 0; i--) {
-    const av = normLine(a[pre + i]!);
-    const row = dp[i]!;
-    const next = dp[i + 1]!;
-    for (let j = n - 1; j >= 0; j--) {
-      row[j] =
-        av === normLine(b[pre + j]!)
-          ? next[j + 1]! + 1
-          : Math.max(next[j]!, row[j + 1]!);
-    }
-  }
-  // 正向收集操作序列（0=HEAD侧删除 1=缓冲区新增 2=相同），再按连续块正向分配：
-  // 每个差异块内前 min(删,增) 个新增行标为「修改」，其余为「新增」（与 git hunk 口径一致）
-  const ops: number[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < m && j < n) {
-    if (normLine(a[pre + i]!) === normLine(b[pre + j]!)) {
-      ops.push(2);
-      i++;
-      j++;
-    } else if (dp[i + 1]![j]! >= dp[i]![j + 1]!) {
-      ops.push(0);
-      i++;
-    } else {
-      ops.push(1);
-      j++;
-    }
-  }
-  while (i < m) {
-    ops.push(0);
-    i++;
-  }
-  while (j < n) {
-    ops.push(1);
-    j++;
-  }
-  // 正向走位得到的已是文档顺序，无需翻转（旧的箭头回溯从尾部出发才需要）
-  let row = pre;
-  let hi = pre; // HEAD 中间区当前行号，与缓冲区行号并行推进
-  let t = 0;
-  while (t < ops.length) {
-    const op = ops[t]!;
-    if (op === 2) {
-      // 相同行占缓冲区一行，必须推进标记行号，否则后续差异块整体上移
-      row++;
-      hi++;
-      t++;
-      continue;
-    }
-    let delN = 0;
-    let addN = 0;
-    let t2 = t;
-    while (t2 < ops.length && ops[t2] !== 2) {
-      if (ops[t2] === 0) delN++;
-      else addN++;
-      t2++;
-    }
-    const modN = Math.min(delN, addN);
-    for (let k = 0; k < addN; k++) {
-      kinds[row + k] = k < modN ? 1 : 2;
-    }
-    blocks.push({bufStart: row, addN, headStart: hi, delN});
-    row += addN;
-    hi += delN;
-    // 块内净删除：在该差异块缓冲区末行的下一行标「删除」（EOF 处贴最后一行）；
-    // 目标行只会是后续公共行或尾缀行（kind 0），不会覆盖已打的修改/新增
-    if (delN > addN) {
-      const target = Math.min(row, b.length - 1);
-      if (kinds[target] === 0) kinds[target] = 3;
-    }
-    t = t2;
-  }
-  return {kinds, blocks};
 }
 
 /** 紧凑路径最大合并层数（防止极端深目录导致请求风暴） */
@@ -449,33 +243,12 @@ interface DndHandlers {
   onDropInto: (targetDir: string) => void;
 }
 
-/** 目录聚合状态 → 展示优先级（冲突 > 红 > 紫 > 橙 > 绿） */
-function dirStatusClass(agg?: DirGitAgg): string {
-  if (!agg || agg.count === 0) return "";
-  if (agg.conflict) return "gs-conflict";
-  if (agg.deleted) return "gs-deleted";
-  if (agg.modified) return "gs-modified";
-  if (agg.renamed) return "gs-renamed";
-  if (agg.added) return "gs-added";
-  return "";
-}
-
-/** 状态中文名（编辑器徽标用），与 Git 面板 KIND_META 文案一致 */
-function statusLabel(k: FileGitStatus): string {
-  switch (k) {
-    case "added":
-      return "新增";
-    case "untracked":
-      return "未跟踪";
-    case "deleted":
-      return "已删除";
-    case "renamed":
-      return "重命名";
-    case "conflict":
-      return "冲突";
-    default:
-      return "已修改";
+/** 把磁盘原始内容归一化为 LF 缓冲区 + 记录原 EOL 风格 */
+function toBufferEol(raw: string): { content: string; eol: "\n" | "\r\n" } {
+  if (raw.includes("\r\n")) {
+    return { content: raw.replace(/\r\n?/g, "\n"), eol: "\r\n" };
   }
+  return { content: raw.replace(/\r/g, "\n"), eol: "\n" };
 }
 
 /** 取路径的目录部分（无分隔符时为空串） */
@@ -492,8 +265,6 @@ function TreeRow({
   onToggle,
   onContextMenu,
   dnd,
-  statusFor,
-  statsFor,
 }: {
   node: FileTreeNode;
   depth: number;
@@ -502,12 +273,7 @@ function TreeRow({
   onToggle: (path: string) => void;
   onContextMenu: (e: React.MouseEvent, path: string, isDir: boolean) => void;
   dnd: DndHandlers;
-  /** 节点 → git 状态查找（文件返回 kind，目录返回聚合 agg） */
-  statusFor: (node: FileTreeNode) => { kind?: FileGitStatus; agg?: DirGitAgg };
-  /** 路径 → ±行数统计（git diff 聚合，异步到达） */
-  statsFor?: (path: string) => {a: number; d: number} | undefined;
 }) {
-  const gs = statusFor(node);
   const [dropHover, setDropHover] = useState(false);
   const isActive = activePath === node.path;
 
@@ -535,7 +301,6 @@ function TreeRow({
   };
 
   if (node.isDir) {
-    const aggClass = dirStatusClass(gs.agg);
     return (
       <>
         <div
@@ -569,15 +334,10 @@ function TreeRow({
               <CaretRight size={10} />
             )}
           </span>
-          <span className={`file-tree-icon folder ${aggClass}`}>
+          <span className="file-tree-icon folder">
             <Folder size={14} />
           </span>
-          <span className={`file-tree-name ${aggClass}`}>{node.name}</span>
-          {gs.agg && gs.agg.count > 0 && (
-            <span className={`file-tree-badge ${aggClass}`}>
-              {gs.agg.count}
-            </span>
-          )}
+          <span className="file-tree-name">{node.name}</span>
         </div>
         {node.expanded && node.children && node.children.length > 0 && (
           <div className="file-tree-children">
@@ -591,8 +351,6 @@ function TreeRow({
                 onToggle={onToggle}
                 onContextMenu={onContextMenu}
                 dnd={dnd}
-                statusFor={statusFor}
-                statsFor={statsFor}
               />
             ))}
           </div>
@@ -618,30 +376,7 @@ function TreeRow({
     >
       <span className="file-tree-caret" />
       <FileTypeIcon name={node.name} size={14} />
-      <span className={`file-tree-name ${gs.kind ? `gs-${gs.kind}` : ""}`}>
-        {node.name}
-      </span>
-      {gs.kind &&
-        (() => {
-          const s = statsFor?.(node.path);
-          if (s && (s.a > 0 || s.d > 0)) {
-            return (
-              <span
-                className="tree-lines"
-                title={`${statusLabel(gs.kind)}：+${s.a} / -${s.d} 行`}
-              >
-                {s.a > 0 && <b className="la">+{s.a}</b>}
-                {s.d > 0 && <b className="ld">-{s.d}</b>}
-              </span>
-            );
-          }
-          return (
-            <span
-              className={`file-tree-dot dot-${gs.kind}`}
-              title={statusLabel(gs.kind)}
-            />
-          );
-        })()}
+      <span className="file-tree-name">{node.name}</span>
     </div>
   );
 }
@@ -652,7 +387,6 @@ function TreeRow({
 export default function FilePanel({
   project,
   onClose,
-  onOpenGit,
   visible = true,
 }: Props) {
   const { message, modal } = App.useApp();
@@ -700,49 +434,6 @@ export default function FilePanel({
   );
   const [draggingPath, setDraggingPath] = useState<string | null>(null);
 
-  // Git 状态标记：文件级状态 + 目录聚合状态
-  const [statusMap, setStatusMap] = useState<Map<string, FileGitStatus>>(
-    new Map()
-  );
-  const [dirAgg, setDirAgg] = useState<Map<string, DirGitAgg>>(new Map());
-  const gitTimerRef = useRef<number | undefined>(undefined);
-  // 变更文件 ± 行数统计（git diff hunks 聚合）：路径 → {新增, 删除}
-  const [lineStats, setLineStats] = useState<
-    Map<string, {a: number; d: number}>
-  >(new Map());
-  const lineStatSeqRef = useRef(0);
-
-  // 行级 diff 标记（工作区内容 vs HEAD）：与激活文件行号对齐
-  const [lineKinds, setLineKinds] = useState<LineKind[] | null>(null);
-  /** 当前 diff 的块级映射（与 lineKinds 同步刷新），供撤销本块 / 变更间跳转使用 */
-  const diffBlocksRef = useRef<DiffBlock[]>([]);
-  /** 最近一次拉取到的 HEAD 内容（撤销本块 / 复制原文用） */
-  const headContentRef = useRef<string | null>(null);
-  /**
-   * 标记条弹层：quick = IDEA 式快捷操作条（↑↓ 切换 / 撤销本块 / 复制原文 / 历史），
-   * hist = 文件历史浮层；line 为触发行（0 基）
-   */
-  const [markerPanel, setMarkerPanel] = useState<{
-    type: "quick" | "hist";
-    line: number;
-  } | null>(null);
-
-  // ================================================================
-  // 文件历史 / 回滚浮层（点击左缘 diff 标记条唤起，交互类似 IDEA 的行标记历史）
-  // ================================================================
-  /** 浮层锚点：触发行的下标（0 基）；null=关闭 */
-  const [histLoading, setHistLoading] = useState(false);
-  const [histErr, setHistErr] = useState<string | null>(null);
-  const [histCommits, setHistCommits] = useState<GitCommitInfo[]>([]);
-  /** 预览中的提交 */
-  const [histPreviewHash, setHistPreviewHash] = useState<string | null>(null);
-  const [histPreviewLoading, setHistPreviewLoading] = useState(false);
-  const [histPreviewText, setHistPreviewText] = useState("");
-  /** 回滚二次确认 armed 的提交哈希（3 秒未确认自动复位） */
-  const [rollbackArm, setRollbackArm] = useState<string | null>(null);
-  // diff 刷新序号：保存成功 / 面板重新可见时递增，强制重算行标记
-  const [diffRev, setDiffRev] = useState(0);
-
   // 集成终端抽屉
   const [termOpen, setTermOpen] = useState(false);
   const [termHeight, setTermHeight] = useState<number>(() => {
@@ -764,136 +455,14 @@ export default function FilePanel({
     [tabs, activePath]
   );
 
-  /** 激活文件的 git 状态（编辑器徽标用） */
-  const activeGitKind = useMemo(
-    () => (activeTab ? statusMap.get(activeTab.path) : undefined),
-    [activeTab, statusMap]
-  );
-
   // 切换激活标签时回到查看模式
   useEffect(() => {
     setViewMode("view");
   }, [activePath]);
 
-  // ================================================================
-  // Git 状态：文件树 / 标签栏着色 + 目录聚合计数
-  // ================================================================
-
-  /** 拉取 git status 并构建 文件状态表 / 目录聚合表 */
-  const refreshGitStatus = useCallback(async () => {
-    if (!project.git_available) {
-      setStatusMap((prev) => (prev.size ? new Map() : prev));
-      setDirAgg((prev) => (prev.size ? new Map() : prev));
-      return;
-    }
-    try {
-      const st = await api.gitStatus(project.id);
-      const fmap = new Map<string, FileGitStatus>();
-      const dmap = new Map<string, DirGitAgg>();
-      const bump = (rel: string) => {
-        let agg = dmap.get(rel);
-        if (!agg) {
-          agg = {
-            modified: false,
-            added: false,
-            deleted: false,
-            renamed: false,
-            conflict: false,
-            count: 0,
-          };
-          dmap.set(rel, agg);
-        }
-        return agg;
-      };
-      for (const ch of st.changes) {
-        if (fmap.has(ch.path)) continue;
-        const kind = classifyChange(ch);
-        fmap.set(ch.path, kind);
-        // 根目录与所有祖先目录聚合
-        const rootAgg = bump("");
-        rootAgg.count++;
-        if (kind === "modified") rootAgg.modified = true;
-        else if (kind === "deleted") rootAgg.deleted = true;
-        else if (kind === "renamed") rootAgg.renamed = true;
-        else if (kind === "conflict") rootAgg.conflict = true;
-        else rootAgg.added = true;
-        const segs = ch.path.split("/");
-        segs.pop();
-        let cur = "";
-        for (const s of segs) {
-          cur = cur ? `${cur}/${s}` : s;
-          const agg = bump(cur);
-          agg.count++;
-          if (kind === "modified") agg.modified = true;
-          else if (kind === "deleted") agg.deleted = true;
-          else if (kind === "renamed") agg.renamed = true;
-          else if (kind === "conflict") agg.conflict = true;
-          else agg.added = true;
-        }
-      }
-      setStatusMap(fmap);
-      setDirAgg(dmap);
-    } catch {
-      // 非 git 仓库 / git 不可用：静默清空标记
-      setStatusMap(new Map());
-      setDirAgg(new Map());
-    }
-  }, [project.id, project.git_available]);
-
-  /** 防抖刷新（保存/重命名/移动等操作后调用，避免频繁 spawn git） */
-  const scheduleGitRefresh = useCallback(() => {
-    window.clearTimeout(gitTimerRef.current);
-    gitTimerRef.current = window.setTimeout(
-      () => void refreshGitStatus(),
-      300
-    );
-  }, [refreshGitStatus]);
-
-  // 变更文件 ± 行数聚合：对每个已跟踪改动文件取 unified=0 hunks 求和。
-  // 并发分批拉取，序号失效防止状态刷新竞态；未跟踪文件无 diff（整文件新增）
-  // 不参与统计。上限 300 个文件防请求风暴。
-  useEffect(() => {
-    if (!project.git_available || statusMap.size === 0) {
-      setLineStats((prev) => (prev.size ? new Map() : prev));
-      return;
-    }
-    const seq = ++lineStatSeqRef.current;
-    const paths = [...statusMap.entries()]
-      .filter(([, k]) => k !== "untracked")
-      .map(([p]) => p)
-      .slice(0, 300);
-    (async () => {
-      const out = new Map<string, {a: number; d: number}>();
-      const CH = 8;
-      for (let i = 0; i < paths.length; i += CH) {
-        const part = await Promise.all(
-          paths.slice(i, i + CH).map(async (p) => {
-            try {
-              const hs = await api.gitDiffHunks(project.id, p);
-              let a = 0;
-              let d = 0;
-              for (const h of hs) {
-                a += h.new_lines;
-                d += h.del_lines;
-              }
-              return [p, {a, d}] as const;
-            } catch {
-              return null;
-            }
-          })
-        );
-        for (const it of part) if (it) out.set(it[0], it[1]);
-        if (seq !== lineStatSeqRef.current) return; // 已有更新的刷新
-      }
-      if (seq !== lineStatSeqRef.current) return;
-      setLineStats(out);
-    })();
-  }, [statusMap, project.id, project.git_available]);
-
   /**
    * 外部修改同步：把无未保存编辑的文本标签页从磁盘静默重读。
-   * Git 面板 / 文件树状态始终读磁盘，若编辑器缓冲区停留在外部修改前，
-   * 行级 diff 标记（HEAD vs 缓冲区）会与面板不一致——聚焦/可见刷新时一并重读。
+   * 聚焦/可见刷新时一并重读，避免缓冲区停留在外部修改前。
    * updater 内二次校验「仍未保存」，保护 await 期间用户产生的新编辑。
    */
   const syncCleanTabsFromDisk = useCallback(async () => {
@@ -923,27 +492,22 @@ export default function FilePanel({
     }
   }, [project.id]);
 
-  // 面板重新可见 / 切换项目时刷新 git 状态（含行级 diff，可能在外部被改动）
+  // 面板重新可见 / 切换项目时同步外部修改
   useEffect(() => {
     if (visible) {
-      void refreshGitStatus();
-      setDiffRev((v) => v + 1);
       void syncCleanTabsFromDisk();
     }
-  }, [visible, refreshGitStatus, syncCleanTabsFromDisk]);
+  }, [visible, syncCleanTabsFromDisk]);
 
-  // 窗口重新聚焦时刷新：覆盖在 IDE 等外部工具中编辑/提交后切回的场景，
-  // 否则文件树状态点与行级 diff 标记会停留在过期数据上
+  // 窗口重新聚焦时同步外部修改（覆盖在 IDE 等外部工具中编辑后切回的场景）
   useEffect(() => {
     if (!visible) return;
     const onFocus = () => {
-      scheduleGitRefresh();
-      setDiffRev((v) => v + 1);
       void syncCleanTabsFromDisk();
     };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [visible, scheduleGitRefresh, syncCleanTabsFromDisk]);
+  }, [visible, syncCleanTabsFromDisk]);
 
   // 懒加载目录子节点（含紧凑路径合并）
   const loadChildren = useCallback(async (path: string) => {
@@ -1250,461 +814,18 @@ export default function FilePanel({
         )
       );
       message.success("已保存");
-      // 保存会改变工作区状态，刷新文件树 / 标签的 git 标记与行级 diff
-      scheduleGitRefresh();
-      setDiffRev((v) => v + 1);
     } catch (e) {
       message.error(`保存失败: ${api.toErrMsg(e)}`);
     } finally {
       setSaving(false);
     }
-  }, [activeTab, project.id, message, scheduleGitRefresh]);
+  }, [activeTab, project.id, message]);
 
   const dirty = useMemo(
     () => !!activeTab && activeTab.content !== activeTab.meta.content,
     [activeTab]
   );
 
-  // ================================================================
-  // 行级 diff 标记（HEAD 内容 vs 当前编辑器内容）
-  // 前端 LCS 直接对显示中的内容计算：标记位置永远与编辑器行号精确对齐，
-  // 不受未保存编辑 / 外部修改 / 暂存状态影响；忽略行尾 CR 与 Git 面板 diff 同口径
-  // ================================================================
-
-  useEffect(() => {
-    if (!activeTab || activeTab.fileType !== "text" || !project.git_available) {
-      setLineKinds(null);
-      return;
-    }
-    void diffRev;
-    let cancelled = false;
-    // 防抖：编辑时停止输入 400ms 后才计算
-    const timer = window.setTimeout(async () => {
-      try {
-        const lines = activeTab.content.split("\n");
-        if (activeTab.content.length > 400_000 || lines.length > 6000) {
-          setLineKinds(null);
-          return;
-        }
-        const head = await api.gitFileHead(project.id, activeTab.path);
-        if (cancelled) return;
-        if (head.suppress) {
-          // ignored / skip-worktree / assume-unchanged：git status 不会展示其差异，
-          // 编辑器同样不标，保证与 Git 面板一致
-          setLineKinds(null);
-          return;
-        }
-        if (head.head === null) {
-          // 未跟踪 / HEAD 中不存在：整个文件标记为新增
-          setLineKinds(lines.map((): LineKind => 2));
-          return;
-        }
-        const res = diffLineKinds(head.head, activeTab.content);
-        diffBlocksRef.current = res.blocks;
-        headContentRef.current = head.head;
-        setLineKinds(res.kinds.some((k) => k !== 0) ? res.kinds : null);
-      } catch {
-        if (!cancelled) {
-          setLineKinds(null);
-          diffBlocksRef.current = [];
-          headContentRef.current = null;
-        }
-      }
-    }, 400);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-    // 仅依赖原始字段：activeTab 对象随输入每击重建，避免无谓的重跑
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    activeTab?.path,
-    activeTab?.content,
-    activeTab?.fileType,
-    project.id,
-    project.git_available,
-    diffRev,
-  ]);
-
-  /** 打开文件历史浮层并异步拉取提交历史（--follow，跟随重命名） */
-  const openHist = (lineIdx: number) => {
-    const path = activeTab?.path;
-    if (!path) return;
-    setMarkerPanel({type: "hist", line: lineIdx});
-    setRollbackArm(null);
-    setHistPreviewHash(null);
-    setHistPreviewText("");
-    setHistErr(null);
-    setHistCommits([]);
-    setHistLoading(true);
-    api
-      .gitFileLog(project.id, path)
-      .then((cs) => setHistCommits(cs))
-      .catch((e) => setHistErr(api.toErrMsg(e)))
-      .finally(() => setHistLoading(false));
-  };
-
-  // ================================================================
-  // IDEA 式快捷操作条：↑↓ 变更间跳转 / 撤销此更改 / 复制原文 / 历史入口
-  // ================================================================
-
-  /** 找到触发行所属（或最近的上一个）差异块 */
-  const blockAtLine = (line: number): DiffBlock | null => {
-    const blocks = diffBlocksRef.current;
-    if (!blocks.length) return null;
-    let best: DiffBlock | null = null;
-    for (const blk of blocks) {
-      if (line >= blk.bufStart && line < blk.bufStart + Math.max(blk.addN, 1)) {
-        return blk;
-      }
-      if (blk.bufStart <= line) best = blk;
-    }
-    return best ?? blocks[0]!;
-  };
-
-  /** 跳转到上一处 / 下一处变更（按块的缓冲区位置排序） */
-  const jumpBlock = (line: number, dir: -1 | 1) => {
-    const blocks = [...diffBlocksRef.current].sort((a, b) => a.bufStart - b.bufStart);
-    if (!blocks.length) return;
-    const cur = blockAtLine(line);
-    const curStart = cur?.bufStart ?? line;
-    let target: DiffBlock | undefined;
-    if (dir === 1) {
-      target = blocks.find((b) => b.bufStart > curStart);
-    } else {
-      const before = blocks.filter((b) => b.bufStart < curStart);
-      target = before[before.length - 1];
-    }
-    if (!target) {
-      message.info(dir === 1 ? "已是最后一处变更" : "已是第一处变更");
-      return;
-    }
-    setMarkerPanel({type: "quick", line: target.bufStart});
-    // 把目标行滚动到编辑器中部（通过 Monaco editor ref）
-    monacoRef.current?.revealLine(target.bufStart);
-  };
-
-  /**
-   * 撤销单个差异块：把缓冲区 [bufStart, bufStart+addN) 替换回 HEAD 的
-   * [headStart, headStart+delN)，写盘并同步缓冲区（IDEA Rollback 语义）。
-   */
-  const revertBlock = async (blk: DiffBlock) => {
-    const tab = activeTab;
-    const head = headContentRef.current;
-    if (!tab || !head || !project.git_available) return;
-    try {
-      const lines = tab.content.split("\n");
-      const headLines = head.split("\n");
-      lines.splice(
-        blk.bufStart,
-        blk.addN,
-        ...headLines.slice(blk.headStart, blk.headStart + blk.delN)
-      );
-      const nextContent = lines.join("\n");
-      const out =
-        tab.eol === "\r\n" ? nextContent.replace(/\n/g, "\r\n") : nextContent;
-      await api.writeProjectFile(project.id, tab.path, out);
-      const size = new Blob([out]).size;
-      setTabs((prev) =>
-        prev.map((t) =>
-          t.path === tab.path
-            ? {
-                ...t,
-                content: nextContent,
-                meta: {...t.meta, content: nextContent, size},
-              }
-            : t
-        )
-      );
-      message.success("已撤销此更改");
-      setMarkerPanel(null);
-      setDiffRev((v) => v + 1);
-      scheduleGitRefresh();
-      // 同步 Monaco 编辑器内容（绕过 @monaco-editor/react 的 value prop 更新）
-      if (monacoRef.current) monacoRef.current.setValue(nextContent);
-    } catch (e) {
-      message.error(`撤销失败: ${e}`);
-    }
-  };
-
-  /** 复制该块在 HEAD 中的原始内容 */
-  const copyBlockOriginal = async (blk: DiffBlock) => {
-    const head = headContentRef.current;
-    if (!head) return;
-    try {
-      await navigator.clipboard.writeText(
-        head.split("\n").slice(blk.headStart, blk.headStart + blk.delN).join("\n")
-      );
-      message.success("已复制原始内容");
-    } catch {
-      message.error("复制失败");
-    }
-  };
-
-  // 回滚确认 3 秒未点击自动复位；切文件 / 关浮层同样复位
-  useEffect(() => {
-    if (!rollbackArm) return;
-    const t = window.setTimeout(() => setRollbackArm(null), 3000);
-    return () => window.clearTimeout(t);
-  }, [rollbackArm]);
-  useEffect(() => setRollbackArm(null), [activePath]);
-
-  /** 展开/收起某个提交的文件内容预览 */
-  const toggleHistPreview = async (hash: string) => {
-    const path = activeTab?.path;
-    if (!path || !project.git_available) return;
-    if (histPreviewHash === hash) {
-      setHistPreviewHash(null);
-      return;
-    }
-    setHistPreviewHash(hash);
-    setHistPreviewLoading(true);
-    setHistPreviewText("");
-    try {
-      setHistPreviewText(await api.gitShowFile(project.id, hash, path));
-    } catch (e) {
-      message.error(`读取历史版本失败: ${e}`);
-      setHistPreviewHash(null);
-    } finally {
-      setHistPreviewLoading(false);
-    }
-  };
-
-  /**
-   * 整文件回滚到指定提交：`git show hash:path` 的内容原样写回磁盘
-   * （保留该版本的原始换行），并同步当前标签缓冲区、清除 dirty 标记。
-   * 当前未保存编辑会被覆盖——由「确认回滚」二次确认兜底。
-   */
-  const rollbackToFile = async (hash: string) => {
-    const path = activeTab?.path;
-    if (!path) return;
-    try {
-      const raw = await api.gitShowFile(project.id, hash, path);
-      await api.writeProjectFile(project.id, path, raw);
-      const buf = toBufferEol(raw);
-      const size = new Blob([raw]).size;
-      setTabs((prev) =>
-        prev.map((t) =>
-          t.path === path
-            ? {
-                ...t,
-                content: buf.content,
-                meta: {...t.meta, content: buf.content, size},
-                eol: buf.eol,
-              }
-            : t
-        )
-      );
-      const short = histCommits.find((c) => c.hash === hash)?.short_hash ?? "";
-      message.success(`已回滚到 ${short}`);
-      setMarkerPanel(null);
-      setDiffRev((v) => v + 1);
-      scheduleGitRefresh();
-      // 同步 Monaco 编辑器内容（绕过 @monaco-editor/react 的 value prop 更新）
-      if (monacoRef.current) monacoRef.current.setValue(buf.content);
-    } catch (e) {
-      message.error(`回滚失败: ${e}`);
-    }
-  };
-
-  /** 文件历史 / 回滚浮层：锚在触发 diff 条附近，列出该文件提交历史，
-   *  支持展开预览历史内容与整文件回滚（交互类似 IDEA 的行标记历史） */
-  const renderHistPopover = (anchorLine: number) => {
-    if (!activeTab) return null;
-    const top = Math.max(
-      8,
-      Math.min(GUTTER_PAD + anchorLine * LINE_H - 10, window.innerHeight * 0.4)
-    );
-    const name = activeTab.path.replace(/\\/g, "/").split("/").pop();
-    return (
-      <div className="git-hist-pop" style={{top}} onClick={(e) => e.stopPropagation()}>
-        <div className="git-hist-head">
-          <span className="git-hist-title" title={activeTab.path}>
-            文件历史 · {name}
-          </span>
-          <button
-            className="icon-btn sm"
-            aria-label="关闭历史"
-            onClick={() => setMarkerPanel(null)}
-          >
-            <X size={13} />
-          </button>
-        </div>
-        <div className="git-hist-list">
-          {histLoading && <div className="git-hist-empty">加载中…</div>}
-          {!histLoading && histErr && (
-            <div className="git-hist-empty">{histErr}</div>
-          )}
-          {!histLoading && !histErr && histCommits.length === 0 && (
-            <div className="git-hist-empty">暂无提交历史</div>
-          )}
-          {histCommits.map((c) => (
-            <div
-              key={c.hash}
-              className={`git-hist-item${histPreviewHash === c.hash ? " active" : ""}`}
-            >
-              <button
-                className="git-hist-msg"
-                title={c.message}
-                onClick={() => void toggleHistPreview(c.hash)}
-              >
-                {c.message || "(无提交信息)"}
-              </button>
-              <div className="git-hist-meta">
-                <code>{c.short_hash}</code>
-                <span>{c.author}</span>
-                <span>{c.date.slice(0, 10)}</span>
-                <span className="git-hist-actions">
-                  {rollbackArm === c.hash ? (
-                    <>
-                      <a
-                        className="git-hist-danger"
-                        onClick={() => void rollbackToFile(c.hash)}
-                      >
-                        确认回滚
-                      </a>
-                      <a onClick={() => setRollbackArm(null)}>取消</a>
-                    </>
-                  ) : (
-                    <a
-                      className="git-hist-danger"
-                      onClick={() => setRollbackArm(c.hash)}
-                    >
-                      回滚到此版本
-                    </a>
-                  )}
-                </span>
-              </div>
-            </div>
-          ))}
-        </div>
-        {histPreviewHash && (
-          <pre className="git-hist-preview">
-            {histPreviewLoading
-              ? "加载中…"
-              : histPreviewText.length > 200_000
-                ? `${histPreviewText.slice(0, 200_000)}\n…（预览已截断）`
-                : histPreviewText}
-          </pre>
-        )}
-      </div>
-    );
-  };
-
-  /** IDEA 式快捷操作条：贴在触发行的下方，↑↓ 变更间跳转 / 撤销此更改 /
-   *  复制原文 / 查看历史。撤销/复制依赖精确块映射，超大差异区降级时隐藏。 */
-  const renderQuickBar = (anchorLine: number) => {
-    if (!activeTab) return null;
-    const blk = blockAtLine(anchorLine);
-    const hasBlockOps = !!blk && !!headContentRef.current;
-    const top = Math.min(
-      GUTTER_PAD + anchorLine * LINE_H + LINE_H + 2,
-      window.innerHeight * 0.55
-    );
-    // 该块的「改动前(HEAD) ↔ 当前」内容，用于内联迷你对比
-    const headLines =
-      blk && headContentRef.current ? headContentRef.current.split("\n") : [];
-    const curLines = activeTab.content.split("\n");
-    const oldLines = blk
-      ? headLines.slice(blk.headStart, blk.headStart + blk.delN)
-      : [];
-    const newLines = blk
-      ? curLines.slice(blk.bufStart, blk.bufStart + blk.addN)
-      : [];
-    const trimLine = (l: string) =>
-      l.length > 200 ? `${l.slice(0, 200)}…` : l || " ";
-
-    return (
-      <div className="git-quick-bar" style={{top}} onClick={(e) => e.stopPropagation()}>
-        <button
-          className="git-quick-btn"
-          title="上一处变更"
-          aria-label="上一处变更"
-          onClick={() => jumpBlock(anchorLine, -1)}
-        >
-          <ArrowDown size={13} style={{transform: "rotate(180deg)"}} />
-        </button>
-        <button
-          className="git-quick-btn"
-          title="下一处变更"
-          aria-label="下一处变更"
-          onClick={() => jumpBlock(anchorLine, 1)}
-        >
-          <ArrowDown size={13} />
-        </button>
-        <span className="git-quick-sep" />
-        <button
-          className="git-quick-btn danger"
-          title="撤销此更改：把这一块恢复为 HEAD 内容并保存"
-          disabled={!hasBlockOps}
-          onClick={() => blk && void revertBlock(blk)}
-        >
-          <History size={13} style={{transform: "scaleX(-1)"}} />
-          撤销此更改
-        </button>
-        <button
-          className="git-quick-btn"
-          title="复制 HEAD 中该块的原始内容"
-          disabled={!hasBlockOps || !blk || blk.delN === 0}
-          onClick={() => blk && void copyBlockOriginal(blk)}
-        >
-          <Copy size={13} />
-          复制原文
-        </button>
-        <span className="git-quick-sep" />
-        <button
-          className="git-quick-btn"
-          title="查看文件完整提交历史"
-          onClick={() => openHist(anchorLine)}
-        >
-          <History size={13} />
-          历史
-        </button>
-        <button
-          className="git-quick-btn"
-          title="关闭"
-          onClick={() => setMarkerPanel(null)}
-        >
-          <X size={13} />
-        </button>
-        {blk && (blk.delN > 0 || blk.addN > 0) && (
-          <div
-            className="git-quick-diff"
-            onClick={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            {oldLines.length > 0 && (
-              <>
-                <div className="gqd-title">改动前（HEAD）</div>
-                {oldLines.map((l, i) => (
-                  <div key={`o${i}`} className="gqd-old">
-                    − {trimLine(l)}
-                  </div>
-                ))}
-              </>
-            )}
-            {newLines.length > 0 && (
-              <>
-                <div className="gqd-title">当前</div>
-                {newLines.map((l, i) => (
-                  <div key={`n${i}`} className="gqd-new">
-                    + {trimLine(l)}
-                  </div>
-                ))}
-              </>
-            )}
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  /** 标记条弹层统一入口：quick 操作条 / hist 历史浮层互斥显示 */
-  const renderMarkerPanels = () => {
-    if (!markerPanel) return null;
-    if (markerPanel.type === "hist") return renderHistPopover(markerPanel.line);
-    return renderQuickBar(markerPanel.line);
-  };
 
   // ================================================================
   // 快速打开（Ctrl+P）：项目级文件名 / 路径过滤跳转
@@ -1827,20 +948,6 @@ export default function FilePanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [openQuickOpen, quickOpen, closeQuickOpen]);
 
-  /** 文件树节点 → git 状态查找 */
-  const statusFor = useCallback(
-    (node: FileTreeNode): { kind?: FileGitStatus; agg?: DirGitAgg } =>
-      node.isDir
-        ? { agg: dirAgg.get(node.path) }
-        : { kind: statusMap.get(node.path) },
-    [dirAgg, statusMap]
-  );
-
-  const statsFor = useCallback(
-    (path: string) => lineStats.get(path),
-    [lineStats]
-  );
-
   // ================================================================
   // 文件操作：重命名 / 复制 / 剪切 / 粘贴 / 资源管理器 / 拖拽移动
   // ================================================================
@@ -1882,13 +989,12 @@ export default function FilePanel({
       const parent = parentOf(renaming.path);
       await refreshDir(parent);
       remapTabPaths(renaming.path, newPath);
-      scheduleGitRefresh();
       message.success("已重命名");
       setRenaming(null);
     } catch (e) {
       message.error(`重命名失败: ${api.toErrMsg(e)}`);
     }
-  }, [renaming, project.id, refreshDir, remapTabPaths, message, scheduleGitRefresh]);
+  }, [renaming, project.id, refreshDir, remapTabPaths, message]);
 
   const handlePaste = useCallback(
     async (targetDir: string) => {
@@ -1911,13 +1017,12 @@ export default function FilePanel({
           remapTabPaths(src, newPath);
           setClipboard(null);
         }
-        scheduleGitRefresh();
         message.success(isCut ? "已移动" : "已粘贴");
       } catch (e) {
         message.error(`${isCut ? "移动" : "粘贴"}失败: ${api.toErrMsg(e)}`);
       }
     },
-    [clipboard, project.id, refreshDir, remapTabPaths, message, scheduleGitRefresh]
+    [clipboard, project.id, refreshDir, remapTabPaths, message]
   );
 
   /** 拖拽放下：把拖动条目移动到目标目录 */
@@ -1937,13 +1042,12 @@ export default function FilePanel({
         const targets = new Set<string>([targetDir, parentOf(src)]);
         for (const t of targets) void refreshDir(t);
         remapTabPaths(src, newPath);
-        scheduleGitRefresh();
         message.success("已移动");
 } catch (e) {
       message.error(`移动失败: ${api.toErrMsg(e)}`);
       }
     },
-    [draggingPath, project.id, refreshDir, remapTabPaths, message, scheduleGitRefresh]
+    [draggingPath, project.id, refreshDir, remapTabPaths, message]
   );
 
   // ---- 可拖拽分隔条 ----
@@ -2019,17 +1123,6 @@ export default function FilePanel({
           <span className="file-panel-sub">文件</span>
         </span>
         <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
-          {project.git_available && (
-            <Tooltip title="Git 工作区">
-              <button
-                className="icon-btn sm"
-                onClick={() => onOpenGit(project)}
-                aria-label="Git 工作区"
-              >
-                <GitBranch size={13} />
-              </button>
-            </Tooltip>
-          )}
           {activeTab && activeTab.fileType === "text" && (
             <>
               <span className="file-enc-badge">{activeTab.meta.encoding}</span>
@@ -2086,8 +1179,6 @@ export default function FilePanel({
                 setCtxMenu({ x: e.clientX, y: e.clientY, path, isDir });
               }}
               dnd={dnd}
-              statusFor={statusFor}
-              statsFor={statsFor}
             />
           ))}
         </div>
@@ -2105,7 +1196,6 @@ export default function FilePanel({
             <div className="file-tabs">
               {tabs.map((t) => {
                 const tabDirty = t.content !== t.meta.content;
-                const tKind = statusMap.get(t.path);
                 return (
                   <div
                     key={t.path}
@@ -2122,19 +1212,10 @@ export default function FilePanel({
                       name={t.path.split("/").pop() ?? ""}
                       size={12}
                     />
-                    <span
-                      className={`file-tab-name ${tKind ? `gs-${tKind}` : ""}`}
-                    >
+                    <span className="file-tab-name">
                       {t.path.split("/").pop()}
                     </span>
-                    {tabDirty ? (
-                      <span className="file-tab-dirty" />
-                    ) : tKind ? (
-                      <span
-                        className={`file-tree-dot dot-${tKind}`}
-                        title={statusLabel(tKind)}
-                      />
-                    ) : null}
+                    {tabDirty ? <span className="file-tab-dirty" /> : null}
                     <button
                       className="file-tab-close"
                       onClick={(e) => {
@@ -2190,25 +1271,6 @@ export default function FilePanel({
             <>
               <div className="file-editor-toolbar">
                 <span className="file-editor-path">{activeTab.path}</span>
-                {activeGitKind && (
-                  <span className={`git-badge g-${activeGitKind}`}>
-                    {statusLabel(activeGitKind)}
-                  </span>
-                )}
-                {(() => {
-                  const s = activeTab
-                    ? lineStats.get(activeTab.path)
-                    : undefined;
-                  return s && (s.a > 0 || s.d > 0) ? (
-                    <span
-                      className="tree-lines editor-lines"
-                      title={`新增 ${s.a} 行 / 删除 ${s.d} 行`}
-                    >
-                      {s.a > 0 && <b className="la">+{s.a}</b>}
-                      {s.d > 0 && <b className="ld">-{s.d}</b>}
-                    </span>
-                  ) : null;
-                })()}
                 <div
                   style={{
                     marginLeft: "auto",
@@ -2264,12 +1326,8 @@ export default function FilePanel({
                     eol={activeTab.eol ?? "\n"}
                     onChange={updateActiveContent}
                     onSave={handleSave}
-                    lineKinds={lineKinds}
-                    onGutterClick={(line) => setMarkerPanel({type: "quick", line})}
-                    onContentClick={() => setMarkerPanel(null)}
                     editorRef={monacoRef}
                   />
-                  {renderMarkerPanels()}
                 </div>
               )}
             </>

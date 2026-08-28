@@ -155,43 +155,6 @@ export function FolderOpen({ size, ...rest }: IconProps) {
   );
 }
 
-export function GitPull({ size, ...rest }: IconProps) {
-  // downward arrow into a tray — "fetch"
-  return (
-    <Svg size={size} {...rest}>
-      <path d="M12 4 V15" />
-      <path d="M7 11 L12 16 L17 11" />
-      <path d="M4 20 H20" />
-      <circle cx="5" cy="6" r="1.4" fill="currentColor" stroke="none" />
-      <circle cx="19" cy="6" r="1.4" fill="currentColor" stroke="none" />
-    </Svg>
-  );
-}
-
-export function GitPush({ size, ...rest }: IconProps) {
-  // upward arrow out of a tray — "push"
-  return (
-    <Svg size={size} {...rest}>
-      <path d="M12 16 V5" />
-      <path d="M7 9 L12 4 L17 9" />
-      <path d="M4 20 H20" />
-      <circle cx="5" cy="18" r="1.4" fill="currentColor" stroke="none" />
-      <circle cx="19" cy="18" r="1.4" fill="currentColor" stroke="none" />
-    </Svg>
-  );
-}
-
-export function GitPullRestart({ size, ...rest }: IconProps) {
-  return (
-    <Svg size={size} {...rest}>
-      <path d="M12 3 V10" />
-      <path d="M8 7 L12 11 L16 7" />
-      <path d="M5 14 A7 7 0 1 1 5 19" />
-      <path d="M5 19 L5 15 L9 15" />
-    </Svg>
-  );
-}
-
 export function Trash({ size, ...rest }: IconProps) {
   return (
     <Svg size={size} {...rest}>
@@ -321,28 +284,6 @@ export function StatusDot({ color, live }: { color: string; live?: boolean }) {
       className={`status-node ${live ? "live" : ""}`}
       style={{ background: color, color }}
     />
-  );
-}
-
-export function GitBranch({ size, ...rest }: IconProps) {
-  return (
-    <Svg size={size} {...rest}>
-      <circle cx="6" cy="6" r="2.4" />
-      <circle cx="6" cy="18" r="2.4" />
-      <circle cx="18" cy="8" r="2.4" />
-      <path d="M6 8.5 V15.5" />
-      <path d="M8.3 7.6 C12 9 16 8.5 16 8.5" />
-    </Svg>
-  );
-}
-
-export function History({ size, ...rest }: IconProps) {
-  return (
-    <Svg size={size} {...rest}>
-      <path d="M4 12 A8 8 0 1 1 8 18.5" />
-      <path d="M4 19 L4 14 L9 14" />
-      <path d="M12 7 V12 L15 14" />
-    </Svg>
   );
 }
 

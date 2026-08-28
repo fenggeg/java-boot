@@ -1,7 +1,6 @@
 pub mod commands;
 pub mod db;
 pub mod error;
-pub mod git;
 pub mod pom;
 pub mod port;
 pub mod process;
@@ -167,30 +166,6 @@ pub fn run() {
             commands::get_runtime,
             commands::get_all_runtimes,
             commands::refresh_port_conflicts,
-            // git
-            commands::git_available,
-            commands::git_pull,
-            commands::git_pull_and_restart,
-            commands::git_push,
-            commands::git_status,
-            commands::git_diff,
-            commands::git_diff_versions,
-            commands::git_stage,
-            commands::git_unstage,
-            commands::git_commit,
-            commands::git_log,
-            commands::git_show,
-            commands::git_read_file,
-            commands::git_write_file,
-            commands::git_file_head,
-            commands::git_diff_hunks,
-            commands::git_file_log,
-            commands::git_show_file,
-            commands::git_conflict_versions,
-            commands::git_resolve_side,
-            commands::git_mark_resolved,
-            commands::git_complete_merge,
-            commands::git_abort_merge,
             // files
             commands::list_files,
             commands::read_project_file,

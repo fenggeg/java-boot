@@ -11,7 +11,6 @@ use crate::db::models::{AppConfig, Project, ScannedModule, Service, ServiceRunti
 use crate::error::{AppError, AppResult};
 use crate::util::CandidateCollector;
 use crate::util::NoWindow;
-use crate::git;
 use crate::pom;
 use crate::process;
 use crate::watcher;
@@ -55,10 +54,7 @@ pub fn scan_project(path: String) -> AppResult<Vec<ScannedModule>> {
 /// 若项目尚未配置 JDK / Maven，自动从 pom 声明的 Java 版本匹配已安装的 JDK，并选取 Maven 写入项目配置
 #[tauri::command]
 pub async fn add_project(path: String, selected_modules: Vec<ScannedModule>) -> AppResult<Project> {
-    let root = PathBuf::from(&path);
-    let git_root = pom::find_git_root(&root);
-    let project_root = git_root.clone().unwrap_or_else(|| root.clone());
-    let git_available = git_root.is_some();
+    let project_root = PathBuf::from(&path);
 
     // 复用已存在的项目（同 root_path）
     let mut project = match db::find_project_by_path(&project_root.to_string_lossy())? {
@@ -68,7 +64,7 @@ pub async fn add_project(path: String, selected_modules: Vec<ScannedModule>) -> 
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "未命名项目".to_string());
-            db::insert_project(&name, &project_root.to_string_lossy(), git_available)?
+            db::insert_project(&name, &project_root.to_string_lossy())?
         }
     };
 
@@ -211,14 +207,11 @@ pub fn rescan_project(project_id: String) -> AppResult<Vec<ScannedModule>> {
 
 #[tauri::command]
 pub async fn delete_project(project_id: String, app: AppHandle) -> AppResult<()> {
-    // 先停止该项目下所有运行中/拉取中的服务
+    // 先停止该项目下所有运行中的服务
     let services = db::list_services_by_project(&project_id)?;
     for s in &services {
-        let rt = process::get_manager().get_runtime(&s.id);
-        // 覆盖 Running/Starting/Recompiling/Pulling/Stopping 等所有活跃状态
-        if process::get_manager().is_running(&s.id)
-            || matches!(rt.status, crate::db::models::ServiceStatus::Pulling)
-        {
+        // 覆盖 Running/Starting/Recompiling/Stopping 等所有活跃状态
+        if process::get_manager().is_running(&s.id) {
             process::get_manager()
                 .stop(app.clone(), &s.id)
                 .await?;
@@ -257,26 +250,8 @@ pub fn add_service(pom_path: String, name: Option<String>) -> AppResult<Service>
         .map(|d| d.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    // 确定项目归属（parent 为 None 时跳过 git 归属，避免误归属到无关仓库）
-    let project_id = if let Some(parent) = p.parent() {
-        if let Some(git_root) = pom::find_git_root(parent) {
-            match db::find_project_by_path(&git_root.to_string_lossy())? {
-                Some(proj) => Some(proj.id),
-                None => {
-                    let pname = git_root
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "未命名项目".to_string());
-                    let proj = db::insert_project(&pname, &git_root.to_string_lossy(), true)?;
-                    Some(proj.id)
-                }
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    // 手动添加的服务不自动归属任何项目
+    let project_id: Option<String> = None;
 
     db::insert_service(&svc_name, &pom_path, &working_dir, project_id.as_deref(), None)
 }
@@ -460,213 +435,6 @@ pub fn get_all_runtimes() -> Vec<ServiceRuntime> {
 #[tauri::command]
 pub fn refresh_port_conflicts(app: AppHandle) {
     process::get_manager().refresh_port_conflicts(&app);
-}
-
-// ============================ Git ============================
-
-#[tauri::command]
-pub fn git_available() -> bool {
-    let result = git::git_available();
-    log::info!("git_available = {}", result);
-    result
-}
-
-#[tauri::command]
-pub async fn git_pull(project_id: String, app: AppHandle) -> AppResult<git::PullResult> {
-    git::pull(app, &project_id).await
-}
-
-#[tauri::command]
-pub async fn git_pull_and_restart(
-    project_id: String,
-    app: AppHandle,
-) -> AppResult<git::PullResult> {
-    git::pull_and_restart(app, &project_id).await
-}
-
-/// 推送本地提交到远程
-#[tauri::command]
-pub async fn git_push(project_id: String, app: AppHandle) -> AppResult<git::PushResult> {
-    git::push(app, &project_id).await
-}
-
-/// 冲突文件三方内容（base / ours / theirs）
-#[tauri::command]
-pub async fn git_conflict_versions(
-    project_id: String,
-    path: String,
-) -> AppResult<git::ConflictVersions> {
-    tokio::task::spawn_blocking(move || git::conflict_versions(&project_id, &path))
-        .await
-        .map_err(|e| AppError::Other(format!("读取冲突版本任务失败: {}", e)))?
-}
-
-/// 快捷采用某侧解决冲突（ours / theirs / both）
-#[tauri::command]
-pub async fn git_resolve_side(
-    project_id: String,
-    path: String,
-    side: String,
-) -> AppResult<()> {
-    tokio::task::spawn_blocking(move || git::resolve_side(&project_id, &path, &side))
-        .await
-        .map_err(|e| AppError::Other(format!("解决冲突任务失败: {}", e)))?
-}
-
-/// 标记冲突已解决：写回编辑后的内容并 git add
-#[tauri::command]
-pub async fn git_mark_resolved(
-    project_id: String,
-    path: String,
-    content: String,
-) -> AppResult<()> {
-    tokio::task::spawn_blocking(move || git::mark_resolved(&project_id, &path, &content))
-        .await
-        .map_err(|e| AppError::Other(format!("标记已解决任务失败: {}", e)))?
-}
-
-/// 全部冲突解决后提交完成合并（message 为空时用默认合并信息）
-#[tauri::command]
-pub async fn git_complete_merge(
-    project_id: String,
-    message: Option<String>,
-) -> AppResult<()> {
-    tokio::task::spawn_blocking(move || git::complete_merge(&project_id, message.as_deref()))
-        .await
-        .map_err(|e| AppError::Other(format!("完成合并任务失败: {}", e)))?
-}
-
-/// 中止本次合并，恢复合并前工作区
-#[tauri::command]
-pub async fn git_abort_merge(project_id: String) -> AppResult<()> {
-    tokio::task::spawn_blocking(move || git::abort_merge(&project_id))
-        .await
-        .map_err(|e| AppError::Other(format!("中止合并任务失败: {}", e)))?
-}
-
-/// 工作区状态（分支 / 改动文件列表）
-#[tauri::command]
-pub async fn git_status(project_id: String) -> AppResult<git::GitStatus> {
-    tokio::task::spawn_blocking(move || git::status(&project_id))
-        .await
-        .map_err(|e| AppError::Other(format!("git status 任务失败: {}", e)))?
-}
-
-/// 单文件 diff（staged=true 为暂存区 vs HEAD，否则为工作区 vs 暂存区）
-#[tauri::command]
-pub async fn git_diff(project_id: String, path: String, staged: bool) -> AppResult<String> {
-    tokio::task::spawn_blocking(move || git::diff(&project_id, &path, staged))
-        .await
-        .map_err(|e| AppError::Other(format!("git diff 任务失败: {}", e)))?
-}
-
-/// 返回 diff 两侧文件内容（供 Monaco DiffEditor 渲染）
-#[tauri::command]
-pub async fn git_diff_versions(
-    project_id: String,
-    path: String,
-    staged: bool,
-) -> AppResult<crate::git::DiffVersions> {
-    tokio::task::spawn_blocking(move || git::diff_versions(&project_id, &path, staged))
-        .await
-        .map_err(|e| AppError::Other(format!("git diff versions 任务失败: {}", e)))?
-}
-
-/// 暂存指定文件
-#[tauri::command]
-pub async fn git_stage(project_id: String, paths: Vec<String>) -> AppResult<()> {
-    tokio::task::spawn_blocking(move || git::stage(&project_id, &paths))
-        .await
-        .map_err(|e| AppError::Other(format!("git add 任务失败: {}", e)))?
-}
-
-/// 取消暂存指定文件
-#[tauri::command]
-pub async fn git_unstage(project_id: String, paths: Vec<String>) -> AppResult<()> {
-    tokio::task::spawn_blocking(move || git::unstage(&project_id, &paths))
-        .await
-        .map_err(|e| AppError::Other(format!("git restore 任务失败: {}", e)))?
-}
-
-/// 提交暂存区
-#[tauri::command]
-pub async fn git_commit(project_id: String, message: String) -> AppResult<()> {
-    tokio::task::spawn_blocking(move || git::commit(&project_id, &message))
-        .await
-        .map_err(|e| AppError::Other(format!("git commit 任务失败: {}", e)))?
-}
-
-/// 最近提交记录
-#[tauri::command]
-pub async fn git_log(project_id: String, limit: u32) -> AppResult<Vec<git::GitCommitInfo>> {
-    tokio::task::spawn_blocking(move || git::log(&project_id, limit))
-        .await
-        .map_err(|e| AppError::Other(format!("git log 任务失败: {}", e)))?
-}
-
-/// 查看指定提交的完整 diff
-#[tauri::command]
-pub async fn git_show(project_id: String, hash: String) -> AppResult<String> {
-    tokio::task::spawn_blocking(move || git::show(&project_id, &hash))
-        .await
-        .map_err(|e| AppError::Other(format!("git show 任务失败: {}", e)))?
-}
-
-/// 读取工作区文件（仅 UTF-8 文本，用于编辑改动文件）
-#[tauri::command]
-pub async fn git_read_file(project_id: String, path: String) -> AppResult<String> {
-    tokio::task::spawn_blocking(move || git::read_file(&project_id, &path))
-        .await
-        .map_err(|e| AppError::Other(format!("读取文件任务失败: {}", e)))?
-}
-
-/// 写回工作区文件
-#[tauri::command]
-pub async fn git_write_file(
-    project_id: String,
-    path: String,
-    content: String,
-) -> AppResult<()> {
-    tokio::task::spawn_blocking(move || git::write_file(&project_id, &path, &content))
-        .await
-        .map_err(|e| AppError::Other(format!("写入文件任务失败: {}", e)))?
-}
-
-/// 读取 HEAD 中某文件内容 + 标记抑制信息（ignored / skip-worktree 时 suppress=true），
-/// 用于编辑器行级 diff 与 Git 面板口径一致
-#[tauri::command]
-pub async fn git_file_head(project_id: String, path: String) -> AppResult<crate::git::FileHeadInfo> {
-    tokio::task::spawn_blocking(move || git::file_head_info(&project_id, &path))
-        .await
-        .map_err(|e| AppError::Other(format!("读取 HEAD 文件任务失败: {}", e)))?
-}
-
-/// 工作区 vs HEAD 的 diff hunk（unified=0），与 Git 面板同一引擎保证行位置一致
-#[tauri::command]
-pub async fn git_diff_hunks(project_id: String, path: String) -> AppResult<Vec<crate::git::DiffHunk>> {
-    tokio::task::spawn_blocking(move || git::diff_hunks(&project_id, &path))
-        .await
-        .map_err(|e| AppError::Other(format!("diff hunk 任务失败: {}", e)))?
-}
-
-/// 单文件提交历史（--follow 跟随重命名），编辑器「文件历史 / 回滚」浮层用
-#[tauri::command]
-pub async fn git_file_log(
-    project_id: String,
-    path: String,
-    limit: Option<u32>,
-) -> AppResult<Vec<crate::git::GitCommitInfo>> {
-    tokio::task::spawn_blocking(move || git::file_log(&project_id, &path, limit.unwrap_or(50)))
-        .await
-        .map_err(|e| AppError::Other(format!("文件历史任务失败: {}", e)))?
-}
-
-/// 读取指定提交中某文件的内容（历史预览 / 整文件回滚）
-#[tauri::command]
-pub async fn git_show_file(project_id: String, hash: String, path: String) -> AppResult<String> {
-    tokio::task::spawn_blocking(move || git::show_file(&project_id, &hash, &path))
-        .await
-        .map_err(|e| AppError::Other(format!("读取历史版本任务失败: {}", e)))?
 }
 
 // ============================ Files（项目文件浏览/编辑） ============================

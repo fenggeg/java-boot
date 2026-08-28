@@ -1,6 +1,6 @@
 # JavaBoot Launcher
 
-**Windows 桌面端的 Spring Boot 多服务启动/管理器**，基于 Tauri 2 + React + Rust 实现。定位类似"轻量版 IDEA Services 面板"：从磁盘选择一个 Maven 聚合工程，一键识别、勾选、启动、停止、重编译多个 Spring Boot 服务，并集中查看日志、端口、CPU/内存；同时内置项目文件浏览器（浏览 / 编辑 / Git 状态标记）与 PowerShell 终端。
+**Windows 桌面端的 Spring Boot 多服务启动/管理器**，基于 Tauri 2 + React + Rust 实现。定位类似"轻量版 IDEA Services 面板"：从磁盘选择一个 Maven 聚合工程，一键识别、勾选、启动、停止、重编译多个 Spring Boot 服务，并集中查看日志、端口、CPU/内存；同时内置项目文件浏览器（浏览 / 编辑）与 PowerShell 终端。
 
 > ⚠️ **仅支持 Spring Boot 项目。** 判定标准与 IDEA 一致：模块 `packaging` 为 `jar` / `war` **且** `src/main/java` 下存在带 `@SpringBootApplication` 注解的类。工具包 / 公共模块（无主类的 jar）不会出现在服务列表中。
 
@@ -44,18 +44,11 @@
 - 支持异常退出后重启（`auto_restart` 开关，按服务粒度；防抖 + 状态机防并发重编译）
 - 应用重启后能识别磁盘上仍存活的 java 进程，恢复其运行状态
 
-### Git 工作区面板
-- 工作区状态：分支 / 领先落后 / 改动文件列表（暂存区与工作区分栏）
-- 单文件 diff 查看、暂存 / 取消暂存、提交、提交历史 + 任意提交完整 diff
-- Git 拉取 + 拉取后重启（`git pull && restart`）
-
 ### 项目文件浏览器
-- **文件树**：懒加载 + 紧凑路径合并（`src/main/java` 单链目录折叠显示）；与 Git 面板互切时完整保留展开状态与打开的文件
+- **文件树**：懒加载 + 紧凑路径合并（`src/main/java` 单链目录折叠显示）
 - **多标签页编辑器**：每个标签独立保存未保存内容（切换不丢编辑），脏标记圆点提示
 - **查看模式**：Markdown 支持预览 ↔ 编辑切换；其他文本文件直接在单页内编辑（Prism 实时语法高亮）；GBK / 超大文件只读保护；图片预览、二进制文件识别
 - **右键菜单**：重命名、复制、粘贴、剪切、在文件管理器中显示（explorer 定位高亮）；支持目录间拖拽移动；同名粘贴自动生成 `(2)` 序号
-- **Git 状态着色**：新增/未跟踪=绿、已修改=橙、已删除=红——覆盖文件树（含目录聚合改动计数徽标）、文件标签页、编辑器工具栏徽标
-- **行级 diff 标记条**：代码区左缘按行标注修改（橙）/ 新增（绿），直接采用 `git diff HEAD --unified=0 --ignore-cr-at-eol` 结果，与 Git 面板完全同源（兼容 `core.autocrlf` 的 CRLF/LF 差异）；保存 / 切回面板自动刷新
 
 ### 集成终端
 - 文件面板底部抽屉式 PowerShell 终端（优先 `pwsh.exe`，回退系统自带 `powershell.exe`，`-NoLogo -ExecutionPolicy Bypass`），工作目录为项目根
@@ -109,9 +102,8 @@ npm run tauri:build
 ```
 ├── src/                       # React 前端
 │   ├── components/
-│   │   ├── FilePanel.tsx      # 文件树 + 多标签编辑器 + Git 标记 + 终端抽屉
+│   │   ├── FilePanel.tsx      # 文件树 + 多标签编辑器 + 终端抽屉
 │   │   ├── TerminalView.tsx   # 集成 PowerShell 终端（事件流 + 输入历史）
-│   │   ├── GitPanel.tsx       # Git 工作区（status/diff/stage/commit/log）
 │   │   └── ...                # 项目 / 服务 / 日志等 UI 组件
 │   ├── api.ts                 # Tauri invoke 封装
 │   ├── store.ts               # zustand
@@ -128,7 +120,6 @@ npm run tauri:build
 │   │   │   ├── log_pipe.rs    # 启动/失败模式匹配
 │   │   │   └── job.rs         # Windows Job Object 封装
 │   │   ├── port/              # 端口占用扫描
-│   │   ├── git.rs             # git pull/status/diff/stage/commit/log + 行级 diff hunk
 │   │   ├── project_fs.rs      # 项目文件浏览/读写/重命名/复制/移动/资源管理器定位
 │   │   ├── terminal.rs        # 集成终端会话（PowerShell + Job Object 托管）
 │   │   ├── watcher.rs         # 文件变更监听（notify）+ 模块脏标记
@@ -148,11 +139,8 @@ A：从 v0.1（当前）起，只有 `src/main/java` 下存在 `@SpringBootAppli
 **Q：启动时看到 `构建策略: Skip（classpath cache: hit）`，改了代码没重编译？**
 A：`Skip` 只在**源码确认无变更**时触发（自动重启服务的 watcher 实时报告，其余走 mtime 扫描）。改任何 `.java` / `.xml` / `resources/**` 都会自动升到 `CompileCurrent`；对被依赖的模块也做了变更时会升到 `CompileAll`。
 
-**Q：编辑器里的行级颜色标记和 Git 面板不一致？**
-A：两者使用同一个 `git diff` 引擎（工作区 vs HEAD，`--ignore-cr-at-eol` 抵消 autocrlf 的换行差异）。若仍不一致，切回文件面板会自动刷新；保存后立即刷新。
-
 **Q：集成终端里能跑交互式程序吗？**
-A：终端为管道模式（未接 ConPTY），常规 mvn / git / dir 没问题；需要密码输入或全屏 TUI 的程序（如 `vim`、交互式登录）不受支持，请用外部终端。「关闭」按钮会终止 shell 及其派生的整棵进程树。
+A：终端为管道模式（未接 ConPTY），常规 mvn / dir 没问题；需要密码输入或全屏 TUI 的程序（如 `vim`、交互式登录）不受支持，请用外部终端。「关闭」按钮会终止 shell 及其派生的整棵进程树。
 
 **Q：能不能支持非 Spring Boot 项目 / 主类由用户手填？**
 A：当前不支持。所有启动前置逻辑（日志匹配 `Started .* in .* seconds`、`APPLICATION FAILED TO START`；`spring.profiles.active`；classpath 组装）都是围绕 Spring Boot 设计的。如需支持普通 Java main 服务，会作为后续任务另行评估。

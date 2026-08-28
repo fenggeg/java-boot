@@ -2,7 +2,7 @@ import {useCallback, useEffect, useMemo, useState} from "react";
 import type {UnlistenFn} from "@tauri-apps/api/event";
 import {getCurrentWindow} from "@tauri-apps/api/window";
 import {App, Badge, Button, Popconfirm, Tooltip} from "antd";
-import {Copy, GitPull, Minus, Moon, Settings, Square, Stop, Sun, Update, Warning, X} from "./Icons";
+import {Copy, Minus, Moon, Settings, Square, Stop, Sun, Update, Warning, X} from "./Icons";
 import {useStore} from "../store";
 import * as api from "../api";
 import {STATUS_META} from "../types";
@@ -17,7 +17,6 @@ interface Props {
 export default function TopBar({ onOpenSettings }: Props) {
   const services = useStore((s) => s.services);
   const runtimes = useStore((s) => s.runtimes);
-  const gitAvailable = useStore((s) => s.gitAvailable);
   const refreshServices = useStore((s) => s.refreshServices);
   const { message } = App.useApp();
   const themeMode = useThemeStore((s) => s.mode);
@@ -117,26 +116,6 @@ export default function TopBar({ onOpenSettings }: Props) {
             <span className="stat-label">异常</span>
             <span className="stat-val" style={{ color: "#ff3b30" }}>{errorCount}</span>
           </span>
-        )}
-        {!gitAvailable && (
-          <Tooltip title="未检测到 Git，Git 拉取功能已禁用。请安装 Git 并配置到 PATH。">
-            <span
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 5,
-                marginLeft: 4,
-                paddingLeft: 14,
-                borderLeft: "1px solid var(--border)",
-                color: "#ff9500",
-                fontSize: 12,
-                fontWeight: 500,
-              }}
-            >
-              <GitPull size={14} />
-              Git 不可用
-            </span>
-          </Tooltip>
         )}
       </div>
 

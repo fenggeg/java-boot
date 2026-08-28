@@ -24,7 +24,6 @@ function matchLevel(line: string, level: LogLevel): boolean {
 
 function sourceClass(source: string): string {
   if (source.includes("mvn")) return "mvn";
-  if (source.includes("git")) return "git";
   return "app";
 }
 
