@@ -7,6 +7,21 @@
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-28
+
+### 新增
+
+- **Git Diff 变更导航**：Diff 弹窗工具栏新增上一处/下一处变更跳转按钮与计数显示（如 `1/5`），基于 Monaco DiffEditor `onDidUpdateDiff` 计算行级变更列表，`goToDiff` 循环跳转；diff 计算完成后自动定位至第一处变更
+- **浏览器快捷键拦截**：拦截 Tauri WebView 中的原生快捷键行为，包括刷新（Ctrl/Cmd+R、Ctrl/Cmd+Shift+R、F5）、页面缩放（Ctrl+Plus/Minus/0）、开发者工具（F12、Ctrl+Shift+I）、Backspace 后退（非输入焦点时）；Ctrl+F 仍仅 preventDefault 以保留编辑器内置搜索
+
+### 优化
+
+- **快捷 diff 浮层**：阻止浮层点击事件冒泡避免误触关闭；浮层内文字可选（`user-select: text`）；尺寸与间距调整（宽度 380~720px、字号 13px、行高 22px），明暗主题下 diff 色块透明度与边框加深
+
+### 修复
+
+- **MonacoDiffEditor 语法错误**：修复 `useEffect` 注释行中混入字面量 `\n` 字符导致代码被压缩为单行、含非法字符的问题
+
 ## [0.11.0] - 2026-08-28
 
 ### 新增
