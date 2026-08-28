@@ -1668,7 +1668,11 @@ export default function FilePanel({
           <X size={13} />
         </button>
         {blk && (blk.delN > 0 || blk.addN > 0) && (
-          <div className="git-quick-diff">
+          <div
+            className="git-quick-diff"
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
             {oldLines.length > 0 && (
               <>
                 <div className="gqd-title">改动前（HEAD）</div>

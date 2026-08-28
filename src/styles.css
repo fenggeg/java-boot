@@ -1786,6 +1786,40 @@ body {
   color: var(--text-2);
 }
 
+/* diff 变更导航 */
+.diff-nav-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 6px;
+  margin-right: 4px;
+  border-right: 1px solid var(--border);
+}
+
+.diff-nav-btn {
+  color: var(--text-2) !important;
+  padding: 2px 6px !important;
+  height: 26px !important;
+}
+
+.diff-nav-btn:hover:not(:disabled) {
+  color: var(--accent) !important;
+  background: var(--surface-3) !important;
+}
+
+.diff-nav-btn:disabled {
+  opacity: 0.35;
+}
+
+.diff-nav-counter {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+  min-width: 48px;
+  text-align: center;
+  user-select: none;
+}
+
 /* ========================================================
    文件浏览器
    ======================================================== */
@@ -2700,49 +2734,62 @@ body {
   position: absolute;
   top: calc(100% + 6px);
   left: 0;
-  min-width: 320px;
-  max-width: 640px;
-  max-height: 40vh;
+  min-width: 380px;
+  max-width: 720px;
+  max-height: 45vh;
   overflow: auto;
-  padding: 8px 10px;
+  padding: 10px 14px;
   background: var(--surface);
   border: 1px solid var(--border-2);
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14), 0 1px 4px rgba(0, 0, 0, 0.06);
   font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 13px;
+  line-height: 22px;
+  user-select: text;
+  -webkit-user-select: text;
+  pointer-events: auto;
+  z-index: 25;
+  white-space: normal;
 }
 
 .gqd-title {
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.03em;
   text-transform: uppercase;
   color: var(--text-3);
-  margin-bottom: 4px;
+  margin-bottom: 5px;
 }
 
 .gqd-old {
+  display: table;
+  width: 100%;
   background: rgba(209, 52, 56, 0.08);
-  border-left: 2px solid rgba(209, 52, 56, 0.4);
+  border-left: 3px solid rgba(209, 52, 56, 0.5);
   border-radius: 0 3px 3px 0;
-  padding: 1px 6px 1px 8px;
+  padding: 2px 8px 2px 10px;
   white-space: pre;
   color: var(--text-2);
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .gqd-new {
+  display: table;
+  width: 100%;
   background: rgba(40, 167, 69, 0.08);
-  border-left: 2px solid rgba(40, 167, 69, 0.4);
+  border-left: 3px solid rgba(40, 167, 69, 0.5);
   border-radius: 0 3px 3px 0;
-  padding: 1px 6px 1px 8px;
+  padding: 2px 8px 2px 10px;
   white-space: pre;
   color: var(--text-2);
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .gqd-title:not(:first-child) {
-  margin-top: 8px;
+  margin-top: 10px;
 }
 
 [data-theme="dark"] .git-quick-diff {
@@ -2751,13 +2798,13 @@ body {
 }
 
 [data-theme="dark"] .gqd-old {
-  background: rgba(248, 81, 73, 0.08);
-  border-left-color: rgba(248, 81, 73, 0.4);
+  background: rgba(248, 81, 73, 0.10);
+  border-left-color: rgba(248, 81, 73, 0.5);
 }
 
 [data-theme="dark"] .gqd-new {
-  background: rgba(63, 185, 80, 0.08);
-  border-left-color: rgba(63, 185, 80, 0.4);
+  background: rgba(63, 185, 80, 0.10);
+  border-left-color: rgba(63, 185, 80, 0.5);
 }
 
 /* —— 文件历史 / 回滚浮层（点击 diff 标记条唤起）—— */

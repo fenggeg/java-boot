@@ -1,6 +1,6 @@
 import {useCallback, useEffect, useRef, useState} from "react";
 import {App, Button, Empty, Modal, Segmented, Spin, Tooltip} from "antd";
-import {Check, Edit, X} from "./Icons";
+import {ArrowDown as NextDiffIcon, Check, ChevronLeft as PrevDiffIcon, Edit, X} from "./Icons";
 import * as api from "../api";
 import type {GitChange} from "../types";
 import {gitChangeKind} from "../types";
@@ -28,7 +28,10 @@ export default function GitDiffModal({
   const [editing, setEditing] = useState(false);
   const [editContent, setEditContent] = useState("");
   const [saving, setSaving] = useState(false);
+  const [navIdx, setNavIdx] = useState(-1);
+  const [navTotal, setNavTotal] = useState(0);
   const diffRef = useRef<MonacoDiffEditorHandle | null>(null);
+  const editingDiffRef = useRef<MonacoDiffEditorHandle | null>(null);
 
   const isUntracked = change ? gitChangeKind(change) === "untracked" : false;
   const isDeleted = change ? gitChangeKind(change) === "deleted" : false;
@@ -62,6 +65,8 @@ export default function GitDiffModal({
     setEditing(false);
     setError(null);
     setVersions(null);
+    setNavIdx(-1);
+    setNavTotal(0);
     loadDiff(change, change.staged);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [change, projectId]);
@@ -99,6 +104,16 @@ export default function GitDiffModal({
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleNavChange = useCallback((idx: number, total: number) => {
+    setNavIdx(idx);
+    setNavTotal(total);
+  }, []);
+
+  const handleNav = (dir: "next" | "previous") => {
+    const ref = editing ? editingDiffRef.current : diffRef.current;
+    ref?.goToDiff(dir);
   };
 
   const kind = change ? gitChangeKind(change) : null;
@@ -142,38 +157,66 @@ export default function GitDiffModal({
                   { label: "已暂存改动", value: "staged" },
                 ]}
               />
-              {editing ? (
-                <span style={{ display: "flex", gap: 6 }}>
-                  <Button
-                    size="small"
-                    icon={<X size={12} />}
-                    onClick={() => setEditing(false)}
-                    disabled={saving}
-                  >
-                    取消
-                  </Button>
-                  <Button
-                    size="small"
-                    type="primary"
-                    icon={<Check size={12} />}
-                    onClick={saveEdit}
-                    loading={saving}
-                  >
-                    保存
-                  </Button>
+              <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                {/* 变更导航 */}
+                <span className="diff-nav-group">
+                  <Tooltip title="上一处变更">
+                    <Button
+                      size="small"
+                      type="text"
+                      className="diff-nav-btn"
+                      icon={<PrevDiffIcon size={14} />}
+                      onClick={() => handleNav("previous")}
+                      disabled={navTotal === 0}
+                    />
+                  </Tooltip>
+                  <span className="diff-nav-counter">
+                    {navTotal > 0 ? `${navIdx + 1}/${navTotal}` : "无变更"}
+                  </span>
+                  <Tooltip title="下一处变更">
+                    <Button
+                      size="small"
+                      type="text"
+                      className="diff-nav-btn"
+                      icon={<NextDiffIcon size={14} />}
+                      onClick={() => handleNav("next")}
+                      disabled={navTotal === 0}
+                    />
+                  </Tooltip>
                 </span>
-              ) : (
-                <Tooltip title="在编辑器中打开该文件（工作区）">
-                  <Button
-                    size="small"
-                    icon={<Edit size={13} />}
-                    onClick={startEdit}
-                    disabled={saving}
-                  >
-                    编辑文件
-                  </Button>
-                </Tooltip>
-              )}
+                {editing ? (
+                  <>
+                    <Button
+                      size="small"
+                      icon={<X size={12} />}
+                      onClick={() => setEditing(false)}
+                      disabled={saving}
+                    >
+                      取消
+                    </Button>
+                    <Button
+                      size="small"
+                      type="primary"
+                      icon={<Check size={12} />}
+                      onClick={saveEdit}
+                      loading={saving}
+                    >
+                      保存
+                    </Button>
+                  </>
+                ) : (
+                  <Tooltip title="在编辑器中打开该文件（工作区）">
+                    <Button
+                      size="small"
+                      icon={<Edit size={13} />}
+                      onClick={startEdit}
+                      disabled={saving}
+                    >
+                      编辑文件
+                    </Button>
+                  </Tooltip>
+                )}
+              </span>
             </div>
           )}
 
@@ -186,6 +229,8 @@ export default function GitDiffModal({
                 modified={editContent}
                 editable
                 onModifiedChange={setEditContent}
+                diffEditorRef={editingDiffRef}
+                onNavigateIndexChange={handleNavChange}
                 height="58vh"
               />
             </div>
@@ -198,6 +243,7 @@ export default function GitDiffModal({
                   modified={versions.modified}
                   editable={false}
                   diffEditorRef={diffRef}
+                  onNavigateIndexChange={handleNavChange}
                   height="100%"
                 />
               )}

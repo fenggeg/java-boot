@@ -13,6 +13,16 @@ export interface MonacoDiffEditorHandle {
   getModifiedValue: () => string;
   /** 获取右侧编辑器实例 */
   getModifiedEditor: () => editor.IStandaloneCodeEditor | null;
+  /** 获取左侧编辑器实例 */
+  getOriginalEditor: () => editor.IStandaloneCodeEditor | null;
+  /** 获取 DiffEditor 实例 */
+  getDiffEditor: () => editor.IStandaloneDiffEditor | null;
+  /** 跳转到下一处/上一处变更 */
+  goToDiff: (target: "next" | "previous") => void;
+  /** 滚动到第一处变更（等待 diff 计算完成） */
+  revealFirstDiff: () => void;
+  /** 获取所有行级变更 */
+  getLineChanges: () => editor.ILineChange[] | null;
 }
 
 interface Props {
@@ -30,6 +40,10 @@ interface Props {
   diffEditorRef?: React.RefObject<MonacoDiffEditorHandle | null>;
   /** 自定义高度 */
   height?: string;
+  /** diff 计算完成后的回调（包含变更列表计数） */
+  onDiffReady?: (changes: editor.ILineChange[] | null) => void;
+  /** 当前变更位置索引变化回调 */
+  onNavigateIndexChange?: (index: number, total: number) => void;
 }
 
 interface MutableRef<T> {
@@ -44,13 +58,35 @@ export default function MonacoDiffEditor({
   onModifiedChange,
   diffEditorRef,
   height = "100%",
+  onDiffReady,
+  onNavigateIndexChange,
 }: Props) {
   const modifiedEditorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
+  const diffEditorRef$ = useRef<editor.IStandaloneDiffEditor | null>(null);
   const onModifiedChangeRef = useRef(onModifiedChange);
   onModifiedChangeRef.current = onModifiedChange;
+  const onDiffReadyRef = useRef(onDiffReady);
+  onDiffReadyRef.current = onDiffReady;
+  const onNavigateIndexChangeRef = useRef(onNavigateIndexChange);
+  onNavigateIndexChangeRef.current = onNavigateIndexChange;
+  const lineChangesRef = useRef<editor.ILineChange[] | null>(null);
+  const currentIdxRef = useRef(-1);
+
+  /** 重新计算变更索引状态 */
+  const refreshNavState = useCallback(() => {
+    const de = diffEditorRef$.current;
+    if (!de) return;
+    const changes = de.getLineChanges();
+    lineChangesRef.current = changes;
+    const total = changes?.length ?? 0;
+    currentIdxRef.current = total > 0 ? 0 : -1;
+    onDiffReadyRef.current?.(changes);
+    onNavigateIndexChangeRef.current?.(currentIdxRef.current, total);
+  }, []);
 
   const handleMount = useCallback(
     (diffEditor: editor.IStandaloneDiffEditor) => {
+      diffEditorRef$.current = diffEditor;
       const modified = diffEditor.getModifiedEditor();
       modifiedEditorRef.current = modified;
 
@@ -58,17 +94,51 @@ export default function MonacoDiffEditor({
         (diffEditorRef as MutableRef<MonacoDiffEditorHandle | null>).current = {
           getModifiedValue: () => modified.getValue() ?? "",
           getModifiedEditor: () => modified,
+          getOriginalEditor: () => diffEditor.getOriginalEditor(),
+          getDiffEditor: () => diffEditor,
+          goToDiff: (target) => {
+            const changes = lineChangesRef.current;
+            const total = changes?.length ?? 0;
+            if (total === 0) return;
+            if (target === "next") {
+              currentIdxRef.current = (currentIdxRef.current + 1) % total;
+            } else {
+              currentIdxRef.current = currentIdxRef.current <= 0 ? total - 1 : currentIdxRef.current - 1;
+            }
+            diffEditor.goToDiff(target);
+            onNavigateIndexChangeRef.current?.(currentIdxRef.current, total);
+          },
+          revealFirstDiff: () => {
+            diffEditor.revealFirstDiff();
+          },
+          getLineChanges: () => lineChangesRef.current,
         };
       }
+
+      // diff 计算完成后：自动跳转到第一处变更 + 通知父组件
+      const sub = diffEditor.onDidUpdateDiff(() => {
+        refreshNavState();
+        // 跳转到第一处变更（等待 diff 计算完成）
+        diffEditor.revealFirstDiff();
+      });
 
       if (editable && onModifiedChangeRef.current) {
         modified.onDidChangeModelContent(() => {
           onModifiedChangeRef.current?.(modified.getValue() ?? "");
         });
       }
+
+      // 清理订阅
+      modified.onDidDispose(() => sub.dispose());
     },
-    [diffEditorRef, editable]
+    [diffEditorRef, editable, refreshNavState]
   );
+
+  // 版本内容变化时重置导航状态
+  useEffect(() => {
+    lineChangesRef.current = null;
+    currentIdxRef.current = -1;
+  }, [original, modified]);
 
   // 主题切换监听
   useEffect(() => {
@@ -87,6 +157,7 @@ export default function MonacoDiffEditor({
     return () => {
       if (diffEditorRef)
         (diffEditorRef as MutableRef<MonacoDiffEditorHandle | null>).current = null;
+      diffEditorRef$.current = null;
     };
   }, [diffEditorRef]);
 
