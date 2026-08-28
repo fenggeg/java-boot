@@ -7,6 +7,26 @@
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-28
+
+### 新增
+
+- **Monaco 代码编辑器**：替换原 textarea+pre 双层叠加 + Prism 手写高亮方案，改用 Monaco Editor，内置语法高亮 / 行号 / 搜索 / 代码折叠 / minimap / 括号配对着色 / sticky scroll；新增 `MonacoCodeEditor` 组件，对接原 Git diff glyph margin 装饰与点击操作菜单
+- **Monaco DiffEditor**：Git Diff 面板改用 Monaco DiffEditor 内置 diff 算法高亮差异，左侧原始版本只读、右侧修改后版本可编辑；新增 `MonacoDiffEditor` 组件
+- **Monaco 主题配置**：新增 `monaco-setup.ts`，配置 Worker 入口并定义 `jb-light`/`jb-dark` 自定义主题，token 配色对齐原 Prism Xcode 风格；监听 `data-theme` 属性变化自动切换主题
+- **git_diff_versions 命令**：新增后端命令返回 diff 两侧文件内容（HEAD 版本 + 工作区/暂存区版本），供 Monaco DiffEditor 渲染；未跟踪文件 original 为 None
+
+### 变更
+
+- **CSP 调整**：`script-src` 新增 `wasm-unsafe-eval`、新增 `worker-src 'self' blob:`，支持 Monaco Worker 运行
+- **语言映射重构**：`getPrismLang` 改为 `getMonacoLang`，扩展名映射改为 Monaco 语言 ID（如 `markup` → `html`、`bash` → `shell`、`properties` → `ini`），未识别返回 `plaintext`
+- **构建分包**：`vite.config.ts` 将 `monaco-editor` 与 `@monaco-editor/react` 独立为 monaco chunk，避免主包膨胀
+- **GitConflictModal / GitDiffModal / GitPanel / UpdateModal**：适配 Monaco 编辑器，移除 Prism 相关引用
+
+### 优化
+
+- **移除 Prism 依赖**：删除 `prism-langs.ts` 与 `prismjs` / `@types/prismjs` 依赖，减少打包体积与维护成本
+
 ## [0.10.1] - 2026-08-27
 
 ### 修复
