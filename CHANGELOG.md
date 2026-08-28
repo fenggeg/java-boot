@@ -7,6 +7,24 @@
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-08-28
+
+### 新增
+
+- **服务打包**：服务卡片更多菜单新增「打包」操作，执行 `mvn clean package -DskipTests`（多模块加 `-pl <module> -am`），保留 spring-boot repackage 生成可执行 fat jar；打包时不停止运行中的服务（本项目用 exploded classpath `java -cp target/classes:...` 启动，JVM 不锁定 fat jar，与 IDEA 行为一致），打包后恢复原状态
+- **项目批量打包**：项目行更多菜单新增「打包全部服务」操作，逐个打包项目下所有已添加服务（串行避免资源争抢），完成后弹窗列出每个服务的 jar 产物路径
+- **打包产物定位**：打包成功后弹窗展示 jar 绝对路径与大小，提供「打开目录」（资源管理器定位 jar）和「复制路径」（写入剪贴板）两个操作；后端扫描 `target/*.jar` 智能识别产物（排除 `*-sources.jar`/`*-javadoc.jar`/`original-*`，取最大文件）
+- **打开 target 目录**：服务卡片更多菜单新增「打开 target 目录」常驻项，随时在资源管理器中打开模块的 target 目录
+- **文件树快捷键复制/粘贴**：文件树支持 Windows 快捷键 Ctrl+C 复制选中条目、Ctrl+V 粘贴到选中目录或其父目录，复用 `activePath` 选中状态
+
+### 变更
+
+- **移除终端功能**：彻底删除项目内所有终端相关功能（前端 + 后端 + 依赖），包括 `TerminalView.tsx` 组件、`terminal.rs` 后端模块、`FilePanel.tsx` 中终端抽屉（termOpen/termHeight/resize/工具栏按钮）、`api.ts` 中 4 个 terminal API、`styles.css` 中终端样式（约 220 行）、`commands.rs` 中 4 个 terminal 命令、`lib.rs` 中模块声明/命令注册/`kill_all` 调用；移除 `@xterm/xterm`、`@xterm/addon-fit` 前端依赖与 `portable-pty` 后端依赖；`Terminal` 图标保留（仅做 UI 占位）
+
+### 优化
+
+- **打包状态恢复**：打包成功/失败后均恢复打包前状态（`prev_status`），运行中的服务不被误标为 Stopped/Error
+
 ## [0.13.0] - 2026-08-28
 
 ### 变更

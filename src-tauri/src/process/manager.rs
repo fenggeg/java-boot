@@ -1994,6 +1994,227 @@ impl ProcessManager {
         Ok(())
     }
 
+    /// 打包单个服务（mvn clean package -DskipTests），生成可执行 jar
+    ///
+    /// - **不停止服务**：本项目用 exploded classpath（`java -cp target/classes:...`）启动，
+    ///   运行中的 JVM 不锁定 fat jar，clean package 可安全执行（与 IDEA 行为一致）
+    /// - 执行 `mvn clean package -pl <module> -am`，**不**带 `spring-boot.repackage.skip`，
+    ///   让 spring-boot-maven-plugin 正常执行 repackage 生成可执行 fat jar
+    /// - 跳过测试（-Dmaven.test.skip=true -DskipTests）加速打包
+    /// - 打包完成后恢复打包前状态（运行中的服务继续运行，不自动重启）
+    pub async fn package_service(&self, app: AppHandle, service: Service) -> AppResult<PackageResult> {
+        // 不停止服务：本项目用 exploded classpath（java -cp target/classes:...）启动，
+        // 运行中的 JVM 不锁定 fat jar，clean package 可安全执行（与 IDEA 行为一致）。
+        // 记录打包前状态，打包后恢复（避免把运行中的服务误标为 Stopped）。
+        let prev_status = self
+            .runtimes
+            .lock()
+            .get(&service.id)
+            .map(|r| r.status.clone())
+            .unwrap_or(ServiceStatus::Stopped);
+        self.set_status(&app, &service.id, ServiceStatus::Recompiling);
+
+        use super::build::strip_verbatim_prefix;
+        use super::env::{preflight_check, resolve_env_config, resolve_maven_cmd};
+
+        let working_dir = strip_verbatim_prefix(&PathBuf::from(&service.working_dir));
+        let env_cfg = resolve_env_config(&service)?;
+        let (program, base_args) = resolve_maven_cmd(&working_dir, &env_cfg);
+        preflight_check(&env_cfg, &working_dir, &program)?;
+
+        // 计算执行目录和模块相对路径
+        let (cwd, module_rel) = resolve_cwd_and_module(
+            &working_dir,
+            &env_cfg.project_root,
+            None,
+        );
+
+        // 打包参数：clean package，跳过测试，**不**带 repackage.skip
+        let mut args: Vec<String> = base_args.to_vec();
+        // 只保留并行 + 静默进度条 + 编码相关 flag，**不**用 common_mvn_flags()
+        // （common_mvn_flags 含 -Dspring-boot.repackage.skip=true，打包必须保留 repackage）
+        args.push("-T".into());
+        args.push("1C".into());
+        args.push("--no-transfer-progress".into());
+        args.push("-Dmaven.test.skip=true".into());
+        args.push("-DskipTests".into());
+        args.push("-Dproject.build.sourceEncoding=UTF-8".into());
+        args.push("-Dresource.encoding=UTF-8".into());
+        args.push("clean".to_string());
+        args.push("package".to_string());
+        if !module_rel.is_empty() {
+            args.push("-pl".into());
+            args.push(module_rel.clone());
+            args.push("-am".into());
+        }
+
+        let action_desc = if module_rel.is_empty() {
+            "打包当前模块"
+        } else {
+            "打包当前模块"
+        };
+        Self::emit_log(
+            &app,
+            &service.id,
+            LogSource::Mvn,
+            &format!("[javaboot] {}: mvn {}", action_desc, args.join(" ")),
+        );
+
+        // 获取 compile_pid 用于中断
+        let compile_pid = {
+            let mut handles = self.handles.lock();
+            let handle = handles.entry(service.id.clone()).or_insert_with(ProcessHandle::placeholder);
+            handle.compile_pid.clone()
+        };
+
+        let program = program.to_string();
+        let cwd_clone = cwd.clone();
+        let env_cfg_clone = env_cfg.clone();
+        let compile_pid_clone = compile_pid.clone();
+        let app_clone = app.clone();
+        let sid_clone = service.id.clone();
+
+        let status = tokio::task::spawn_blocking(move || {
+            run_mvn_capture(
+                &program,
+                &args,
+                &cwd_clone,
+                &env_cfg_clone,
+                compile_pid_clone,
+                app_clone,
+                sid_clone,
+            )
+        })
+        .await
+        .map_err(|e| AppError::Process(format!("Maven 任务失败: {}", e)))?
+        .map_err(|e| AppError::Process(format!("Maven 执行失败: {}", e)))?;
+
+        if !status.success() {
+            // 清理 placeholder handle，避免残留阻塞后续 start()
+            {
+                let mut handles = self.handles.lock();
+                if let Some(h) = handles.get(&service.id) {
+                    if h.pid == 0 {
+                        h.kill_token.store(true, Ordering::Relaxed);
+                        handles.remove(&service.id);
+                    }
+                }
+            }
+            // 恢复打包前状态（运行中的服务继续运行，不因打包失败误标 Error）
+            self.set_status(&app, &service.id, prev_status);
+            return Err(AppError::Process(format!(
+                "Maven package 失败（exit code: {:?}）",
+                status.code()
+            )));
+        }
+
+        // 清理 placeholder handle（打包成功后也要清理，否则会阻塞后续 start）
+        {
+            let mut handles = self.handles.lock();
+            if let Some(h) = handles.get(&service.id) {
+                if h.pid == 0 {
+                    h.kill_token.store(true, Ordering::Relaxed);
+                    handles.remove(&service.id);
+                }
+            }
+        }
+
+        // 清除 classpath 缓存（clean 已删 target，缓存失效）
+        let cache = ClasspathCache::for_module(&working_dir);
+        let _ = std::fs::remove_file(&cache.cp_file);
+        let _ = std::fs::remove_file(&cache.key_file);
+
+        Self::emit_log(
+            &app,
+            &service.id,
+            LogSource::Mvn,
+            "[javaboot] 打包完成",
+        );
+        // 恢复打包前状态（运行中的服务继续显示运行中，不误标为 Stopped）
+        self.set_status(&app, &service.id, prev_status);
+
+        // 扫描 target 目录找产物 jar（排除 *-sources.jar、*-javadoc.jar、original-*）
+        let jar = find_package_jar(&working_dir);
+        if let Some(ref j) = jar {
+            Self::emit_log(
+                &app,
+                &service.id,
+                LogSource::Mvn,
+                &format!("[javaboot] 产物: {}", j.display()),
+            );
+        }
+
+        Ok(PackageResult {
+            jar_path: jar.as_ref().map(|p| p.to_string_lossy().to_string()),
+            jar_size: jar.as_ref().and_then(|p| p.metadata().ok().map(|m| m.len())).unwrap_or(0),
+        })
+    }
+
+    /// 批量打包项目下所有已添加的服务
+    ///
+    /// 逐个执行 `package_service`（串行，避免多模块并发打包争抢 target/资源）。
+    /// 返回 `BatchPackageResult`，包含每个成功服务的 jar 路径。
+    pub async fn package_project_services(
+        &self,
+        app: AppHandle,
+        service_ids: &[String],
+    ) -> AppResult<BatchPackageResult> {
+        let mut result = BatchPackageResult::default();
+
+        if service_ids.is_empty() {
+            return Ok(result);
+        }
+
+        let total = service_ids.len();
+        // 推送开始日志到第一个服务面板（让用户看到批量进度）
+        Self::emit_log(
+            &app,
+            &service_ids[0],
+            LogSource::Mvn,
+            &format!("[javaboot] 开始批量打包 {} 个服务...", total),
+        );
+
+        for (idx, sid) in service_ids.iter().enumerate() {
+            let service = match db::get_service(sid) {
+                Ok(s) => s,
+                Err(e) => {
+                    result.failed.push((sid.clone(), format!("服务不存在: {}", e)));
+                    continue;
+                }
+            };
+
+            Self::emit_log(
+                &app,
+                sid,
+                LogSource::Mvn,
+                &format!("[javaboot] 批量打包 ({}/{})：{}", idx + 1, total, service.name),
+            );
+
+            match self.package_service(app.clone(), service).await {
+                Ok(pkg) => {
+                    result.succeeded.push((sid.clone(), pkg.jar_path));
+                }
+                Err(e) => {
+                    result.failed.push((sid.clone(), e.to_string()));
+                    // 不中止，继续下一个
+                }
+            }
+        }
+
+        Self::emit_log(
+            &app,
+            &service_ids[0],
+            LogSource::Mvn,
+            &format!(
+                "[javaboot] 批量打包完成: {} 成功, {} 失败",
+                result.succeeded.len(),
+                result.failed.len()
+            ),
+        );
+
+        Ok(result)
+    }
+
     /// 停止所有运行中的服务（真正并行：每个 stop 独立 spawn 到 tokio runtime）
     pub async fn stop_all(&self, app: AppHandle) -> AppResult<()> {
         let ids: Vec<String> = self.handles.lock().keys().cloned().collect();
@@ -2223,6 +2444,24 @@ let deadline = std::time::Instant::now() + std::time::Duration::from_secs(DEPEND
     }
 }
 
+/// 单个服务打包结果
+#[derive(Debug, Clone, serde::Serialize, Default)]
+pub struct PackageResult {
+    /// 产物 jar 绝对路径（找不到则为 None，如 packaging=pom 的聚合模块）
+    pub jar_path: Option<String>,
+    /// jar 文件大小（字节）
+    pub jar_size: u64,
+}
+
+/// 批量打包结果
+#[derive(Debug, Clone, serde::Serialize, Default)]
+pub struct BatchPackageResult {
+    /// 每个成功打包的服务 → jar 路径
+    pub succeeded: Vec<(String, Option<String>)>,
+    /// 失败的服务 → 错误消息
+    pub failed: Vec<(String, String)>,
+}
+
 /// 批量启动结果
 #[derive(Debug, Clone, serde::Serialize, Default)]
 pub struct BatchStartResult {
@@ -2332,6 +2571,41 @@ fn resolve_cwd_and_module(
         }
         None => (working_dir.to_path_buf(), String::new()),
     }
+}
+
+/// 扫描 `working_dir/target/` 找打包产物 jar。
+///
+/// 排除以下文件：
+/// - `*-sources.jar` / `*-javadoc.jar`（源码/文档包，非可执行产物）
+/// - `original-*`（repackage 前的原始 jar，spring-boot-maven-plugin 会保留）
+/// - `.javaboot-*.txt`（classpath 缓存文件，非 jar）
+///
+/// 多个候选时取**文件最大**的那个（fat jar 通常比普通 jar 大）。
+fn find_package_jar(working_dir: &Path) -> Option<PathBuf> {
+    let target_dir = working_dir.join("target");
+    let entries = std::fs::read_dir(&target_dir).ok()?;
+    let mut best: Option<(PathBuf, u64)> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        if !name.ends_with(".jar") {
+            continue;
+        }
+        if name.ends_with("-sources.jar") || name.ends_with("-javadoc.jar") {
+            continue;
+        }
+        if name.starts_with("original-") {
+            continue;
+        }
+        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        if best.as_ref().map_or(true, |(_, s)| size > *s) {
+            best = Some((path, size));
+        }
+    }
+    best.map(|(p, _)| p)
 }
 
 // ================================================================

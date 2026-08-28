@@ -5,7 +5,6 @@ pub mod pom;
 pub mod port;
 pub mod process;
 pub mod project_fs;
-pub mod terminal;
 pub mod update;
 pub mod util;
 pub mod watcher;
@@ -55,17 +54,13 @@ pub fn run() {
                     api.prevent_close();
                     tauri::async_runtime::spawn(async move {
                         process::get_manager().stop_all(app_handle.clone()).await.ok();
-                        // 终端会话一并回收，避免残留 cmd.exe 进程
-                        terminal::kill_all().await;
                         // 用 app.exit 走正常退出流程，确保 Drop/清理执行
                         app_handle.exit(0);
                     });
                 } else {
-                    // 不停服务也要回收终端子进程
                     let app_handle = window.app_handle().clone();
                     api.prevent_close();
                     tauri::async_runtime::spawn(async move {
-                        terminal::kill_all().await;
                         app_handle.exit(0);
                     });
                 }
@@ -158,6 +153,8 @@ pub fn run() {
             commands::compile_and_start,
             commands::recompile_and_start,
             commands::clean_service,
+            commands::package_service,
+            commands::package_project_services,
             commands::stop_all,
             commands::start_service_with_dependencies,
             commands::start_services_batch,
@@ -175,12 +172,8 @@ pub fn run() {
             commands::fs_copy_entry,
             commands::fs_move_entry,
             commands::reveal_in_file_manager,
+            commands::reveal_path_in_file_manager,
             commands::walk_files,
-            // terminal
-            commands::terminal_create,
-            commands::terminal_write,
-            commands::terminal_resize,
-            commands::terminal_kill,
             // config
             commands::get_config,
             commands::save_config,

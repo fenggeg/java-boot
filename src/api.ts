@@ -2,10 +2,12 @@ import {invoke} from "@tauri-apps/api/core";
 import type {
     AppConfig,
     BatchStartResult,
+    BatchPackageResult,
     FileContent,
     FileEntry,
     JdkInfo,
     MavenInfo,
+    PackageResult,
     Project,
     ScannedModule,
     Service,
@@ -84,6 +86,14 @@ export const cleanService = (id: string) =>
   invoke<void>("clean_service", { id });
 export const stopAll = () => invoke<void>("stop_all");
 
+/// 打包单个服务（mvn clean package -DskipTests），生成可执行 jar
+export const packageService = (id: string) =>
+  invoke<PackageResult>("package_service", { id });
+
+/// 批量打包项目下所有已添加的服务（逐个打包）
+export const packageProjectServices = (ids: string[]) =>
+  invoke<BatchPackageResult>("package_project_services", { ids });
+
 // 带依赖启动
 export const startServiceWithDependencies = (id: string) =>
   invoke<void>("start_service_with_dependencies", { id });
@@ -136,6 +146,10 @@ export const fsMoveEntry = (projectId: string, srcPath: string, destDir: string)
 export const revealInFileManager = (projectId: string, path: string) =>
   invoke<void>("reveal_in_file_manager", { projectId, path });
 
+/// 在系统文件管理器中定位显示指定绝对路径（不依赖项目根目录）
+export const revealPathInFileManager = (path: string) =>
+  invoke<void>("reveal_path_in_file_manager", { path });
+
 /** 项目内全量文件扁平条目（快速打开用，已排除依赖/构建目录与符号链接） */
 export interface FlatFile {
   path: string;
@@ -145,20 +159,6 @@ export interface FlatFile {
 /// 扁平遍历项目内全部文件（快速打开数据源，上限 5 万条）
 export const walkFiles = (projectId: string) =>
   invoke<FlatFile[]>("walk_files", { projectId });
-
-// ============================ Terminal（集成终端） ============================
-
-export const terminalCreate = (projectId: string) =>
-  invoke<string>("terminal_create", { projectId });
-export const terminalWrite = (sessionId: string, data: string) =>
-  invoke<void>("terminal_write", { sessionId, data });
-export const terminalResize = (
-  sessionId: string,
-  cols: number,
-  rows: number
-) => invoke<void>("terminal_resize", { sessionId, cols, rows });
-export const terminalKill = (sessionId: string) =>
-  invoke<void>("terminal_kill", { sessionId });
 
 // ============================ Config ============================
 

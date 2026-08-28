@@ -487,3 +487,13 @@ export function Binary({ size, ...rest }: IconProps) {
     </Svg>
   );
 }
+
+export function Package({ size, ...rest }: IconProps) {
+  return (
+    <Svg size={size} {...rest}>
+      <path d="M12 2 L21 7 V17 L12 22 L3 17 V7 Z" />
+      <path d="M3 7 L12 12 L21 7" />
+      <path d="M12 12 V22" />
+    </Svg>
+  );
+}

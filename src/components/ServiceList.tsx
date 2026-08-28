@@ -9,6 +9,7 @@ import {
     FolderOpen,
     Layers,
     More,
+    Package,
     Plus,
     Refresh,
     Settings,
@@ -209,6 +210,59 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
     }
   };
 
+  /// 批量打包项目下所有已添加的服务（逐个 mvn clean package）
+  const handlePackageAll = async (project: Project) => {
+    const groupServices = services.filter(
+      (s) => s.project_id === project.id,
+    );
+    if (groupServices.length === 0) {
+      message.info("项目下暂无已添加的服务");
+      return;
+    }
+    const ids = groupServices.map((s) => s.id);
+    try {
+      const result = await api.packageProjectServices(ids);
+      const okCount = result.succeeded.length;
+      const failCount = result.failed.length;
+      if (failCount === 0) {
+        // 全部成功：弹窗展示每个服务的 jar 路径
+        const jarList = result.succeeded
+          .map(([sid, jarPath]) => {
+            const name = services.find((s) => s.id === sid)?.name ?? sid;
+            if (jarPath) {
+              return (
+                <div key={sid} style={{ marginBottom: 6 }}>
+                  <span style={{ fontWeight: 500 }}>{name}：</span>
+                  <code style={{ fontSize: 12, wordBreak: "break-all" }}>{jarPath}</code>
+                </div>
+              );
+            }
+            return (
+              <div key={sid} style={{ marginBottom: 6, color: "#888" }}>
+                <span style={{ fontWeight: 500 }}>{name}：</span>未找到 jar 产物
+              </div>
+            );
+          });
+        modal.success({
+          title: `批量打包完成（${okCount} 个服务）`,
+          width: 560,
+          content: <div style={{ maxHeight: 400, overflow: "auto" }}>{jarList}</div>,
+          okText: "关闭",
+        });
+      } else {
+        const failNames = result.failed
+          .map(([id, _]) => services.find((s) => s.id === id)?.name ?? id)
+          .join("、");
+        message.warning(
+          `打包完成: ${okCount} 成功, ${failCount} 失败（${failNames}）`,
+        );
+      }
+      await refreshServices();
+    } catch (e) {
+      message.error(`打包失败: ${api.toErrMsg(e)}`);
+    }
+  };
+
   // 顶部「添加」下拉菜单
   const addMenuItems = [
     { key: "project", label: "添加项目", icon: <Plus size={13} />, onClick: onAddProject },
@@ -246,6 +300,20 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
         label: "项目环境配置",
         icon: <Settings size={13} />,
         onClick: () => setConfigProject(project),
+      },
+      {
+        key: "package",
+        label: (
+          <Tooltip
+            title="逐个打包项目下所有已添加服务（mvn clean package -DskipTests），生成可执行 jar"
+            placement="right"
+          >
+            <span>打包全部服务</span>
+          </Tooltip>
+        ),
+        icon: <Package size={13} />,
+        disabled: isBusy,
+        onClick: () => handlePackageAll(project),
       },
       { type: "divider" as const },
       {

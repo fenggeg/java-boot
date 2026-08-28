@@ -50,6 +50,22 @@ export interface BatchStartResult {
   skipped: string[];
 }
 
+/** 单个服务打包结果 */
+export interface PackageResult {
+  /** 产物 jar 绝对路径（找不到则为 null，如 packaging=pom 的聚合模块） */
+  jar_path: string | null;
+  /** jar 文件大小（字节） */
+  jar_size: number;
+}
+
+/** 批量打包结果 */
+export interface BatchPackageResult {
+  /** 每个成功打包的服务 → jar 路径（可能为 null） */
+  succeeded: [string, string | null][];
+  /** 失败的服务 → 错误消息 */
+  failed: [string, string][];
+}
+
 export type ServiceStatus =
   | "stopped"
   | "starting"

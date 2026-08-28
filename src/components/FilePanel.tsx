@@ -18,12 +18,10 @@ import {
   Image as ImageIcon,
   Save,
   Scissors,
-  Terminal,
   X,
 } from "./Icons";
 import * as api from "../api";
 import type {FileContent, Project} from "../types";
-import TerminalView from "./TerminalView";
 import MonacoCodeEditor from "./MonacoCodeEditor";
 import type {MonacoCodeEditorHandle} from "./MonacoCodeEditor";
 
@@ -434,14 +432,6 @@ export default function FilePanel({
   );
   const [draggingPath, setDraggingPath] = useState<string | null>(null);
 
-  // 集成终端抽屉
-  const [termOpen, setTermOpen] = useState(false);
-  const [termHeight, setTermHeight] = useState<number>(() => {
-    const saved = localStorage.getItem("jb_term_height");
-    return saved ? Math.max(120, parseInt(saved, 10) || 220) : 220;
-  });
-  const termResizingRef = useRef(false);
-
   // 可拖拽宽度：文件树宽度持久化到 localStorage
   const [treeWidth, setTreeWidth] = useState<number>(() => {
     const saved = localStorage.getItem("jb_file_tree_width");
@@ -557,6 +547,8 @@ export default function FilePanel({
 
   // 展开/折叠目录
   const handleToggle = useCallback((path: string) => {
+    // 目录点击时也记录为当前选中条目（供 Ctrl+C/Ctrl+V 快捷键判断目标）
+    setActivePath(path);
     setTreeData((prev) => {
       // 如果目录还没加载，先加载再展开
       const target = findNode(prev, path);
@@ -1025,6 +1017,60 @@ export default function FilePanel({
     [clipboard, project.id, refreshDir, remapTabPaths, message]
   );
 
+  /**
+   * Windows 风格快捷键：Ctrl+C 复制 / Ctrl+V 粘贴当前选中条目。
+   * - 选中条目由 activePath 记录（文件点击 openFile、目录点击 handleToggle 均会设置）
+   * - Ctrl+C：把 activePath 对应条目放入 clipboard（copy 模式）
+   * - Ctrl+V：若 activePath 是目录则粘贴到该目录，若是文件则粘贴到其父目录
+   *   （与右键菜单"粘贴到该目录/所在目录"语义一致）
+   * - 仅在文件树区域聚焦/可见时响应，避免与编辑器内文本复制冲突
+   */
+  useEffect(() => {
+    if (!visible) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      // 仅响应 Ctrl+C / Ctrl+V（Windows 习惯），忽略 Cmd 系列避免干扰 Mac 编辑器
+      const isCopy = e.ctrlKey && !e.metaKey && (e.key === "c" || e.key === "C");
+      const isPaste = e.ctrlKey && !e.metaKey && (e.key === "v" || e.key === "V");
+      if (!isCopy && !isPaste) return;
+
+      // 编辑器/输入框内不拦截（让用户正常复制文本）
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (
+          tag === "INPUT" ||
+          tag === "TEXTAREA" ||
+          target.isContentEditable ||
+          target.closest(".monaco-editor") ||
+          target.closest(".file-tabs")
+        ) {
+          return;
+        }
+      }
+
+      if (!activePath) return;
+
+      if (isCopy) {
+        // 根目录（path=""）不可复制
+        if (activePath === "") return;
+        e.preventDefault();
+        setClipboard({ mode: "copy", path: activePath });
+        message.info("已复制，选择目录后按 Ctrl+V 粘贴");
+        return;
+      }
+
+      // isPaste
+      if (!clipboard) return;
+      const node = findNode(treeData, activePath);
+      const targetDir = node?.isDir ? activePath : parentOf(activePath);
+      e.preventDefault();
+      void handlePaste(targetDir);
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [visible, activePath, clipboard, treeData, handlePaste, message]);
+
   /** 拖拽放下：把拖动条目移动到目标目录 */
   const handleDropInto = useCallback(
     async (targetDir: string) => {
@@ -1058,25 +1104,12 @@ export default function FilePanel({
     document.body.style.userSelect = "none";
   }, []);
 
-  // ---- 终端抽屉高度拖拽 ----
-  const startTermResize = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    termResizingRef.current = true;
-    document.body.style.cursor = "row-resize";
-    document.body.style.userSelect = "none";
-  }, []);
-
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
       if (draggingRef.current && panelBodyRef.current) {
         const rect = panelBodyRef.current.getBoundingClientRect();
         const newWidth = Math.max(160, Math.min(600, e.clientX - rect.left));
         setTreeWidth(newWidth);
-      }
-      if (termResizingRef.current) {
-        const h = window.innerHeight - e.clientY - 40;
-        const next = Math.max(120, Math.min(window.innerHeight * 0.7, h));
-        setTermHeight(next);
       }
     };
     const onUp = () => {
@@ -1087,15 +1120,6 @@ export default function FilePanel({
         setTreeWidth((w) => {
           localStorage.setItem("jb_file_tree_width", String(w));
           return w;
-        });
-      }
-      if (termResizingRef.current) {
-        termResizingRef.current = false;
-        document.body.style.cursor = "";
-        document.body.style.userSelect = "";
-        setTermHeight((h) => {
-          localStorage.setItem("jb_term_height", String(h));
-          return h;
         });
       }
     };
@@ -1141,15 +1165,6 @@ export default function FilePanel({
               </Tooltip>
             </>
           )}
-          <Tooltip title="终端">
-            <button
-              className={`icon-btn sm ${termOpen ? "accent" : ""}`}
-              onClick={() => setTermOpen((v) => !v)}
-              aria-label="终端"
-            >
-              <Terminal size={13} />
-            </button>
-          </Tooltip>
           <Tooltip title="返回日志">
             <button
               className="icon-btn sm"
@@ -1347,35 +1362,6 @@ export default function FilePanel({
             </div>
           )}
         </div>
-      </div>
-
-      {/* 集成终端抽屉 */}
-      <div
-        className={`term-drawer ${termOpen ? "open" : ""}`}
-        style={{ height: termOpen ? termHeight : undefined }}
-      >
-        {termOpen && <div className="term-resizer" onMouseDown={startTermResize} />}
-        <button
-          className={`term-drawer-bar ${termOpen ? "open" : ""}`}
-          onClick={() => setTermOpen((v) => !v)}
-          aria-label="切换终端"
-        >
-          <CaretRight
-            size={11}
-            style={{
-              transform: termOpen ? "rotate(90deg)" : undefined,
-              transition: "transform 0.2s var(--ease)",
-            }}
-          />
-          <Terminal size={12} />
-          <span>终端</span>
-          <span className="term-cwd">{project.root_path}</span>
-        </button>
-        {termOpen && (
-          <div className="term-drawer-content">
-            <TerminalView projectId={project.id} />
-          </div>
-        )}
       </div>
 
       {/* 快速打开（Ctrl+P）：遮罩点击关闭，弹层置顶 */}

@@ -389,6 +389,22 @@ pub async fn clean_service(id: String, app: AppHandle) -> AppResult<()> {
     process::get_manager().clean_service(app, service).await
 }
 
+/// 打包单个服务（mvn clean package -DskipTests），生成可执行 jar
+#[tauri::command]
+pub async fn package_service(id: String, app: AppHandle) -> AppResult<process::manager::PackageResult> {
+    let service = db::get_service(&id)?;
+    process::get_manager().package_service(app, service).await
+}
+
+/// 批量打包项目下所有已添加的服务（逐个打包，避免资源争抢）
+#[tauri::command]
+pub async fn package_project_services(
+    ids: Vec<String>,
+    app: AppHandle,
+) -> AppResult<process::manager::BatchPackageResult> {
+    process::get_manager().package_project_services(app, &ids).await
+}
+
 #[tauri::command]
 pub async fn stop_all(app: AppHandle) -> AppResult<()> {
     process::get_manager().stop_all(app).await
@@ -409,7 +425,6 @@ pub async fn start_services_batch(
 ) -> AppResult<process::manager::BatchStartResult> {
     process::get_manager().start_services_batch(app, &ids).await
 }
-
 /// 查询服务的直接依赖列表
 #[tauri::command]
 pub fn get_service_dependencies(id: String) -> AppResult<Vec<String>> {
@@ -533,6 +548,16 @@ pub async fn reveal_in_file_manager(project_id: String, path: String) -> AppResu
     .map_err(|e| AppError::Other(format!("打开文件管理器任务失败: {}", e)))?
 }
 
+/// 在系统文件管理器中定位显示指定绝对路径（不依赖项目根目录）
+#[tauri::command]
+pub async fn reveal_path_in_file_manager(path: String) -> AppResult<()> {
+    tokio::task::spawn_blocking(move || {
+        crate::project_fs::reveal_path(&path)
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("打开文件管理器任务失败: {}", e)))?
+}
+
 /// 扁平遍历项目内全部文件（排除依赖/构建目录与符号链接），
 /// 供前端做文件名快速搜索（Ctrl+P 快速打开）
 #[tauri::command]
@@ -540,36 +565,6 @@ pub async fn walk_files(project_id: String) -> AppResult<Vec<crate::project_fs::
     tokio::task::spawn_blocking(move || crate::project_fs::walk_files(&project_id))
         .await
         .map_err(|e| AppError::Other(format!("遍历项目文件任务失败: {}", e)))?
-}
-
-// ============================ Terminal（集成终端） ============================
-
-/// 为项目创建交互式终端会话，返回会话 id
-#[tauri::command]
-pub async fn terminal_create(project_id: String, app: AppHandle) -> AppResult<String> {
-    crate::terminal::create(app, &project_id).await
-}
-
-/// 向终端会话写入输入数据（xterm.js 键盘原始数据透传）
-#[tauri::command]
-pub async fn terminal_write(session_id: String, data: String) -> AppResult<()> {
-    crate::terminal::write(&session_id, &data).await
-}
-
-/// 调整伪终端尺寸（前端 xterm.js fit 后调用）
-#[tauri::command]
-pub async fn terminal_resize(
-    session_id: String,
-    cols: u16,
-    rows: u16,
-) -> AppResult<()> {
-    crate::terminal::resize(&session_id, cols, rows).await
-}
-
-/// 终止终端会话
-#[tauri::command]
-pub async fn terminal_kill(session_id: String) -> AppResult<()> {
-    crate::terminal::kill(&session_id).await
 }
 
 // ============================ Config ============================

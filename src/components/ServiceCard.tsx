@@ -1,6 +1,6 @@
 import {memo, useState} from "react";
 import {App, Dropdown, Switch, Tooltip} from "antd";
-import {Broom, Code, More, Play, Restart, Settings, Stop, Warning,} from "./Icons";
+import {Broom, Code, FolderOpen, More, Package, Play, Restart, Settings, Stop, Warning,} from "./Icons";
 import {useStore} from "../store";
 import type {Service} from "../types";
 import {STATUS_META} from "../types";
@@ -108,6 +108,55 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
     }
   };
 
+  const handlePackage = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const result = await api.packageService(service.id);
+      if (result.jar_path) {
+        const jarPath = result.jar_path;
+        const sizeMb = (result.jar_size / 1024 / 1024).toFixed(1);
+        modal.success({
+          title: `${service.name}: 打包完成`,
+          content: (
+            <div style={{ wordBreak: "break-all", fontSize: 13 }}>
+              <div style={{ marginBottom: 8 }}>
+                产物：<code>{jarPath}</code>
+              </div>
+              <div style={{ color: "#888", marginBottom: 4 }}>
+                大小：{sizeMb} MB
+              </div>
+            </div>
+          ),
+          okText: "打开目录",
+          cancelText: "复制路径",
+          okButtonProps: { icon: <FolderOpen size={14} /> },
+          onOk: () => api.revealPathInFileManager(jarPath),
+          onCancel: () => {
+            navigator.clipboard.writeText(jarPath).then(() => {
+              message.success("路径已复制");
+            });
+          },
+        });
+      } else {
+        message.success(`${service.name}: 打包完成（未找到 jar 产物，可能是聚合模块）`);
+      }
+    } catch (e) {
+      message.error(`打包失败: ${api.toErrMsg(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleOpenTarget = () => {
+    // 拼接 working_dir/target 路径，用 revealPathInFileManager 打开
+    // working_dir 是绝对路径，target 是固定子目录
+    const targetDir = `${service.working_dir.replace(/\\/g, "/")}/target`;
+    api.revealPathInFileManager(targetDir).catch((e) =>
+      message.error(`打开失败: ${api.toErrMsg(e)}`),
+    );
+  };
+
   const handleDelete = async () => {
     try {
       await api.deleteService(service.id);
@@ -163,6 +212,25 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
       icon: <Broom size={13} />,
       disabled: isRunning,
       onClick: handleClean,
+    },
+    {
+      key: "package",
+      label: (
+        <Tooltip
+          title="mvn clean package -DskipTests，生成可执行 jar 到 target/（不自动启动）"
+          placement="right"
+        >
+          <span>打包</span>
+        </Tooltip>
+      ),
+      icon: <Package size={13} />,
+      onClick: handlePackage,
+    },
+    {
+      key: "openTarget",
+      label: "打开 target 目录",
+      icon: <FolderOpen size={13} />,
+      onClick: handleOpenTarget,
     },
     { type: "divider" as const },
     {
