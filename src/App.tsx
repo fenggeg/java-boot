@@ -1,6 +1,7 @@
-import {useCallback, useEffect, useMemo, useState, useRef} from "react";
+import {useCallback, useEffect, useMemo, useState} from "react";
 import {App as AntApp, Dropdown, Tabs, Alert, Button} from "antd";
 import {listen, type UnlistenFn,} from "@tauri-apps/api/event";
+import {useShallow} from "zustand/react/shallow";
 import {useStore} from "./store";
 import type {LogLine, Project, Service, ServiceRuntime} from "./types";
 import {STATUS_META} from "./types";
@@ -36,20 +37,16 @@ export default function App() {
 
   // 精确订阅 hasUnread：只在未读状态变化时触发重渲染，日志行变化不触发。
   // 避免任意服务一条日志导致所有 Tab 标签重算。
-  const unreadMap = useStore((s) => {
-    const m: Record<string, boolean> = {};
-    for (const id of s.openedTabs) {
-      m[id] = s.logs[id]?.hasUnread ?? false;
-    }
-    return m;
-  });
-  // 用 ref 保存上一次结果做浅比较，避免每帧都产生新引用导致 useMemo 失效
-  const unreadRef = useRef<Record<string, boolean>>(unreadMap);
-  if (Object.keys(unreadRef.current).length !== Object.keys(unreadMap).length ||
-      Object.entries(unreadMap).some(([k, v]) => unreadRef.current[k] !== v)) {
-    unreadRef.current = unreadMap;
-  }
-  const unreadStable = unreadRef.current;
+  // useShallow 对返回对象做浅比较，防止选择器每次返回新对象引发无限重渲染（React #185）。
+  const unreadMap = useStore(
+    useShallow((s) => {
+      const m: Record<string, boolean> = {};
+      for (const id of s.openedTabs) {
+        m[id] = s.logs[id]?.hasUnread ?? false;
+      }
+      return m;
+    })
+  );
 
   const [addProjectOpen, setAddProjectOpen] = useState(false);
   const [addServiceOpen, setAddServiceOpen] = useState(false);
@@ -186,7 +183,7 @@ export default function App() {
       const rt = runtimes[s.id];
       const status = rt?.status ?? "stopped";
       const meta = STATUS_META[status];
-      const hasUnread = unreadStable[s.id] ?? false;
+      const hasUnread = unreadMap[s.id] ?? false;
       return {
         key: s.id,
         closable: true,
@@ -205,7 +202,7 @@ export default function App() {
         ),
       };
     });
-  }, [services, openedTabs, runtimes, unreadStable, handleContextMenu]);
+  }, [services, openedTabs, runtimes, unreadMap, handleContextMenu]);
 
   return (
     <div className="app-layout">
