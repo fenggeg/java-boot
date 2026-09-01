@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useMemo, useState} from "react";
+import {useCallback, useEffect, useMemo, useState, useRef} from "react";
 import {App as AntApp, Dropdown, Tabs, Alert, Button} from "antd";
 import {listen, type UnlistenFn,} from "@tauri-apps/api/event";
 import {useStore} from "./store";
@@ -32,8 +32,24 @@ export default function App() {
   const selectService = useStore((s) => s.selectService);
   const closeTab = useStore((s) => s.closeTab);
   const openedTabs = useStore((s) => s.openedTabs);
-  const logs = useStore((s) => s.logs);
   const initError = useStore((s) => s.initError);
+
+  // 精确订阅 hasUnread：只在未读状态变化时触发重渲染，日志行变化不触发。
+  // 避免任意服务一条日志导致所有 Tab 标签重算。
+  const unreadMap = useStore((s) => {
+    const m: Record<string, boolean> = {};
+    for (const id of s.openedTabs) {
+      m[id] = s.logs[id]?.hasUnread ?? false;
+    }
+    return m;
+  });
+  // 用 ref 保存上一次结果做浅比较，避免每帧都产生新引用导致 useMemo 失效
+  const unreadRef = useRef<Record<string, boolean>>(unreadMap);
+  if (Object.keys(unreadRef.current).length !== Object.keys(unreadMap).length ||
+      Object.entries(unreadMap).some(([k, v]) => unreadRef.current[k] !== v)) {
+    unreadRef.current = unreadMap;
+  }
+  const unreadStable = unreadRef.current;
 
   const [addProjectOpen, setAddProjectOpen] = useState(false);
   const [addServiceOpen, setAddServiceOpen] = useState(false);
@@ -159,7 +175,7 @@ export default function App() {
     closeContextMenu();
   }, [closeTab, openedTabs, services, message, closeContextMenu]);
 
-  // 只渲染“已打开”的 tab（IDE-like），保持打开顺序
+  // 只渲染"已打开"的 tab（IDE-like），保持打开顺序
   const tabItems = useMemo(() => {
     const serviceMap = new Map(services.map((s) => [s.id, s]));
     const allTabs = openedTabs
@@ -170,8 +186,7 @@ export default function App() {
       const rt = runtimes[s.id];
       const status = rt?.status ?? "stopped";
       const meta = STATUS_META[status];
-      const logBuf = logs[s.id];
-      const hasUnread = logBuf?.hasUnread ?? false;
+      const hasUnread = unreadStable[s.id] ?? false;
       return {
         key: s.id,
         closable: true,
@@ -190,7 +205,7 @@ export default function App() {
         ),
       };
     });
-  }, [services, openedTabs, runtimes, logs, handleContextMenu]);
+  }, [services, openedTabs, runtimes, unreadStable, handleContextMenu]);
 
   return (
     <div className="app-layout">

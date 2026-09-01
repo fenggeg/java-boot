@@ -102,15 +102,39 @@ fn migrate_v6(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
-    for sql in MIGRATIONS {
-        conn.execute_batch(sql)?;
+    // 当前迁移版本号：每次新增迁移时递增此值并添加对应的 migrate_vN 函数
+    const CURRENT_VERSION: u32 = 6;
+
+    // 读取已执行的迁移版本
+    let user_version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0);
+
+    // v1 基础表（仅在 user_version < 1 时执行）
+    if user_version < 1 {
+        for sql in MIGRATIONS {
+            conn.execute_batch(sql)?;
+        }
     }
-    migrate_v2(conn)?;
-    migrate_v3(conn)?;
-    migrate_v4(conn)?;
-    migrate_v5(conn)?;
-    migrate_v6(conn)?;
-    // seed default config
+    // v2-v6 增量迁移：仅执行未执行的版本
+    if user_version < 2 {
+        migrate_v2(conn)?;
+    }
+    if user_version < 3 {
+        migrate_v3(conn)?;
+    }
+    if user_version < 4 {
+        migrate_v4(conn)?;
+    }
+    if user_version < 5 {
+        migrate_v5(conn)?;
+    }
+    if user_version < 6 {
+        migrate_v6(conn)?;
+    }
+
+    // 更新版本号
+    conn.execute_batch(&format!("PRAGMA user_version = {}", CURRENT_VERSION))?;
+
+    // seed default config（幂等，已有 key 不会覆盖）
     let defaults = [
         ("port_refresh_interval_secs", "2"),
         ("stop_on_compile_fail", "false"),

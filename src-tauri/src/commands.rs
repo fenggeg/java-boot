@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use tauri::AppHandle;
 use tauri_plugin_opener::OpenerExt;
 
@@ -19,10 +19,10 @@ use crate::watcher;
 /// 多个 JVM（`java -version` / `mvn -v`）造成数秒卡顿。60 秒内直接复用结果。
 const TOOL_CACHE_TTL: Duration = Duration::from_secs(60);
 
-static JDK_CACHE: Lazy<Mutex<Option<(Instant, Vec<JdkInfo>)>>> =
-    Lazy::new(|| Mutex::new(None));
-static MAVEN_CACHE: Lazy<Mutex<Option<(Instant, Vec<MavenInfo>)>>> =
-    Lazy::new(|| Mutex::new(None));
+static JDK_CACHE: Lazy<RwLock<Option<(Instant, Vec<JdkInfo>)>>> =
+    Lazy::new(|| RwLock::new(None));
+static MAVEN_CACHE: Lazy<RwLock<Option<(Instant, Vec<MavenInfo>)>>> =
+    Lazy::new(|| RwLock::new(None));
 
 // ============================ Project ============================
 
@@ -618,9 +618,17 @@ where
 /// 探测系统已安装的 JDK 列表（扫描常见安装位置）
 #[tauri::command]
 pub async fn detect_jdks() -> Vec<JdkInfo> {
-    // 持锁检查缓存：命中则直接返回，未命中则持锁执行探测，
-    // 确保并发调用不会重复启动 JVM 探测进程
-    let mut _guard = JDK_CACHE.lock().await;
+    // 快速路径：读锁检查缓存，命中则直接返回（并发读不阻塞）
+    {
+        let guard = JDK_CACHE.read().await;
+        if let Some((ts, cached)) = guard.as_ref() {
+            if ts.elapsed() < TOOL_CACHE_TTL {
+                return cached.clone();
+            }
+        }
+    }
+    // 慢路径：写锁 + 双重检查，确保并发调用不会重复启动 JVM 探测进程
+    let mut _guard = JDK_CACHE.write().await;
     if let Some((ts, cached)) = _guard.as_ref() {
         if ts.elapsed() < TOOL_CACHE_TTL {
             return cached.clone();
@@ -955,9 +963,17 @@ pub struct MavenInfo {
 /// 探测系统已安装的 Maven 列表
 #[tauri::command]
 pub async fn detect_mavens() -> Vec<MavenInfo> {
-    // 持锁检查缓存：命中则直接返回，未命中则持锁执行探测，
-    // 确保并发调用不会重复启动 Maven 探测进程
-    let mut _guard = MAVEN_CACHE.lock().await;
+    // 快速路径：读锁检查缓存，命中则直接返回（并发读不阻塞）
+    {
+        let guard = MAVEN_CACHE.read().await;
+        if let Some((ts, cached)) = guard.as_ref() {
+            if ts.elapsed() < TOOL_CACHE_TTL {
+                return cached.clone();
+            }
+        }
+    }
+    // 慢路径：写锁 + 双重检查，确保并发调用不会重复启动 Maven 探测进程
+    let mut _guard = MAVEN_CACHE.write().await;
     if let Some((ts, cached)) = _guard.as_ref() {
         if ts.elapsed() < TOOL_CACHE_TTL {
             return cached.clone();

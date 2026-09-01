@@ -63,6 +63,22 @@ interface GithubRelease {
 
 // ---- 工具函数 ----
 
+/** 运行时校验：判断未知值是否为合法的 GithubRelease 响应 */
+function isGithubRelease(v: unknown): v is GithubRelease {
+  if (!v || typeof v !== "object") return false;
+  const obj = v as Record<string, unknown>;
+  return (
+    typeof obj.tag_name === "string" &&
+    typeof obj.name === "string" &&
+    typeof obj.html_url === "string" &&
+    typeof obj.published_at === "string" &&
+    (obj.body === null || typeof obj.body === "string") &&
+    typeof obj.draft === "boolean" &&
+    typeof obj.prerelease === "boolean" &&
+    Array.isArray(obj.assets)
+  );
+}
+
 function parseVersion(v: string): number[] {
   return v
     .replace(/^v/i, "")
@@ -136,7 +152,10 @@ export async function checkForUpdate(): Promise<UpdateInfo> {
   if (!res.ok) {
     throw new Error(`服务器返回 ${res.status}`);
   }
-  const release: GithubRelease = await res.json();
+  const release: unknown = await res.json();
+  if (!isGithubRelease(release)) {
+    throw new Error("更新服务器返回了非预期的数据格式");
+  }
   if (release.draft || release.prerelease) {
     // 预发布/草稿不作为正式更新推送
     return {

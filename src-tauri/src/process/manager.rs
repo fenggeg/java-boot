@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use chrono::Utc;
 use once_cell::sync::Lazy;
@@ -226,39 +227,52 @@ impl ProcessManager {
 
         let pid_refs: Vec<sysinfo::Pid> =
             pids.iter().map(|(_, pid, _)| sysinfo::Pid::from_u32(*pid)).collect();
-        {
+
+        // 阶段 1：在 SYS 锁内仅采集进程存活状态，不持有 runtimes 锁
+        // 缩短 SYS 锁持锁时间，避免与 refresh_resource_usage 争用
+        let live_pids: Vec<(String, u32, String)> = {
             let mut sys = SYS.lock();
             sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&pid_refs), false);
-            for (service_id, pid, started_at) in &pids {
-                let proc = sys.process(sysinfo::Pid::from_u32(*pid));
-                // 验证进程存在且确实是 java 进程（避免 PID 复用导致误判）
-                let is_java = proc.and_then(|p| p.name().to_str()).map_or(false, |n| {
-                    n.eq_ignore_ascii_case("java.exe") || n.eq_ignore_ascii_case("javaw.exe")
-                });
-                if is_java {
-                    log::info!("恢复服务 {} (PID {})", service_id, pid);
-                    let mut rt = self.runtimes.lock();
-                    let entry = rt.entry(service_id.clone()).or_default();
-                    entry.service_id = service_id.clone();
-                    entry.status = ServiceStatus::Running;
-                    entry.pid = Some(*pid);
-                    entry.started_at = Some(started_at.clone());
-                    entry.ports = crate::port::ports_for_pid(*pid).unwrap_or_default()
-                        .into_iter()
-                        .filter(|p| !NOISE_PORTS.contains(p))
-                        .collect();
-                } else {
-                    let _ = db::clear_run_pid(service_id); // clear: 失败影响小，restore 有 java 进程名校验兜底
-                    if proc.is_some() {
-                        log::warn!(
-                            "服务 {} 的 PID {} 已被非 java 进程复用，清理",
-                            service_id,
-                            pid
-                        );
+            pids.iter()
+                .filter(|(service_id, pid, _started_at)| {
+                    let proc = sys.process(sysinfo::Pid::from_u32(*pid));
+                    let is_java = proc.and_then(|p| p.name().to_str()).map_or(false, |n| {
+                        n.eq_ignore_ascii_case("java.exe") || n.eq_ignore_ascii_case("javaw.exe")
+                    });
+                    if is_java {
+                        log::info!("恢复服务 {} (PID {})", service_id, pid);
+                        true
                     } else {
-                        log::info!("服务 {} 的进程已不存在，清理", service_id);
+                        let _ = db::clear_run_pid(service_id);
+                        if proc.is_some() {
+                            log::warn!(
+                                "服务 {} 的 PID {} 已被非 java 进程复用，清理",
+                                service_id,
+                                pid
+                            );
+                        } else {
+                            log::info!("服务 {} 的进程已不存在，清理", service_id);
+                        }
+                        false
                     }
-                }
+                })
+                .cloned()
+                .collect()
+        };
+
+        // 阶段 2：释放 SYS 锁后，仅持有 runtimes 锁写回
+        {
+            let mut rt = self.runtimes.lock();
+            for (service_id, pid, started_at) in &live_pids {
+                let entry = rt.entry(service_id.clone()).or_default();
+                entry.service_id = service_id.clone();
+                entry.status = ServiceStatus::Running;
+                entry.pid = Some(*pid);
+                entry.started_at = Some(started_at.clone());
+                entry.ports = crate::port::ports_for_pid(*pid).unwrap_or_default()
+                    .into_iter()
+                    .filter(|p| !NOISE_PORTS.contains(p))
+                    .collect();
             }
         }
 
@@ -348,31 +362,44 @@ impl ProcessManager {
         }
         let pid_refs: Vec<sysinfo::Pid> =
             pids.iter().map(|(_, p)| sysinfo::Pid::from_u32(*p)).collect();
-        let mut changed = false;
-        {
+
+        // 阶段 1：在 SYS 锁内仅采集 CPU/内存快照，不持有 runtimes 锁
+        // 缩短 SYS 锁持锁时间，减少与其他调用方（wait_for_pid_exit、start）的争用
+        let snapshots: Vec<(String, Option<f32>, Option<f64>)> = {
             let mut sys = SYS.lock();
             sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&pid_refs), true);
+            pids.iter()
+                .map(|(sid, pid)| {
+                    let proc = sys.process(sysinfo::Pid::from_u32(*pid));
+                    let cpu = proc.map(|p| p.cpu_usage());
+                    let mem = proc.map(|p| p.memory() as f64 / 1024.0 / 1024.0);
+                    (sid.clone(), cpu, mem)
+                })
+                .collect()
+        };
+
+        // 阶段 2：释放 SYS 锁后，仅持有 runtimes 锁写回快照
+        let mut changed = false;
+        {
             let mut rt = self.runtimes.lock();
-            for (service_id, pid) in &pids {
-                if let Some(proc) = sys.process(sysinfo::Pid::from_u32(*pid)) {
-                    let entry = rt.entry(service_id.clone()).or_default();
-                    entry.service_id = service_id.clone();
-                    let cpu = Some(proc.cpu_usage());
-                    let mem = Some(proc.memory() as f64 / 1024.0 / 1024.0);
-                    // 首次采样（旧值为 None）视为变化，后续按阈值过滤
-                    let cpu_changed = match entry.cpu_usage {
-                        Some(old) => (cpu.unwrap_or(0.0) - old).abs() > 0.5,
-                        None => true,
-                    };
-                    let mem_changed = match entry.memory_mb {
-                        Some(old) => (mem.unwrap_or(0.0) - old).abs() > 1.0,
-                        None => true,
-                    };
-                    if cpu_changed || mem_changed {
-                        entry.cpu_usage = cpu;
-                        entry.memory_mb = mem;
-                        changed = true;
-                    }
+            for (service_id, cpu, mem) in &snapshots {
+                if cpu.is_none() {
+                    continue; // 进程已退出
+                }
+                let entry = rt.entry(service_id.clone()).or_default();
+                entry.service_id = service_id.clone();
+                let cpu_changed = match entry.cpu_usage {
+                    Some(old) => (cpu.unwrap_or(0.0_f32) - old).abs() > 0.5_f32,
+                    None => true,
+                };
+                let mem_changed = match entry.memory_mb {
+                    Some(old) => (mem.unwrap_or(0.0) - old).abs() > 1.0,
+                    None => true,
+                };
+                if cpu_changed || mem_changed {
+                    entry.cpu_usage = *cpu;
+                    entry.memory_mb = *mem;
+                    changed = true;
                 }
             }
         }
@@ -582,21 +609,18 @@ impl ProcessManager {
     // start：核心启动流程（三档策略 + classpath 缓存 + dev_mode）
     // ================================================================
 
-    pub async fn start(&self, app: AppHandle, service: Service) -> AppResult<()> {
+    /// 清理残留 handle 并创建 placeholder，返回 (kill_token, compile_pid)。
+    ///
+    /// 三种情况：
+    ///   (a) pid > 0 且 sysinfo 查得到       → 真运行中，拒绝（返回 Err）
+    ///   (b) pid > 0 但进程已死（僵尸）     → 静默清理后继续
+    ///   (c) pid == 0（placeholder）：
+    ///         - kill_token 已 signal / 超时 / runtime 已失败 → 清理
+    ///         - 否则看作并发启动中 → 拒绝（返回 Err）
+    fn prepare_start_placeholder(&self, service: &Service) -> Result<(Arc<AtomicBool>, CompilePidSlot), AppError> {
         let (kill_token, compile_pid) = {
             let mut handles = self.handles.lock();
             if let Some(existing) = handles.get(&service.id) {
-                // 已有条目：细分三种情况
-                //   (a) pid > 0 且 sysinfo 查得到       → 真运行中，拒绝
-                //   (b) pid > 0 但进程已死（僵尸）     → 静默清理后继续
-                //   (c) pid == 0（placeholder）：
-                //         - kill_token 已 signal → 已被 stop，残留→清理
-                //         - 创建超过 5 分钟未推进  → 死 placeholder →清理
-                //         - 否则看作并发启动中       →拒绝
-                //
-                // 【锁顺序修复】对 pid>0 的存活性检查需要获取 SYS 锁，
-                // 但此时已持有 handles 锁，违反 SYS→handles 约定。
-                // 改为先快照 pid、释放 handles 锁、再查 SYS，最后重新获取 handles 做判断。
                 let existing_pid = existing.pid;
                 let existing_kill_token = existing.kill_token.clone();
                 let existing_created_at = existing.created_at;
@@ -612,12 +636,8 @@ impl ProcessManager {
                     };
                     let mut handles = self.handles.lock();
                     if let Some(h) = handles.get(&service.id) {
-                        // 确认还是同一个 handle（可能在此期间被 stop/restart 替换）
                         if h.pid == existing_pid {
                             if alive {
-                                // 防御性检查：runtime 状态为 Error/Stopped 但进程"存活"，
-                                // 可能是 sysinfo 刷新延迟或 PID 复用。
-                                // 用户主动请求启动，说明他认为服务未运行，应清理后允许启动。
                                 let rt_status = self.runtimes.lock()
                                     .get(&service.id)
                                     .map(|r| r.status);
@@ -630,7 +650,7 @@ impl ProcessManager {
                                     handles.remove(&service.id);
                                     let _ = db::clear_run_pid(&service.id);
                                 } else {
-                                    return Err(AppError::ServiceRunning(service.id));
+                                    return Err(AppError::ServiceRunning(service.id.clone()));
                                 }
                             } else {
                                 log::info!(
@@ -641,7 +661,7 @@ impl ProcessManager {
                                 );
                                 h.kill_token.store(true, Ordering::Relaxed);
                                 handles.remove(&service.id);
-                                let _ = db::clear_run_pid(&service.id); // clear: 失败影响小，restore 有 java 进程名校验兜底
+                                let _ = db::clear_run_pid(&service.id);
                             }
                         }
                     }
@@ -654,16 +674,13 @@ impl ProcessManager {
                     // placeholder（pid==0）：不需要 SYS 锁，直接在 handles 锁内判断
                     let signaled = existing_kill_token.load(Ordering::Relaxed);
                     let stale = existing_created_at.elapsed() > std::time::Duration::from_secs(STALE_PLACEHOLDER_SECS);
-                    // 额外检查 runtime 状态：如果后端已将状态设为 Error/Stopped，
-                    // 说明上一次启动已明确失败，placeholder 是残留的，应清理而非拒绝。
-                    // 否则会出现"状态=Error → 前端显示启动按钮，但 start() 返回 ServiceRunning"的死锁。
                     let rt_status = self.runtimes.lock()
                         .get(&service.id)
                         .map(|r| r.status);
                     let failed = matches!(rt_status, Some(ServiceStatus::Error) | Some(ServiceStatus::Stopped));
                     let alive = !(signaled || stale || failed);
                     if alive {
-                        return Err(AppError::ServiceRunning(service.id));
+                        return Err(AppError::ServiceRunning(service.id.clone()));
                     }
                     log::info!(
                         "堆叠残留 handle(PID {}, elapsed {:?})，已自动清理：{}",
@@ -671,10 +688,9 @@ impl ProcessManager {
                         existing.created_at.elapsed(),
                         service.id
                     );
-                    // 主动 signal，避免可能还在后台卡着的旧 async task 拉长系统状态
                     existing.kill_token.store(true, Ordering::Relaxed);
                     handles.remove(&service.id);
-                    let _ = db::clear_run_pid(&service.id); // clear: 失败影响小，restore 有 java 进程名校验兜底
+                    let _ = db::clear_run_pid(&service.id);
                     let placeholder = ProcessHandle::placeholder();
                     let kt = placeholder.kill_token.clone();
                     let cp = placeholder.compile_pid.clone();
@@ -689,6 +705,240 @@ impl ProcessManager {
                 (kt, cp)
             }
         };
+        Ok((kill_token, compile_pid))
+    }
+
+    /// 构造 Java 启动参数列表（dev_mode JVM 优化、profiles、maven_opts、覆盖属性）。
+    ///
+    /// 返回 `(args, classpath_placeholder)` — args 中已包含 `-cp <classpath>` 和主类。
+    fn build_java_args(
+        &self,
+        app: &AppHandle,
+        service: &Service,
+        classpath: &str,
+        main_class: &str,
+    ) -> Vec<String> {
+        let mut args: Vec<String> = vec!["-Dfile.encoding=UTF-8".to_string()];
+        if service.dev_mode {
+            args.extend([
+                "-XX:TieredStopAtLevel=1".into(),
+                "-XX:+AlwaysPreTouch".into(),
+                "-Dspring.jmx.enabled=false".into(),
+                "-Dspring.output.ansi.enabled=never".into(),
+                "-Dspring.devtools.restart.enabled=false".into(),
+            ]);
+            // 可选：Bean 懒加载，显著缩短 Spring 上下文启动（设置里开启）
+            if db::load_config()
+                .map(|c| c.dev_lazy_init)
+                .unwrap_or(false)
+            {
+                args.push("-Dspring.main.lazy-initialization=true".into());
+                Self::emit_log(
+                    &app,
+                    &service.id,
+                    LogSource::Mvn,
+                    "[javaboot] 已启用 Spring 懒加载 (lazy-initialization)",
+                );
+            }
+        }
+        if let Some(pf) = &service.profiles {
+            if !pf.trim().is_empty() {
+                args.push(format!("-Dspring.profiles.active={}", pf.trim()));
+            }
+        }
+        if let Some(mo) = &service.maven_opts {
+            for a in split_args(mo) {
+                if a.starts_with("-D") || a.starts_with("-X") {
+                    args.push(a);
+                }
+            }
+        }
+        // 配置覆盖属性：JSON → -Dkey=value，放在 maven_opts 的 -D 之后，
+        // 确保用户在 UI 里配置的覆盖值优先级最高（Spring Boot 系统属性优先于 application.yml）
+        let (overrides, parse_err) = parse_override_properties(&service.override_properties);
+        if let Some(err_msg) = parse_err {
+            Self::emit_log(
+                &app,
+                &service.id,
+                LogSource::Mvn,
+                &format!("[javaboot] 警告: {}", err_msg),
+            );
+        }
+        if !overrides.is_empty() {
+            for (k, v) in &overrides {
+                args.push(format!("-D{}={}", k, v));
+            }
+            Self::emit_log(
+                &app,
+                &service.id,
+                LogSource::Mvn,
+                &format!("[javaboot] 注入 {} 个覆盖属性", overrides.len()),
+            );
+        }
+        args.push("-cp".into());
+        args.push(classpath.to_string());
+        args.push(main_class.to_string());
+        if let Some(mo) = &service.maven_opts {
+            for a in split_args(mo) {
+                if !a.starts_with("-D") && !a.starts_with("-X") {
+                    args.push(a);
+                }
+            }
+        }
+        args
+    }
+
+    /// Spawn java 子进程，绑定 Job Object，启动日志读取和 reaper。
+    ///
+    /// 包含 spawn 后的竞态修复（kill_token 检查）、Job Object 绑定、
+    /// 日志 pipe 和进程退出 reaper。
+    async fn spawn_and_monitor(
+        &self,
+        app: &AppHandle,
+        service: &Service,
+        mut cmd: Command,
+        kill_token: Arc<AtomicBool>,
+        working_dir: &Path,
+    ) -> AppResult<()> {
+        Self::emit_log(&app, &service.id, LogSource::Mvn, "[javaboot] 启动 java 子进程...");
+        let mut child = cmd.spawn().map_err(|e| {
+            let msg = format!("启动失败: {}", e);
+            Self::emit_log(&app, &service.id, LogSource::Mvn, &format!("[javaboot] {}", msg));
+            self.handles.lock().remove(&service.id);
+            self.set_status(&app, &service.id, ServiceStatus::Stopped);
+            AppError::Process(format!(
+                "{}\n请检查该服务配置的 JDK 路径和 Maven 是否可用。\n（若 classpath 过长，已自动切换 @argfile (JDK≥9) 或 CLASSPATH 环境变量 (JDK<9)；若仍失败请检查日志中的启动命令）",
+                msg
+            ))
+        })?;
+        let pid = child.id().unwrap_or(0);
+
+        // 竞态修复：spawn 成功后立即将 PID 写入 handle
+        if pid > 0 {
+            let mut handles = self.handles.lock();
+            if let Some(h) = handles.get_mut(&service.id) {
+                h.pid = pid;
+            }
+            if kill_token.load(Ordering::Relaxed) {
+                drop(handles);
+                kill_process_tree_by_pid(pid);
+                let _ = db::clear_run_pid(&service.id);
+                self.set_status(&app, &service.id, ServiceStatus::Stopped);
+                return Err(AppError::Other("启动已被停止中断".to_string()));
+            }
+        }
+
+        let job = JobObject::new().map_err(|e| {
+            kill_token.store(true, Ordering::Relaxed);
+            kill_process_tree_by_pid(pid);
+            self.handles.lock().remove(&service.id);
+            self.set_status(&app, &service.id, ServiceStatus::Stopped);
+            let _ = db::clear_run_pid(&service.id);
+            AppError::Process(format!("Job Object 创建失败: {}", e))
+        })?;
+        #[cfg(windows)]
+        {
+            use windows::Win32::Foundation::HANDLE;
+            if let Some(h) = child.raw_handle() {
+                if let Err(e) = job.assign(HANDLE(h)) {
+                    log::warn!("Job assign 失败 (pid={}): {}，stop 将兜底用 kill_process_tree_by_pid", pid, e);
+                    self.set_pid(&app, &service.id, pid);
+                    let stdout = child.stdout.take();
+                    let stderr = child.stderr.take();
+                    Self::spawn_log_reader(app.clone(), service.id.clone(), stdout, stderr);
+                    let app_c = app.clone();
+                    let sid_c = service.id.clone();
+                    let pid_c = pid;
+                    tokio::spawn(async move {
+                        let _ = child.wait().await;
+                        log::info!("进程 {} ({}): assign 失败后的 reaper 回收退出", sid_c, pid_c);
+                        let mgr = get_manager();
+                        mgr.handles.lock().remove(&sid_c);
+                        let _ = db::clear_run_pid(&sid_c);
+                        mgr.set_status(&app_c, &sid_c, ServiceStatus::Stopped);
+                    });
+                    return Ok(());
+                }
+            }
+        }
+        let job_arc = Arc::new(PMutex::new(job));
+        {
+            let mut handles = self.handles.lock();
+            if let Some(h) = handles.get_mut(&service.id) {
+                h.pid = pid;
+                h.job = Some(job_arc.clone());
+            }
+        }
+        self.set_pid(&app, &service.id, pid);
+
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        Self::spawn_log_reader(app.clone(), service.id.clone(), stdout, stderr);
+
+        let app3 = app.clone();
+        let sid3 = service.id.clone();
+        let kill_token2 = kill_token.clone();
+        let working_dir3 = working_dir.to_path_buf();
+        tokio::spawn(async move {
+            let status = child.wait().await;
+            let killed = kill_token2.load(Ordering::Relaxed);
+            if !killed {
+                match status {
+                    Ok(s) => {
+                        Self::emit_log(
+                            &app3, &sid3, LogSource::App,
+                            &format!("[javaboot] 进程退出，退出码: {:?}", s.code()),
+                        );
+                        if !s.success() {
+                            tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_SLOW_MS)).await;
+                            let argfile_path = working_dir3
+                                .join("target").join(".javaboot-args.txt");
+                            if argfile_path.exists() {
+                                Self::emit_log(
+                                    &app3, &sid3, LogSource::Mvn,
+                                    &format!("[javaboot] argfile 路径: {}", argfile_path.display()),
+                                );
+                                if let Ok(content) = std::fs::read_to_string(&argfile_path) {
+                                    let lines: Vec<&str> = content.lines().collect();
+                                    Self::emit_log(
+                                        &app3, &sid3, LogSource::Mvn,
+                                        &format!("[javaboot] argfile 共 {} 行，前 5 行:", lines.len()),
+                                    );
+                                    for (i, l) in lines.iter().take(5).enumerate() {
+                                        let preview = if l.len() > 200 { format!("{}...(共{}字符)", &l[..200], l.len()) } else { l.to_string() };
+                                        Self::emit_log(&app3, &sid3, LogSource::Mvn, &format!("  [{}] {}", i, preview));
+                                    }
+                                }
+                            }
+                            Self::emit_log(
+                                &app3, &sid3, LogSource::Mvn,
+                                "[javaboot] 启动失败。可能原因：classpath 缓存过期、argfile 编码/路径问题、主类不存在或端口被占用。可尝试「重新编译并启动」刷新 classpath。",
+                            );
+                            get_manager().set_status(&app3, &sid3, ServiceStatus::Error);
+                        } else {
+                            get_manager().set_status(&app3, &sid3, ServiceStatus::Stopped);
+                        }
+                    }
+                    Err(e) => {
+                        Self::emit_log(
+                            &app3, &sid3, LogSource::App,
+                            &format!("[javaboot] 进程等待错误: {}", e),
+                        );
+                        get_manager().set_status(&app3, &sid3, ServiceStatus::Error);
+                    }
+                }
+            } else {
+                get_manager().set_status(&app3, &sid3, ServiceStatus::Stopped);
+            }
+            get_manager().handles.lock().remove(&sid3);
+            let _ = db::clear_run_pid(&sid3);
+        });
+
+        Ok(())
+    }
+
+    pub async fn start(&self, app: AppHandle, service: Service) -> AppResult<()> {
+        let (kill_token, compile_pid) = self.prepare_start_placeholder(&service)?;
 
         self.set_status(&app, &service.id, ServiceStatus::Starting);
 
@@ -853,75 +1103,8 @@ impl ProcessManager {
             ),
         );
 
-        // 收集所有 java 参数，便于按需走 @argfile（Windows 命令行上限 32767 字符）
-        let mut args: Vec<String> = vec!["-Dfile.encoding=UTF-8".to_string()];
-        if service.dev_mode {
-            args.extend([
-                "-XX:TieredStopAtLevel=1".into(),
-                "-XX:+AlwaysPreTouch".into(),
-                "-Dspring.jmx.enabled=false".into(),
-                "-Dspring.output.ansi.enabled=never".into(),
-                "-Dspring.devtools.restart.enabled=false".into(),
-            ]);
-            // 可选：Bean 懒加载，显著缩短 Spring 上下文启动（设置里开启）
-            // 注意：依赖 @PostConstruct 时序 / 启动期主动拉取 Bean 的应用可能有副作用
-            if db::load_config()
-                .map(|c| c.dev_lazy_init)
-                .unwrap_or(false)
-            {
-                args.push("-Dspring.main.lazy-initialization=true".into());
-                Self::emit_log(
-                    &app,
-                    &service.id,
-                    LogSource::Mvn,
-                    "[javaboot] 已启用 Spring 懒加载 (lazy-initialization)",
-                );
-            }
-        }
-        if let Some(pf) = &service.profiles {
-            if !pf.trim().is_empty() {
-                args.push(format!("-Dspring.profiles.active={}", pf.trim()));
-            }
-        }
-        if let Some(mo) = &service.maven_opts {
-            for a in split_args(mo) {
-                if a.starts_with("-D") || a.starts_with("-X") {
-                    args.push(a);
-                }
-            }
-        }
-        // 配置覆盖属性：JSON → -Dkey=value，放在 maven_opts 的 -D 之后，
-        // 确保用户在 UI 里配置的覆盖值优先级最高（Spring Boot 系统属性优先于 application.yml）
-        let (overrides, parse_err) = parse_override_properties(&service.override_properties);
-        if let Some(err_msg) = parse_err {
-            Self::emit_log(
-                &app,
-                &service.id,
-                LogSource::Mvn,
-                &format!("[javaboot] 警告: {}", err_msg),
-            );
-        }
-        if !overrides.is_empty() {
-            for (k, v) in &overrides {
-                args.push(format!("-D{}={}", k, v));
-            }
-            Self::emit_log(
-                &app,
-                &service.id,
-                LogSource::Mvn,
-                &format!("[javaboot] 注入 {} 个覆盖属性", overrides.len()),
-            );
-        }
-        args.push("-cp".into());
-        args.push(classpath.clone());
-        args.push(main_class.clone());
-        if let Some(mo) = &service.maven_opts {
-            for a in split_args(mo) {
-                if !a.starts_with("-D") && !a.starts_with("-X") {
-                    args.push(a);
-                }
-            }
-        }
+        // 构造 Java 参数（dev_mode、profiles、maven_opts、覆盖属性、-cp、主类）
+        let args = self.build_java_args(&app, &service, &classpath, &main_class);
 
         // 估算命令行长度：java_bin + 各 arg + 分隔符
         let cmd_len = java_bin.len() + 1 + args.iter().map(|a| a.len() + 1).sum::<usize>();
@@ -1090,159 +1273,9 @@ impl ProcessManager {
             );
         }
 
-        Self::emit_log(&app, &service.id, LogSource::Mvn, "[javaboot] 启动 java 子进程...");
-        let mut child = cmd.spawn().map_err(|e| {
-            let msg = format!("启动失败 ({}): {}", program, e);
-            // 同步推到日志面板，避免只在前端 toast 看到，日志面板却一片空白
-            Self::emit_log(&app, &service.id, LogSource::Mvn, &format!("[javaboot] {}", msg));
-            self.handles.lock().remove(&service.id);
-            self.set_status(&app, &service.id, ServiceStatus::Stopped);
-            AppError::Process(format!(
-                "{}\n请检查该服务配置的 JDK 路径和 Maven 是否可用。\n（若 classpath 过长，已自动切换 @argfile (JDK≥9) 或 CLASSPATH 环境变量 (JDK<9)；若仍失败请检查日志中的启动命令）",
-                msg
-            ))
-        })?;
-        let pid = child.id().unwrap_or(0);
-
-        // 【竞态修复】spawn 成功后立即将 PID 写入 handle，
-        // 缩短 stop() 读到 placeholder(pid=0) 的窗口。
-        // 若 stop() 在此刻触发 kill_token，后续 Job 创建/绑定失败路径会检查 kill_token
-        // 并用 kill_process_tree_by_pid(pid) 清理，避免孤儿进程。
-        if pid > 0 {
-            let mut handles = self.handles.lock();
-            if let Some(h) = handles.get_mut(&service.id) {
-                h.pid = pid;
-            }
-            // 若 stop() 已在此前移除了 handle 并 signal 了 kill_token，
-            // 立即杀掉刚 spawn 的进程并返回
-            if kill_token.load(Ordering::Relaxed) {
-                drop(handles);
-                kill_process_tree_by_pid(pid);
-                let _ = db::clear_run_pid(&service.id); // clear: 失败影响小，restore 有 java 进程名校验兜底
-                self.set_status(&app, &service.id, ServiceStatus::Stopped);
-                return Err(AppError::Other("启动已被停止中断".to_string()));
-            }
-        }
-
-        let job = JobObject::new().map_err(|e| {
-            // 子进程已 spawn：创建 Job Object 失败时必须主动杀掉它，
-            // 否则 java 会变成无人管理的孤儿进程继续占用端口
-            kill_token.store(true, Ordering::Relaxed);
-            kill_process_tree_by_pid(pid);
-            self.handles.lock().remove(&service.id);
-            self.set_status(&app, &service.id, ServiceStatus::Stopped);
-            let _ = db::clear_run_pid(&service.id); // clear: 失败影响小，restore 有 java 进程名校验兜底
-            AppError::Process(format!("Job Object 创建失败: {}", e))
-        })?;
-        #[cfg(windows)]
-        {
-            use windows::Win32::Foundation::HANDLE;
-            if let Some(h) = child.raw_handle() {
-                if let Err(e) = job.assign(HANDLE(h)) {
-                    // assign 失败：子进程不在 Job 内，stop() 调 job.kill() 杀不掉它。
-                    // 不存 job 到 handle，stop() 会走 run_pid>0 兜底分支用 kill_process_tree_by_pid。
-                    log::warn!("Job assign 失败 (pid={}): {}，stop 将兜底用 kill_process_tree_by_pid", pid, e);
-                    // 跳过存储 job，直接进入 set_pid
-                    self.set_pid(&app, &service.id, pid);
-                    let stdout = child.stdout.take();
-                    let stderr = child.stderr.take();
-                    Self::spawn_log_reader(app.clone(), service.id.clone(), stdout, stderr);
-                    // spawn reaper：assign 失败时没有 Job 兜底回收，更需要 reaper
-                    let app_c = app.clone();
-                    let sid_c = service.id.clone();
-                    let pid_c = pid;
-                    tokio::spawn(async move {
-                        let _ = child.wait().await;
-                        log::info!("进程 {} ({}): assign 失败后的 reaper 回收退出", sid_c, pid_c);
-                        let mgr = get_manager();
-                        mgr.handles.lock().remove(&sid_c);
-                        let _ = db::clear_run_pid(&sid_c); // clear: 失败影响小，restore 有 java 进程名校验兜底
-                        mgr.set_status(&app_c, &sid_c, ServiceStatus::Stopped);
-                    });
-                    return Ok(());
-                }
-            }
-        }
-        let job_arc = Arc::new(PMutex::new(job));
-        {
-            let mut handles = self.handles.lock();
-            if let Some(h) = handles.get_mut(&service.id) {
-                h.pid = pid;
-                h.job = Some(job_arc.clone());
-            }
-        }
-        self.set_pid(&app, &service.id, pid);
-
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-        Self::spawn_log_reader(app.clone(), service.id.clone(), stdout, stderr);
-
-        let app3 = app.clone();
-        let sid3 = service.id.clone();
-        let kill_token2 = kill_token.clone();
-        let working_dir3 = working_dir.clone();
-        tokio::spawn(async move {
-            let status = child.wait().await;
-            let killed = kill_token2.load(Ordering::Relaxed);
-            if !killed {
-                match status {
-                    Ok(s) => {
-                        // 不论成功失败都打退出码，避免"进程默默退出、日志一片空白"的情况
-                        Self::emit_log(
-                            &app3, &sid3, LogSource::App,
-                            &format!("[javaboot] 进程退出，退出码: {:?}", s.code()),
-                        );
-                        if !s.success() {
-                            // JVM 启动早期失败（退出码 1/2）时，stderr 可能尚未被
-                            // log reader 读完。短暂等待让 stderr 排空，避免诊断信息
-                            // 丢失。随后追加排查提示。
-                            tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_SLOW_MS)).await;
-                            // 诊断：若使用了 argfile，输出其路径和内容摘要，便于定位
-                            // "退出码 1 且 stderr 为空"的启动失败
-                            let argfile_path = std::path::PathBuf::from(&working_dir3)
-                                .join("target").join(".javaboot-args.txt");
-                            if argfile_path.exists() {
-                                Self::emit_log(
-                                    &app3, &sid3, LogSource::Mvn,
-                                    &format!("[javaboot] argfile 路径: {}", argfile_path.display()),
-                                );
-                                if let Ok(content) = std::fs::read_to_string(&argfile_path) {
-                                    let lines: Vec<&str> = content.lines().collect();
-                                    Self::emit_log(
-                                        &app3, &sid3, LogSource::Mvn,
-                                        &format!("[javaboot] argfile 共 {} 行，前 5 行:", lines.len()),
-                                    );
-                                    for (i, l) in lines.iter().take(5).enumerate() {
-                                        let preview = if l.len() > 200 { format!("{}...(共{}字符)", &l[..200], l.len()) } else { l.to_string() };
-                                        Self::emit_log(&app3, &sid3, LogSource::Mvn, &format!("  [{}] {}", i, preview));
-                                    }
-                                }
-                            }
-                            Self::emit_log(
-                                &app3, &sid3, LogSource::Mvn,
-                                "[javaboot] 启动失败。可能原因：classpath 缓存过期、argfile 编码/路径问题、主类不存在或端口被占用。可尝试「重新编译并启动」刷新 classpath。",
-                            );
-                            get_manager().set_status(&app3, &sid3, ServiceStatus::Error);
-                        } else {
-                            get_manager().set_status(&app3, &sid3, ServiceStatus::Stopped);
-                        }
-                    }
-                    Err(e) => {
-                        Self::emit_log(
-                            &app3, &sid3, LogSource::App,
-                            &format!("[javaboot] 进程等待错误: {}", e),
-                        );
-                        get_manager().set_status(&app3, &sid3, ServiceStatus::Error);
-                    }
-                }
-            } else {
-                get_manager().set_status(&app3, &sid3, ServiceStatus::Stopped);
-            }
-            get_manager().handles.lock().remove(&sid3);
-            let _ = db::clear_run_pid(&sid3); // clear: 失败影响小，restore 有 java 进程名校验兜底
-        });
-
-        Ok(())
+        self.spawn_and_monitor(
+            &app, &service, cmd, kill_token, &working_dir,
+        ).await
     }
 
     /// stdout / stderr 分别读取，不再合并 & 不再滑窗去重
@@ -1598,17 +1631,23 @@ impl ProcessManager {
 
         if !dep_cp.is_empty() {
             // 扫描项目内所有有 target/classes 的模块，建立 artifactId → classes 路径 映射
+            // 使用 TTL 缓存：同一项目 5 秒内多次启动服务时复用扫描结果，避免重复遍历目录
             let module_map = env_cfg.project_root
                 .as_ref()
-                .map(|root| build_module_classes_map(std::path::Path::new(root)))
+                .map(|root| get_cached_module_classes_map(std::path::Path::new(root)))
                 .unwrap_or_default();
+
+            // 预排序：按 artifact_id 长度降序，确保最长前缀优先匹配
+            // 在循环外只排序一次，避免 replace_with_module_classes 每次调用都排序
+            let mut sorted_entries: Vec<(&String, &String)> = module_map.iter().collect();
+            sorted_entries.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
 
             for entry in dep_cp.split(CP_SEP) {
                 if entry.is_empty() {
                     continue;
                 }
                 // 尝试从本地仓库 jar 路径提取 artifactId，替换为项目内 target/classes
-                let replaced = replace_with_module_classes(entry, &module_map);
+                let replaced = replace_with_module_classes(entry, &sorted_entries);
                 parts.push(replaced);
             }
         }
@@ -2669,7 +2708,9 @@ fn topo_sort_multi(
     }
     for (_from, tos) in &adj {
         for to in tos {
-            *in_degree.get_mut(to).unwrap_or(&mut 0) += 1;
+            if let Some(d) = in_degree.get_mut(to) {
+                *d += 1;
+            }
         }
     }
 
@@ -2717,6 +2758,34 @@ fn topo_sort(
 // ================================================================
 // classpath 替换：本地仓库 jar → 项目内 target/classes
 // ================================================================
+
+/// module_classes_map 缓存 TTL：同一项目根目录 5 秒内复用扫描结果，
+/// 避免批量启动多个服务时重复遍历项目目录树。
+const MODULE_MAP_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// module_classes_map 缓存：`project_root → (Instant, HashMap<artifactId, classes_path>)`
+static MODULE_MAP_CACHE: Lazy<PMutex<HashMap<PathBuf, (Instant, HashMap<String, String>)>>> =
+    Lazy::new(|| PMutex::new(HashMap::new()));
+
+/// 获取带 TTL 缓存的 module_classes_map：5 秒内复用，过期后重新扫描。
+/// 批量启动同一项目下多个服务时，首次调用扫描目录树并缓存，后续调用直接命中缓存。
+fn get_cached_module_classes_map(root: &std::path::Path) -> std::collections::HashMap<String, String> {
+    let root_canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let now = Instant::now();
+    {
+        let cache = MODULE_MAP_CACHE.lock();
+        if let Some((ts, map)) = cache.get(&root_canonical) {
+            if now.duration_since(*ts) < MODULE_MAP_TTL {
+                return map.clone();
+            }
+        }
+    }
+    // 缓存 miss 或过期：重新扫描并更新缓存
+    let map = build_module_classes_map(root);
+    let mut cache = MODULE_MAP_CACHE.lock();
+    cache.insert(root_canonical, (now, map.clone()));
+    map
+}
 
 /// 扫描项目根下所有含 `target/classes` 的模块目录，建立 `artifactId → classes 路径` 映射。
 ///
@@ -2770,9 +2839,13 @@ fn scan_module_dir(
 /// jar 路径格式：`D:\repository\com\gyyjy\wip-eims-api\1.0-SNAPSHOT\wip-eims-api-1.0-SNAPSHOT.jar`
 /// 提取文件名 `wip-eims-api-1.0-SNAPSHOT.jar`，去掉版本号后得到 artifactId `wip-eims-api`。
 /// 如果映射表中有该 artifactId，返回对应的 `target/classes` 路径；否则返回原路径。
+///
+/// `sorted_entries` 需按 artifact_id 长度降序排序，确保最长前缀优先匹配。
+/// 否则当存在前缀关系（如 "foo" 和 "foo-bar"）时，HashMap 迭代顺序不确定，
+/// 可能将 "foo-bar-1.0.jar" 错误匹配到 "foo" 的 classes 目录。
 fn replace_with_module_classes(
     jar_path: &str,
-    module_map: &std::collections::HashMap<String, String>,
+    sorted_entries: &[(&String, &String)],
 ) -> String {
     // 只处理 .jar 路径
     if !jar_path.to_lowercase().ends_with(".jar") {
@@ -2787,12 +2860,11 @@ fn replace_with_module_classes(
         return jar_path.to_string();
     }
     // 文件名格式：artifactId-version[-classifier]
-    // 从后往前找第一个 '-' 分隔的版本号段，剩余部分为 artifactId
-    // 但 artifactId 本身可能含 '-'（如 wip-eims-api），所以用映射表匹配：
-    // 遍历映射表所有 key，找 file_name 以 "key-" 开头的
-    for (artifact_id, classes_path) in module_map {
-        if file_name == *artifact_id || file_name.starts_with(&format!("{}-", artifact_id)) {
-            return classes_path.clone();
+    // artifactId 本身可能含 '-'（如 wip-eims-api），所以用映射表匹配：
+    // 遍历已排序的 entries，找 file_name 以 "key-" 开头的
+    for (artifact_id, classes_path) in sorted_entries {
+        if file_name == **artifact_id || file_name.starts_with(&format!("{}-", artifact_id)) {
+            return classes_path.to_string();
         }
     }
     jar_path.to_string()

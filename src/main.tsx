@@ -1,3 +1,4 @@
+import {useEffect} from "react";
 import ReactDOM from "react-dom/client";
 import {App as AntApp, ConfigProvider, theme} from "antd";
 import zhCN from "antd/locale/zh_CN";
@@ -7,69 +8,70 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import "./styles.css";
 
 // 禁用 webview 内容区右键菜单（打包后不暴露浏览器上下文菜单）
-document.addEventListener("contextmenu", (e) => e.preventDefault());
-
 // 拦截浏览器全局快捷键，避免在 Tauri WebView 中触发刷新 / 查找等原生行为。
-// -Ctrl+R / Cmd+R / Ctrl+Shift+R / Cmd+Shift+R：禁止页面刷新
-// -F5：禁止页面刷新
-// -Ctrl+F / Cmd+F：由文件编辑器内置搜索替代（仅 preventDefault 不阻断传播，
-//   FilePanel 的监听器仍可收到并打开编辑器搜索）
-// -Ctrl+Plus / Ctrl+Minus / Ctrl+0：禁止页面缩放
-// -Backspace（无 input focus 时）：禁止浏览器后退
-// -Ctrl+Shift+I / F12：禁止开发者工具（打包环境）
-window.addEventListener(
-  "keydown",
-  (e) => {
-    const k = e.key.toLowerCase();
-    const ctrl = e.ctrlKey || e.metaKey;
+// 所有模块顶层 DOM 操作统一移入 useEffect，确保在 React 生命周期内执行。
+function useGlobalKeyGuard() {
+  useEffect(() => {
+    const onContextMenu = (e: MouseEvent) => e.preventDefault();
+    document.addEventListener("contextmenu", onContextMenu);
 
-    // 刷新：Ctrl+R / Cmd+R / Ctrl+Shift+R / F5
-    if ((ctrl && k === "r") || e.key === "F5") {
-      e.preventDefault();
-      e.stopPropagation();
-      return;
-    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      const k = e.key.toLowerCase();
+      const ctrl = e.ctrlKey || e.metaKey;
 
-    // 查找：Ctrl+F — 仅 preventDefault，不阻断传播
-    if (ctrl && !e.altKey && k === "f") {
-      e.preventDefault();
-      return;
-    }
-
-    // 页面缩放：Ctrl+Plus / Ctrl+Minus / Ctrl+0
-    if (ctrl && (k === "+" || k === "-" || k === "0" || k === "=")) {
-      e.preventDefault();
-      e.stopPropagation();
-      return;
-    }
-
-    // 开发者工具
-    if ((ctrl && e.shiftKey && k === "i") || e.key === "F12") {
-      e.preventDefault();
-      e.stopPropagation();
-      return;
-    }
-
-    // Backspace 后退（非输入控件焦点时）
-    if (
-      e.key === "Backspace" &&
-      !e.altKey &&
-      !e.ctrlKey &&
-      !e.metaKey
-    ) {
-      const tag = (document.activeElement?.tagName ?? "").toLowerCase();
-      const isEditable =
-        tag === "input" ||
-        tag === "textarea" ||
-        (document.activeElement as HTMLElement)?.isContentEditable;
-      if (!isEditable) {
+      // 刷新：Ctrl+R / Cmd+R / Ctrl+Shift+R / F5
+      if ((ctrl && k === "r") || e.key === "F5") {
         e.preventDefault();
         e.stopPropagation();
+        return;
       }
-    }
-  },
-  true
-);
+
+      // 查找：Ctrl+F — 仅 preventDefault，不阻断传播
+      if (ctrl && !e.altKey && k === "f") {
+        e.preventDefault();
+        return;
+      }
+
+      // 页面缩放：Ctrl+Plus / Ctrl+Minus / Ctrl+0
+      if (ctrl && (k === "+" || k === "-" || k === "0" || k === "=")) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+
+      // 开发者工具
+      if ((ctrl && e.shiftKey && k === "i") || e.key === "F12") {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+
+      // Backspace 后退（非输入控件焦点时）
+      if (
+        e.key === "Backspace" &&
+        !e.altKey &&
+        !e.ctrlKey &&
+        !e.metaKey
+      ) {
+        const tag = (document.activeElement?.tagName ?? "").toLowerCase();
+        const isEditable =
+          tag === "input" ||
+          tag === "textarea" ||
+          (document.activeElement as HTMLElement)?.isContentEditable;
+        if (!isEditable) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+
+    return () => {
+      document.removeEventListener("contextmenu", onContextMenu);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, []);
+}
 
 const lightTokens = {
   colorPrimary: "#0071e3",
@@ -106,6 +108,9 @@ const darkTokens = {
 function ThemedApp() {
   const mode = useThemeStore((s) => s.mode);
   const isDark = mode === "dark";
+
+  // 全局快捷键拦截 + 右键菜单禁用
+  useGlobalKeyGuard();
 
   // 同步 data-theme 到 <html> 供 CSS 变量切换
   if (typeof document !== "undefined") {

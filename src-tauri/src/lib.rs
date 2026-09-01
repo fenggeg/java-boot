@@ -64,6 +64,14 @@ pub fn run() {
                         app_handle.exit(0);
                     });
                 }
+                // 兜底：如果 async task panic 或 runtime 提前关闭，
+                // app.exit(0) 不会执行，窗口被永久阻止关闭。
+                // 10 秒后无论如何强制退出进程，避免用户只能通过任务管理器强杀。
+                std::thread::spawn(|| {
+                    std::thread::sleep(std::time::Duration::from_secs(10));
+                    log::warn!("退出超时，强制退出进程");
+                    std::process::exit(0);
+                });
             }
         })
         .setup(|app| {

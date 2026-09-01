@@ -106,17 +106,43 @@ impl WatchManager {
                         }
                     }
                 }));
-                if let Err(e) = result {
+                match result {
+                    Ok(()) => {
+                        // 正常退出（cancel 或 channel 断开）：重置重建计数
+                        WATCHER_RETRIES.lock().remove(&sid_worker);
+                    }
+                    Err(e) => {
                     log::error!("watch worker 异常退出 ({}): {:?}，尝试重建监听", sid_worker, e);
-                    // 【修复】worker panic 后尝试重建 watcher，避免永久失去自动重启能力
-                    // 延迟 5 秒后重建，避免连续 panic 导致 CPU 空转
-                    std::thread::sleep(Duration::from_secs(5));
+                    // worker panic 后尝试重建 watcher，避免永久失去自动重启能力。
+                    // 但必须限制重建次数 + 指数退避，否则根因持续存在时会无限循环。
+                    let retry = {
+                        let mut retries = WATCHER_RETRIES.lock();
+                        let count = retries.entry(sid_worker.clone()).or_insert(0);
+                        *count += 1;
+                        *count
+                    };
+                    if retry > WATCHER_MAX_RETRIES {
+                        log::warn!(
+                            "watch worker ({}): 重建次数已达上限 {}，停止重建。\
+                             下次 refresh_all 或手动操作时恢复。",
+                            sid_worker, WATCHER_MAX_RETRIES
+                        );
+                        return;
+                    }
+                    // 指数退避：5s, 10s, 20s, 40s, 80s
+                    let delay = Duration::from_secs(5u64 * (1 << (retry - 1)));
+                    log::info!(
+                        "watch worker ({}): 第 {} 次重建，等待 {:?}",
+                        sid_worker, retry, delay
+                    );
+                    std::thread::sleep(delay);
                     if let Ok(svc) = crate::db::get_service(&sid_worker) {
                         if svc.auto_restart {
                             let app_rebuild = app_worker.clone();
                             let _ = get_watch_manager().watch(app_rebuild, svc);
                             log::info!("watch worker 已重建: {}", sid_worker);
                         }
+                    }
                     }
                 }
             })
@@ -231,6 +257,13 @@ impl WatchManager {
 /// 全局单例
 static WATCH: once_cell::sync::Lazy<WatchManager> = once_cell::sync::Lazy::new(WatchManager::new);
 
+/// watcher 重建的最大重试次数，超过后放弃重建（避免无限循环消耗资源）
+const WATCHER_MAX_RETRIES: u32 = 5;
+
+/// 每个服务的 watcher 重建计数：超过 WATCHER_MAX_RETRIES 后停止重建
+static WATCHER_RETRIES: once_cell::sync::Lazy<Mutex<HashMap<String, u32>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+
 pub fn get_watch_manager() -> &'static WatchManager {
     &WATCH
 }
@@ -308,10 +341,22 @@ fn trigger_restart(app: &AppHandle, service_id: &str) {
     let sid_clone = service_id.to_string();
     // 异步执行编译启动
     tauri::async_runtime::spawn(async move {
+        // Drop guard：无论 compile_and_start 正常返回、报错还是 panic，
+        // guard drop 时都会清理 RESTART_IN_PROGRESS 标志，避免永久卡住。
+        let _guard = RestartGuard { sid: sid_clone.clone() };
         if let Err(e) = mgr.compile_and_start(app_clone, service).await {
             log::error!("自动重启失败: {}", e);
         }
-        // 清理标志
-        RESTART_IN_PROGRESS.lock().remove(&sid_clone);
+        // _guard 在此作用域结束时自动 drop，清理标志
     });
+}
+
+/// RAII guard：确保 RESTART_IN_PROGRESS 标志在任务结束（含 panic）时被清理
+struct RestartGuard {
+    sid: String,
+}
+impl Drop for RestartGuard {
+    fn drop(&mut self) {
+        RESTART_IN_PROGRESS.lock().remove(&self.sid);
+    }
 }

@@ -481,68 +481,58 @@ pub fn inject_env<C: CmdEnv>(cmd: &mut C, cfg: &EnvConfig) {
 /// 仅 Windows 调用，在 app setup 最早期执行。
 #[cfg(windows)]
 pub fn merge_registry_path() {
-    use std::os::windows::ffi::OsStringExt;
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER,
+        HKEY_LOCAL_MACHINE, KEY_READ, REG_VALUE_TYPE,
+    };
+    use windows::core::PCWSTR;
 
     // 读取注册表字符串（REG_EXPAND_SZ / REG_SZ）
-    fn read_reg(
-        hive: u32,
-        subkey: &str,
-        value: &str,
-    ) -> Option<String> {
-        // 延迟绑定 winapi，避免在非 windows 平台编译失败
-        extern "system" {
-            fn RegOpenKeyExW(
-                hkey: u32,
-                lpsubkey: *const u16,
-                uloptions: u32,
-                samdesired: u32,
-                phkresult: *mut u32,
-            ) -> i32;
-            fn RegQueryValueExW(
-                hkey: u32,
-                lpvaluename: *const u16,
-                lpreserved: *const u32,
-                lptype: *mut u32,
-                lpdata: *mut u8,
-                lpcbdata: *mut u32,
-            ) -> i32;
-            fn RegCloseKey(hkey: u32) -> i32;
-        }
-
-        const HKEY_LOCAL_MACHINE: u32 = 0x80000002;
-        const HKEY_CURRENT_USER: u32 = 0x80000001;
-        const KEY_READ: u32 = 0x20019;
-
-        let _ = (HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER); // 抑制未使用警告
+    fn read_reg(hive: HKEY, subkey: &str, value: &str) -> Option<String> {
+        use std::os::windows::ffi::OsStringExt;
 
         let subkey_w: Vec<u16> = subkey.encode_utf16().chain(std::iter::once(0)).collect();
         let value_w: Vec<u16> = value.encode_utf16().chain(std::iter::once(0)).collect();
 
-        let mut hkey: u32 = 0;
+        let mut hkey = HKEY::default();
         let rc = unsafe {
-            RegOpenKeyExW(hive, subkey_w.as_ptr(), 0, KEY_READ, &mut hkey)
+            RegOpenKeyExW(hive, PCWSTR(subkey_w.as_ptr()), 0, KEY_READ, &mut hkey)
         };
-        if rc != 0 {
+        if rc.is_err() {
             return None;
         }
 
         // 先查长度
         let mut len: u32 = 0;
-        let mut typ: u32 = 0;
+        let mut typ: REG_VALUE_TYPE = REG_VALUE_TYPE(0);
         let rc = unsafe {
-            RegQueryValueExW(hkey, value_w.as_ptr(), std::ptr::null(), &mut typ, std::ptr::null_mut(), &mut len)
+            RegQueryValueExW(
+                hkey,
+                PCWSTR(value_w.as_ptr()),
+                None,
+                Some(&mut typ),
+                None,
+                Some(&mut len),
+            )
         };
-        if rc != 0 || len == 0 {
-            unsafe { RegCloseKey(hkey); }
+        if rc.is_err() || len == 0 {
+            let _ = unsafe { RegCloseKey(hkey) };
             return None;
         }
 
         let mut buf = vec![0u8; len as usize];
         let rc = unsafe {
-            RegQueryValueExW(hkey, value_w.as_ptr(), std::ptr::null(), &mut typ, buf.as_mut_ptr(), &mut len)
+            RegQueryValueExW(
+                hkey,
+                PCWSTR(value_w.as_ptr()),
+                None,
+                Some(&mut typ),
+                Some(buf.as_mut_ptr()),
+                Some(&mut len),
+            )
         };
-        unsafe { RegCloseKey(hkey); }
-        if rc != 0 {
+        let _ = unsafe { RegCloseKey(hkey) };
+        if rc.is_err() {
             return None;
         }
 
@@ -557,9 +547,6 @@ pub fn merge_registry_path() {
             .into_owned();
         Some(s)
     }
-
-    const HKEY_LOCAL_MACHINE: u32 = 0x80000002;
-    const HKEY_CURRENT_USER: u32 = 0x80000001;
 
     let sys_path = read_reg(
         HKEY_LOCAL_MACHINE,

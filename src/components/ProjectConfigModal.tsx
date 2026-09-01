@@ -13,45 +13,16 @@ interface Props {
   onSaved: () => void;
 }
 
-// ── 环境变量 解析 / 序列化 ──────────────────────────────────
+// ── 环境变量：公共逻辑已提取到 utils/envVars.ts ──
 
-/** 带唯一 id 的环境变量条目（id 仅前端使用，不序列化） */
-interface EnvVarEntry {
-  id: string;
-  key: string;
-  value: string;
-}
+import {
+  parseEnvVars,
+  serializeEnvVars,
+  type EnvVarEntry,
+} from "../utils/envVars";
 
-let envVarIdCounter = 0;
-function newEnvVarId(): string {
-  envVarIdCounter += 1;
-  return `env-${envVarIdCounter}`;
-}
-
-function parseEnvVars(json: string | null | undefined): EnvVarEntry[] {
-  if (!json || !json.trim()) return [];
-  try {
-    const arr = JSON.parse(json) as unknown;
-    if (!Array.isArray(arr)) return [];
-    return arr
-      .filter((x): x is Record<string, unknown> => !!x && typeof x === "object" && typeof x.key === "string" && (x.key as string).trim().length > 0)
-      .map((x) => ({
-        id: newEnvVarId(),
-        key: (x.key as string).trim(),
-        value: String(x.value ?? ""),
-      }));
-  } catch {
-    return [];
-  }
-}
-
-function serializeEnvVars(list: EnvVarEntry[]): string | null {
-  const cleaned = list
-    .filter((x) => x.key.trim())
-    .map(({ key, value }) => ({ key, value }));
-  if (cleaned.length === 0) return null;
-  return JSON.stringify(cleaned);
-}
+// ID 生成（用于新增行，确保跨组件唯一）
+function newEnvVarId(): string { return `env-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; }
 
 export default function ProjectConfigModal({
   project,

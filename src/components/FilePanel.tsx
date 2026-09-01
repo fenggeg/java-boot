@@ -6,8 +6,6 @@ import {convertFileSrc} from "@tauri-apps/api/core";
 import {isMarkdown} from "../languages";
 import {
   Binary,
-  CaretDown,
-  CaretRight,
   ChevronLeft,
   ClipboardPaste,
   Copy,
@@ -15,15 +13,36 @@ import {
   File,
   Folder,
   FolderOpen,
-  Image as ImageIcon,
   Save,
   Scissors,
   X,
 } from "./Icons";
 import * as api from "../api";
-import type {FileContent, Project} from "../types";
+import type {Project} from "../types";
 import MonacoCodeEditor from "./MonacoCodeEditor";
 import type {MonacoCodeEditorHandle} from "./MonacoCodeEditor";
+import type {
+  DndHandlers,
+  FileTreeNode,
+  FileType,
+  OpenTab,
+  TreeClipboard,
+} from "./filePanelUtils";
+import {
+  collectNodeMap,
+  findNode,
+  getFileType,
+  loadMergedNodes,
+  markLoading,
+  mergePreserveExpand,
+  parentOf,
+  setChildren,
+  toBufferEol,
+  toggleExpand,
+} from "./filePanelUtils";
+import {FileTypeIcon} from "./FileTreeRow";
+import {TreeRow} from "./FileTreeRow";
+import QuickOpenPanel from "./QuickOpenPanel";
 
 interface Props {
   project: Project;
@@ -32,356 +51,6 @@ interface Props {
   visible?: boolean;
 }
 
-// ================================================================
-// 文件类型分类
-// ================================================================
-
-const IMAGE_EXTS = new Set([
-  "png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico", "avif",
-]);
-
-const BINARY_EXTS = new Set([
-  "jar", "class", "war", "ear", "zip", "tar", "gz", "7z", "rar",
-  "exe", "dll", "lib", "so", "dylib", "o", "obj",
-  "bin", "dat", "db", "sqlite", "wasm",
-  "mp3", "mp4", "avi", "mov", "mkv", "flv", "wav", "flac",
-  "ttf", "otf", "woff", "woff2", "eot",
-]);
-
-type FileType = "image" | "binary" | "text";
-
-function getFileType(filename: string): FileType {
-  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
-  if (IMAGE_EXTS.has(ext)) return "image";
-  if (BINARY_EXTS.has(ext)) return "binary";
-  return "text";
-}
-
-/** 按文件名渲染类型图标（文件树 / 标签栏 / 快速打开共用） */
-function FileTypeIcon({name, size}: {name: string; size: number}) {
-  const ft = getFileType(name);
-  return (
-    <span
-      className={`file-tree-icon file ${
-        ft === "image" ? "file-type-image" : ft === "binary" ? "file-type-binary" : ""
-      }`}
-    >
-      {ft === "image" ? (
-        <ImageIcon size={size} />
-      ) : ft === "binary" ? (
-        <Binary size={size} />
-      ) : (
-        <File size={size} />
-      )}
-    </span>
-  );
-}
-
-// ================================================================
-// 自定义文件树节点数据（独立于 antd Tree）
-// ================================================================
-interface FileTreeNode {
-  name: string;
-  path: string;
-  isDir: boolean;
-  children?: FileTreeNode[];
-  loaded?: boolean; // 目录是否已懒加载子节点
-  loading?: boolean;
-  expanded?: boolean; // 目录是否展开
-}
-
-/** 打开的文件标签 */
-interface OpenTab {
-  path: string;
-  meta: FileContent;
-  content: string;
-  fileType: FileType;
-  /** 图片 / 二进制的 asset 协议 URL */
-  assetUrl?: string;
-  /** 磁盘原始换行风格；保存时按原样还原（缓冲区内一律 LF） */
-  eol?: "\n" | "\r\n";
-}
-
-/** 剪贴板：记录待复制 / 剪切的条目 */
-interface TreeClipboard {
-  mode: "copy" | "cut";
-  path: string;
-}
-
-/** 快速打开命中项 */
-interface QuickHit {
-  path: string;
-  name: string;
-  dir: string;
-  /** 排序分：越小越靠前 */
-  score: number;
-}
-
-/** 紧凑路径最大合并层数（防止极端深目录导致请求风暴） */
-const MAX_COMPACT_DEPTH = 10;
-
-/**
- * 加载目录并做「紧凑路径」合并：当目录下只有唯一子目录且无其他文件时，
- * 向下穿透并把路径段合并展示（如 src → main → java 显示为 src/main/java）。
- * 返回的节点 name 为合并路径，path 为最终目录的完整路径，children 已加载。
- */
-async function loadMergedNodes(
-  projectId: string,
-  path: string
-): Promise<FileTreeNode[]> {
-  const mergedNames: string[] = [];
-  let cur = path;
-  let entries = await api.listFiles(projectId, cur);
-  // 连续单目录链：逐层向下钻取
-  for (
-    let i = 0;
-    i < MAX_COMPACT_DEPTH && entries.length === 1 && entries[0]?.is_dir;
-    i++
-  ) {
-    mergedNames.push(entries[0].name);
-    cur = entries[0].path;
-    entries = await api.listFiles(projectId, cur);
-  }
-  const nodes: FileTreeNode[] = [...entries]
-    .sort((a, b) => {
-      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    })
-    .map((e) => ({
-      name: e.name,
-      path: e.path,
-      isDir: e.is_dir,
-      loaded: !e.is_dir,
-    }));
-  if (mergedNames.length === 0) return nodes;
-  // 合并为一个目录节点：name 展示合并路径，children 为最终层内容
-  return [
-    {
-      name: mergedNames.join("/"),
-      path: cur,
-      isDir: true,
-      children: nodes,
-      loaded: true,
-    },
-  ];
-}
-
-/** 不可变更新：把 key 对应目录节点的 children 替换为加载结果 */
-function setChildren(
-  nodes: FileTreeNode[],
-  key: string,
-  children: FileTreeNode[]
-): FileTreeNode[] {
-  return nodes.map((n) => {
-    if (n.path === key) {
-      return { ...n, children, loaded: true, loading: false };
-    }
-    if (n.children) {
-      return { ...n, children: setChildren(n.children, key, children) };
-    }
-    return n;
-  });
-}
-
-/** 不可变更新：切换 key 对应目录的展开/折叠状态 */
-function toggleExpand(
-  nodes: FileTreeNode[],
-  key: string
-): FileTreeNode[] {
-  return nodes.map((n) => {
-    if (n.path === key) {
-      return { ...n, expanded: !n.expanded };
-    }
-    if (n.children) {
-      return { ...n, children: toggleExpand(n.children, key) };
-    }
-    return n;
-  });
-}
-
-/** 收集子树内所有节点到 Map（path → 节点），用于刷新后恢复展开状态 */
-function collectNodeMap(
-  nodes: FileTreeNode[],
-  map: Map<string, FileTreeNode>
-): void {
-  for (const n of nodes) {
-    map.set(n.path, n);
-    if (n.children) collectNodeMap(n.children, map);
-  }
-}
-
-/**
- * 把新加载的子树与旧子树按 path 合并：
- * 旧节点已展开的目录在刷新后保持展开（重命名 / 复制 / 移动后不丢失状态）
- */
-function mergePreserveExpand(
-  fresh: FileTreeNode[],
-  oldMap: Map<string, FileTreeNode>
-): FileTreeNode[] {
-  return fresh.map((n) => {
-    const old = oldMap.get(n.path);
-    const merged: FileTreeNode = old
-      ? {...n, expanded: n.expanded || !!old.expanded}
-      : n;
-    if (merged.children) {
-      merged.children = mergePreserveExpand(merged.children, oldMap);
-    }
-    return merged;
-  });
-}
-
-// ================================================================
-// 单个树行（递归组件）— 根据文件类型显示不同图标；支持右键菜单与拖拽移动
-// ================================================================
-interface DndHandlers {
-  draggingPath: string | null;
-  onDragStart: (path: string) => void;
-  onDragEnd: () => void;
-  /** 拖放到某个目录（path 为空串表示项目根） */
-  onDropInto: (targetDir: string) => void;
-}
-
-/** 把磁盘原始内容归一化为 LF 缓冲区 + 记录原 EOL 风格 */
-function toBufferEol(raw: string): { content: string; eol: "\n" | "\r\n" } {
-  if (raw.includes("\r\n")) {
-    return { content: raw.replace(/\r\n?/g, "\n"), eol: "\r\n" };
-  }
-  return { content: raw.replace(/\r/g, "\n"), eol: "\n" };
-}
-
-/** 取路径的目录部分（无分隔符时为空串） */
-function dirOf(p: string): string {
-  const i = p.lastIndexOf("/");
-  return i < 0 ? "" : p.slice(0, i);
-}
-
-function TreeRow({
-  node,
-  depth,
-  activePath,
-  onSelect,
-  onToggle,
-  onContextMenu,
-  dnd,
-}: {
-  node: FileTreeNode;
-  depth: number;
-  activePath: string | null;
-  onSelect: (path: string) => void;
-  onToggle: (path: string) => void;
-  onContextMenu: (e: React.MouseEvent, path: string, isDir: boolean) => void;
-  dnd: DndHandlers;
-}) {
-  const [dropHover, setDropHover] = useState(false);
-  const isActive = activePath === node.path;
-
-  // 拖放合法性：目标目录不能是被拖动条目自身或其子孙目录
-  // （把子目录拖回父目录 / 祖先目录是合法移动）
-  const droppable =
-    !!node.isDir &&
-    !!dnd.draggingPath &&
-    node.path !== dnd.draggingPath &&
-    !node.path.startsWith(dnd.draggingPath + "/");
-
-  const commonHandlers = {
-    onContextMenu: (e: React.MouseEvent) =>
-      onContextMenu(e, node.path, node.isDir),
-    draggable: true,
-    onDragStart: (e: React.DragEvent) => {
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", node.path);
-      dnd.onDragStart(node.path);
-    },
-    onDragEnd: () => {
-      setDropHover(false);
-      dnd.onDragEnd();
-    },
-  };
-
-  if (node.isDir) {
-    return (
-      <>
-        <div
-          className={[
-            "file-tree-row",
-            dropHover && droppable ? "drop-target" : "",
-          ].join(" ")}
-          style={{ paddingLeft: 8 + depth * 14 }}
-          onClick={() => onToggle(node.path)}
-          onDragOver={(e) => {
-            if (droppable) {
-              e.preventDefault();
-              e.dataTransfer.dropEffect = "move";
-              setDropHover(true);
-            }
-          }}
-          onDragLeave={() => setDropHover(false)}
-          onDrop={(e) => {
-            e.preventDefault();
-            setDropHover(false);
-            if (droppable) dnd.onDropInto(node.path);
-          }}
-          {...commonHandlers}
-        >
-          <span className="file-tree-caret">
-            {node.loading ? (
-              <Spin size="small" style={{ transform: "scale(0.6)" }} />
-            ) : node.expanded ? (
-              <CaretDown size={10} />
-            ) : (
-              <CaretRight size={10} />
-            )}
-          </span>
-          <span className="file-tree-icon folder">
-            <Folder size={14} />
-          </span>
-          <span className="file-tree-name">{node.name}</span>
-        </div>
-        {node.expanded && node.children && node.children.length > 0 && (
-          <div className="file-tree-children">
-            {node.children.map((child) => (
-              <TreeRow
-                key={child.path}
-                node={child}
-                depth={depth + 1}
-                activePath={activePath}
-                onSelect={onSelect}
-                onToggle={onToggle}
-                onContextMenu={onContextMenu}
-                dnd={dnd}
-              />
-            ))}
-          </div>
-        )}
-        {node.expanded && node.children && node.children.length === 0 && (
-          <div
-            className="file-tree-empty-hint"
-            style={{ paddingLeft: 8 + (depth + 1) * 14 }}
-          >
-            空目录
-          </div>
-        )}
-      </>
-    );
-  }
-
-  return (
-    <div
-      className={`file-tree-row file ${isActive ? "active" : ""}`}
-      style={{ paddingLeft: 8 + depth * 14 }}
-      onClick={() => onSelect(node.path)}
-      {...commonHandlers}
-    >
-      <span className="file-tree-caret" />
-      <FileTypeIcon name={node.name} size={14} />
-      <span className="file-tree-name">{node.name}</span>
-    </div>
-  );
-}
-
-// ================================================================
-// 主组件
-// ================================================================
 export default function FilePanel({
   project,
   onClose,
@@ -532,19 +201,6 @@ export default function FilePanel({
     [project.id, treeData, message]
   );
 
-  // 递归标记某节点 loading
-  function markLoading(nodes: FileTreeNode[], key: string): FileTreeNode[] {
-    return nodes.map((n) => {
-      if (n.path === key) {
-        return { ...n, loading: true };
-      }
-      if (n.children) {
-        return { ...n, children: markLoading(n.children, key) };
-      }
-      return n;
-    });
-  }
-
   // 展开/折叠目录
   const handleToggle = useCallback((path: string) => {
     // 目录点击时也记录为当前选中条目（供 Ctrl+C/Ctrl+V 快捷键判断目标）
@@ -562,18 +218,6 @@ export default function FilePanel({
       return toggleExpand(prev, path);
     });
   }, [loadChildren]);
-
-  // 查找节点
-  function findNode(nodes: FileTreeNode[], key: string): FileTreeNode | undefined {
-    for (const n of nodes) {
-      if (n.path === key) return n;
-      if (n.children) {
-        const found = findNode(n.children, key);
-        if (found) return found;
-      }
-    }
-    return undefined;
-  }
 
   // 初始加载根目录
   useEffect(() => {
@@ -613,7 +257,7 @@ export default function FilePanel({
       setError(null);
 
       const filename = path.split("/").pop() ?? path;
-      const fileType = getFileType(filename);
+      const fileType: FileType = getFileType(filename);
 
       try {
         if (fileType === "image") {
@@ -818,128 +462,6 @@ export default function FilePanel({
     [activeTab]
   );
 
-
-  // ================================================================
-  // 快速打开（Ctrl+P）：项目级文件名 / 路径过滤跳转
-  // ================================================================
-  const [quickOpen, setQuickOpen] = useState(false);
-  const [quickQuery, setQuickQuery] = useState("");
-  const [quickIdx, setQuickIdx] = useState(0);
-  // 全量扁平文件列表；每次打开弹层都后台重拉，杜绝树操作后的陈旧索引
-  const [flatFiles, setFlatFiles] = useState<api.FlatFile[] | null>(null);
-  const quickListRef = useRef<HTMLDivElement>(null);
-
-  /** 拉取全量文件列表；失败时保留上次结果（退化为旧数据可用） */
-  const loadFlatFiles = useCallback(async () => {
-    try {
-      const files = await api.walkFiles(project.id);
-      setFlatFiles(files);
-    } catch {
-      /* 保留上一次列表 */
-    }
-  }, [project.id]);
-
-  /**
-   * 过滤与排序（小写不区分大小写）：文件名前缀 > 文件名包含（位置越靠前越优）
-   * > 路径包含。空查询展示前 50 个当浏览列表。全量收集后排序取前 100——
-   * 过滤本身就要扫全部条目，截断省不出成本，只换掉排序正确性。
-   */
-  const quickResults = useMemo<QuickHit[]>(() => {
-    if (!flatFiles) return [];
-    const q = quickQuery.trim().toLowerCase();
-    if (!q) {
-      return flatFiles.slice(0, 50).map((f) => ({
-        path: f.path,
-        name: f.name,
-        dir: dirOf(f.path),
-        score: 0,
-      }));
-    }
-    const out: QuickHit[] = [];
-    for (const f of flatFiles) {
-      const pl = f.path.toLowerCase();
-      const slash = pl.lastIndexOf("/");
-      const nl = slash < 0 ? pl : pl.slice(slash + 1);
-      let score: number | null;
-      if (nl.startsWith(q)) {
-        score = 0;
-      } else {
-        const ni = nl.indexOf(q);
-        if (ni >= 0) {
-          score = 1 + Math.min(ni, 999) / 1000;
-        } else {
-          const pi = pl.indexOf(q);
-          score = pi >= 0 ? 10 + Math.min(pi, 999) / 1000 : null;
-        }
-      }
-      if (score !== null) {
-        out.push({path: f.path, name: f.name, dir: dirOf(f.path), score});
-      }
-    }
-    out.sort(
-      (a, b) =>
-        a.score - b.score ||
-        a.path.length - b.path.length ||
-        a.path.localeCompare(b.path)
-    );
-    return out.slice(0, 100);
-  }, [flatFiles, quickQuery]);
-
-  // 结果集变化时收敛选中下标
-  useEffect(() => {
-    setQuickIdx((i) =>
-      quickResults.length ? Math.min(i, quickResults.length - 1) : 0
-    );
-  }, [quickResults.length]);
-
-  // 选中项滚动进可视区
-  useEffect(() => {
-    quickListRef.current
-      ?.querySelector(".quick-open-item.sel")
-      ?.scrollIntoView({block: "nearest"});
-  }, [quickIdx]);
-
-  const openQuickOpen = useCallback(() => {
-    setQuickOpen(true);
-    setQuickQuery("");
-    setQuickIdx(0);
-    void loadFlatFiles();
-  }, [loadFlatFiles]);
-
-  const closeQuickOpen = useCallback(() => {
-    setQuickOpen(false);
-    setQuickQuery("");
-    setQuickIdx(0);
-  }, []);
-
-  /** 回车 / 点击：打开选中文件并收起弹层 */
-  const acceptQuick = useCallback(() => {
-    const hit = quickResults[quickIdx];
-    if (!hit) return;
-    void openFile(hit.path);
-    closeQuickOpen();
-  }, [quickResults, quickIdx, openFile, closeQuickOpen]);
-
-  // Ctrl+P 全局唤起；Esc 在输入框内 stopPropagation 关闭，不外溢
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (
-        (e.ctrlKey || e.metaKey) &&
-        !e.altKey &&
-        !e.shiftKey &&
-        e.key.toLowerCase() === "p"
-      ) {
-        e.preventDefault();
-        e.stopPropagation();
-        openQuickOpen();
-      } else if (e.key === "Escape" && quickOpen) {
-        closeQuickOpen();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [openQuickOpen, quickOpen, closeQuickOpen]);
-
   // ================================================================
   // 文件操作：重命名 / 复制 / 剪切 / 粘贴 / 资源管理器 / 拖拽移动
   // ================================================================
@@ -966,11 +488,6 @@ export default function FilePanel({
     },
     []
   );
-
-  const parentOf = (p: string) => {
-    const idx = p.lastIndexOf("/");
-    return idx < 0 ? "" : p.slice(0, idx);
-  };
 
   const doRename = useCallback(async () => {
     if (!renaming) return;
@@ -1089,8 +606,8 @@ export default function FilePanel({
         for (const t of targets) void refreshDir(t);
         remapTabPaths(src, newPath);
         message.success("已移动");
-} catch (e) {
-      message.error(`移动失败: ${api.toErrMsg(e)}`);
+      } catch (e) {
+        message.error(`移动失败: ${api.toErrMsg(e)}`);
       }
     },
     [draggingPath, project.id, refreshDir, remapTabPaths, message]
@@ -1364,78 +881,12 @@ export default function FilePanel({
         </div>
       </div>
 
-      {/* 快速打开（Ctrl+P）：遮罩点击关闭，弹层置顶 */}
-      {quickOpen && (
-        <>
-          <div className="quick-open-mask" onClick={closeQuickOpen} />
-          <div className="quick-open">
-            <input
-              autoFocus
-              className="quick-open-input"
-              value={quickQuery}
-              onChange={(e) => {
-                setQuickQuery(e.target.value);
-                setQuickIdx(0);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "ArrowDown") {
-                  e.preventDefault();
-                  setQuickIdx((i) =>
-                    quickResults.length ? (i + 1) % quickResults.length : 0
-                  );
-                } else if (e.key === "ArrowUp") {
-                  e.preventDefault();
-                  setQuickIdx((i) =>
-                    quickResults.length
-                      ? (i - 1 + quickResults.length) % quickResults.length
-                      : 0
-                  );
-                } else if (e.key === "Enter") {
-                  e.preventDefault();
-                  acceptQuick();
-                } else if (e.key === "Escape") {
-                  e.stopPropagation();
-                  closeQuickOpen();
-                }
-              }}
-              placeholder="输入文件名或路径过滤，回车打开…"
-              spellCheck={false}
-              autoComplete="off"
-            />
-            <div className="quick-open-list" ref={quickListRef}>
-              {!flatFiles ? (
-                <div className="quick-open-empty">
-                  <Spin size="small" />
-                </div>
-              ) : quickResults.length === 0 ? (
-                <div className="quick-open-empty">无匹配文件</div>
-              ) : (
-                quickResults.map((h, i) => (
-                  <div
-                    key={h.path}
-                    className={`quick-open-item${i === quickIdx ? " sel" : ""}`}
-                    onMouseEnter={() => setQuickIdx(i)}
-                    onClick={acceptQuick}
-                  >
-                    <FileTypeIcon name={h.name} size={13} />
-                    <span className="quick-open-name">{h.name}</span>
-                    {h.dir && (
-                      <span className="quick-open-dir" title={h.dir}>
-                        {h.dir}
-                      </span>
-                    )}
-                  </div>
-                ))
-              )}
-            </div>
-            <div className="quick-open-hint">
-              <span>↑↓ 选择</span>
-              <span>Enter 打开</span>
-              <span>Esc 关闭</span>
-            </div>
-          </div>
-        </>
-      )}
+      {/* 快速打开（Ctrl+P） */}
+      <QuickOpenPanel
+        projectId={project.id}
+        openFile={openFile}
+        visible={visible}
+      />
 
       {/* 文件树右键菜单 */}
       {ctxMenu && (

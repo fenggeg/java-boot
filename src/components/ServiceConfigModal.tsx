@@ -1,4 +1,4 @@
-import {useEffect, useMemo, useState} from "react";
+import {useEffect, useMemo, useReducer, useState} from "react";
 import {App, Button, Divider, Form, Input, InputNumber, Modal, Segmented, Select, Switch, Tooltip} from "antd";
 import {Plus, Settings, Trash} from "./Icons";
 import * as api from "../api";
@@ -125,84 +125,89 @@ function buildMavenOpts(
   return parts.join(" ");
 }
 
-// ── 覆盖属性 解析 / 序列化 ──────────────────────────────────
+// ── 覆盖属性 & 环境变量：公共逻辑已提取到 utils/envVars.ts ──
 
-/** 带唯一 id 的覆盖属性（id 仅前端使用，不序列化） */
-interface OverrideEntry {
-  id: string;
-  key: string;
-  value: string;
+import {
+  parseOverrideProperties,
+  serializeOverrideProperties,
+  parseEnvVars,
+  serializeEnvVars,
+  type OverrideEntry,
+  type EnvVarEntry,
+} from "../utils/envVars";
+
+// ID 生成（用于新增行，确保跨组件唯一）
+function newOverrideId(): string { return `ovr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; }
+function newEnvVarId(): string { return `env-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; }
+
+// ── useReducer 状态管理 ───────────────────────────────────────
+
+interface ConfigState {
+  memMode: number;
+  customXms: number | null;
+  customXmx: number | null;
+  portCfg: PortConfig;
+  debugCfg: DebugConfig;
+  restOpts: string;
+  devMode: boolean;
+  overrides: OverrideEntry[];
+  envVars: EnvVarEntry[];
+  dependencies: string[];
 }
 
-let overrideIdCounter = 0;
-function newOverrideId(): string {
-  overrideIdCounter += 1;
-  return `ovr-${overrideIdCounter}`;
-}
+type ConfigAction =
+  | { type: "set_memMode"; value: number }
+  | { type: "set_customXms"; value: number | null }
+  | { type: "set_customXmx"; value: number | null }
+  | { type: "set_portCfg"; value: Partial<PortConfig> }
+  | { type: "set_debugCfg"; value: Partial<DebugConfig> }
+  | { type: "set_restOpts"; value: string }
+  | { type: "set_devMode"; value: boolean }
+  | { type: "set_overrides"; value: OverrideEntry[] }
+  | { type: "set_envVars"; value: EnvVarEntry[] }
+  | { type: "set_dependencies"; value: string[] }
+  | { type: "load_service"; payload: Partial<ConfigState> };
 
-function parseOverrideProperties(json: string | null | undefined): OverrideEntry[] {
-  if (!json || !json.trim()) return [];
-  try {
-    const arr = JSON.parse(json) as unknown;
-    if (!Array.isArray(arr)) return [];
-    return arr
-      .filter((x): x is Record<string, unknown> => !!x && typeof x === "object" && typeof x.key === "string" && (x.key as string).trim().length > 0)
-      .map((x) => ({
-        id: newOverrideId(),
-        key: (x.key as string).trim(),
-        value: String(x.value ?? ""),
-      }));
-  } catch {
-    return [];
+const INITIAL_CONFIG: ConfigState = {
+  memMode: DEFAULT_PRESET_IDX,
+  customXms: 256,
+  customXmx: 512,
+  portCfg: { enabled: false, port: 8080 },
+  debugCfg: { enabled: false, port: 5005, suspend: false },
+  restOpts: "",
+  devMode: false,
+  overrides: [],
+  envVars: [],
+  dependencies: [],
+};
+
+function configReducer(state: ConfigState, action: ConfigAction): ConfigState {
+  switch (action.type) {
+    case "set_memMode":
+      return { ...state, memMode: action.value };
+    case "set_customXms":
+      return { ...state, customXms: action.value };
+    case "set_customXmx":
+      return { ...state, customXmx: action.value };
+    case "set_portCfg":
+      return { ...state, portCfg: { ...state.portCfg, ...action.value } };
+    case "set_debugCfg":
+      return { ...state, debugCfg: { ...state.debugCfg, ...action.value } };
+    case "set_restOpts":
+      return { ...state, restOpts: action.value };
+    case "set_devMode":
+      return { ...state, devMode: action.value };
+    case "set_overrides":
+      return { ...state, overrides: action.value };
+    case "set_envVars":
+      return { ...state, envVars: action.value };
+    case "set_dependencies":
+      return { ...state, dependencies: action.value };
+    case "load_service":
+      return { ...state, ...action.payload };
+    default:
+      return state;
   }
-}
-
-function serializeOverrideProperties(list: OverrideEntry[]): string | null {
-  const cleaned = list
-    .filter((x) => x.key.trim())
-    .map(({ key, value }) => ({ key, value }));
-  if (cleaned.length === 0) return null;
-  return JSON.stringify(cleaned);
-}
-
-// ── 环境变量 解析 / 序列化 ──────────────────────────────────
-
-/** 带唯一 id 的环境变量条目（id 仅前端使用，不序列化） */
-interface EnvVarEntry {
-  id: string;
-  key: string;
-  value: string;
-}
-
-let envVarIdCounter = 0;
-function newEnvVarId(): string {
-  envVarIdCounter += 1;
-  return `env-${envVarIdCounter}`;
-}
-
-function parseEnvVars(json: string | null | undefined): EnvVarEntry[] {
-  if (!json || !json.trim()) return [];
-  try {
-    const arr = JSON.parse(json) as unknown;
-    if (!Array.isArray(arr)) return [];
-    return arr
-      .filter((x): x is Record<string, unknown> => !!x && typeof x === "object" && typeof x.key === "string" && (x.key as string).trim().length > 0)
-      .map((x) => ({
-        id: newEnvVarId(),
-        key: (x.key as string).trim(),
-        value: String(x.value ?? ""),
-      }));
-  } catch {
-    return [];
-  }
-}
-
-function serializeEnvVars(list: EnvVarEntry[]): string | null {
-  const cleaned = list
-    .filter((x) => x.key.trim())
-    .map(({ key, value }) => ({ key, value }));
-  if (cleaned.length === 0) return null;
-  return JSON.stringify(cleaned);
 }
 
 export default function ServiceConfigModal({ service, onClose, onSaved }: Props) {
@@ -210,17 +215,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
   const { message } = App.useApp();
   const [saving, setSaving] = useState(false);
 
-  const [memMode, setMemMode] = useState<number>(DEFAULT_PRESET_IDX);
-  const [customXms, setCustomXms] = useState<number | null>(256);
-  const [customXmx, setCustomXmx] = useState<number | null>(512);
-
-  const [portCfg, setPortCfg] = useState<PortConfig>({ enabled: false, port: 8080 });
-  const [debugCfg, setDebugCfg] = useState<DebugConfig>({ enabled: false, port: 5005, suspend: false });
-  const [restOpts, setRestOpts] = useState<string>("");
-  const [devMode, setDevMode] = useState<boolean>(false);
-  const [overrides, setOverrides] = useState<OverrideEntry[]>([]);
-  const [envVars, setEnvVars] = useState<EnvVarEntry[]>([]);
-  const [dependencies, setDependencies] = useState<string[]>([]);
+  const [cfg, dispatch] = useReducer(configReducer, INITIAL_CONFIG);
 
   // 获取同项目的其他服务列表（用于依赖编排下拉选项）
   const allServices = useStore((s) => s.services);
@@ -232,39 +227,37 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
         profiles: service.profiles ?? "",
       });
       const p = parseAll(service.maven_opts);
-      setRestOpts(p.rest);
-      setPortCfg(p.port.enabled ? p.port : { enabled: false, port: 8080 });
-      setDebugCfg(p.debug.enabled ? p.debug : { enabled: false, port: 5005, suspend: false });
-      setDevMode(!!service.dev_mode);
-      setOverrides(parseOverrideProperties(service.override_properties));
-      setEnvVars(parseEnvVars(service.env_vars));
+      const hit = matchPreset(p.xms, p.xmx);
+      dispatch({
+        type: "load_service",
+        payload: {
+          restOpts: p.rest,
+          portCfg: p.port.enabled ? p.port : { enabled: false, port: 8080 },
+          debugCfg: p.debug.enabled ? p.debug : { enabled: false, port: 5005, suspend: false },
+          devMode: !!service.dev_mode,
+          overrides: parseOverrideProperties(service.override_properties),
+          envVars: parseEnvVars(service.env_vars),
+          memMode: hit >= 0 ? hit : (p.xms || p.xmx ? -1 : DEFAULT_PRESET_IDX),
+          customXms: p.xms ?? MEM_PRESETS[DEFAULT_PRESET_IDX]!.xms,
+          customXmx: p.xmx ?? MEM_PRESETS[DEFAULT_PRESET_IDX]!.xmx,
+        },
+      });
 
       // 加载依赖列表
       api.getServiceDependencies(service.id)
-        .then((deps) => setDependencies(deps))
-        .catch(() => setDependencies([]));
-
-      const hit = matchPreset(p.xms, p.xmx);
-      if (hit >= 0) {
-        setMemMode(hit);
-      } else if (p.xms || p.xmx) {
-        setMemMode(-1);
-      } else {
-        setMemMode(DEFAULT_PRESET_IDX);
-      }
-      setCustomXms(p.xms ?? MEM_PRESETS[DEFAULT_PRESET_IDX]!.xms);
-      setCustomXmx(p.xmx ?? MEM_PRESETS[DEFAULT_PRESET_IDX]!.xmx);
+        .then((deps) => dispatch({ type: "set_dependencies", value: deps }))
+        .catch(() => dispatch({ type: "set_dependencies", value: [] }));
     }
   }, [service, form]);
 
   const effectiveMem = useMemo(() => {
-    if (memMode >= 0) return { xms: MEM_PRESETS[memMode]!.xms, xmx: MEM_PRESETS[memMode]!.xmx };
-    return { xms: customXms, xmx: customXmx };
-  }, [memMode, customXms, customXmx]);
+    if (cfg.memMode >= 0) return { xms: MEM_PRESETS[cfg.memMode]!.xms, xmx: MEM_PRESETS[cfg.memMode]!.xmx };
+    return { xms: cfg.customXms, xmx: cfg.customXmx };
+  }, [cfg.memMode, cfg.customXms, cfg.customXmx]);
 
   const finalOpts = useMemo(
-    () => buildMavenOpts(effectiveMem.xms, effectiveMem.xmx, portCfg, debugCfg, restOpts),
-    [effectiveMem, portCfg, debugCfg, restOpts]
+    () => buildMavenOpts(effectiveMem.xms, effectiveMem.xmx, cfg.portCfg, cfg.debugCfg, cfg.restOpts),
+    [effectiveMem, cfg.portCfg, cfg.debugCfg, cfg.restOpts]
   );
 
   const handleSave = async () => {
@@ -278,13 +271,13 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
         undefined,
         finalOpts || null,
         values.profiles?.trim() || null,
-        devMode,
+        cfg.devMode,
         undefined,
-        serializeOverrideProperties(overrides),
-        serializeEnvVars(envVars),
+        serializeOverrideProperties(cfg.overrides),
+        serializeEnvVars(cfg.envVars),
       );
       // 保存依赖配置
-      await api.setServiceDependencies(service.id, dependencies);
+      await api.setServiceDependencies(service.id, cfg.dependencies);
       message.success("配置已保存");
       onSaved();
       onClose();
@@ -327,8 +320,8 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
         <Form.Item label="内存档位">
           <Segmented
             block
-            value={String(memMode)}
-            onChange={(v) => setMemMode(Number(v))}
+            value={String(cfg.memMode)}
+            onChange={(v) => dispatch({ type: "set_memMode", value: Number(v) })}
             options={[
               ...MEM_PRESETS.map((p, i) => ({
                 label: (
@@ -351,19 +344,19 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
             ]}
           />
           <div style={{ marginTop: 6, fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-3)", letterSpacing: "0.04em" }}>
-            {memMode >= 0
-              ? `${MEM_PRESETS[memMode]!.desc} · -Xms${MEM_PRESETS[memMode]!.xms}m -Xmx${MEM_PRESETS[memMode]!.xmx}m`
+            {cfg.memMode >= 0
+              ? `${MEM_PRESETS[cfg.memMode]!.desc} · -Xms${MEM_PRESETS[cfg.memMode]!.xms}m -Xmx${MEM_PRESETS[cfg.memMode]!.xmx}m`
               : "手动指定初始 / 最大堆内存"}
           </div>
         </Form.Item>
 
-        {memMode === -1 && (
+        {cfg.memMode === -1 && (
           <div style={{ display: "flex", gap: 16, marginBottom: 8 }}>
             <Form.Item label="初始堆 -Xms (MB)" style={{ flex: 1, marginBottom: 0 }}>
               <InputNumber
                 min={16} max={32768} step={64}
-                value={customXms ?? undefined}
-                onChange={(v) => setCustomXms(v as number | null)}
+                value={cfg.customXms ?? undefined}
+                onChange={(v) => dispatch({ type: "set_customXms", value: v as number | null })}
                 style={{ width: "100%" }}
                 placeholder="如 256"
               />
@@ -371,8 +364,8 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
             <Form.Item label="最大堆 -Xmx (MB)" style={{ flex: 1, marginBottom: 0 }}>
               <InputNumber
                 min={16} max={32768} step={64}
-                value={customXmx ?? undefined}
-                onChange={(v) => setCustomXmx(v as number | null)}
+                value={cfg.customXmx ?? undefined}
+                onChange={(v) => dispatch({ type: "set_customXmx", value: v as number | null })}
                 style={{ width: "100%" }}
                 placeholder="如 512"
               />
@@ -395,8 +388,8 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
         >
           <Switch
             size="small"
-            checked={devMode}
-            onChange={setDevMode}
+            checked={cfg.devMode}
+            onChange={(v) => dispatch({ type: "set_devMode", value: v })}
           />
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 13, color: "var(--text)" }}>
@@ -424,8 +417,8 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
         >
           <Switch
             size="small"
-            checked={portCfg.enabled}
-            onChange={(enabled) => setPortCfg((c) => ({ ...c, enabled }))}
+            checked={cfg.portCfg.enabled}
+            onChange={(enabled) => dispatch({ type: "set_portCfg", value: { enabled } })}
           />
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 13, color: "var(--text)" }}>服务端口</div>
@@ -435,9 +428,9 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
           </div>
           <InputNumber
             min={1} max={65535}
-            value={portCfg.port ?? undefined}
-            disabled={!portCfg.enabled}
-            onChange={(v) => setPortCfg((c) => ({ ...c, port: v as number | null }))}
+            value={cfg.portCfg.port ?? undefined}
+            disabled={!cfg.portCfg.enabled}
+            onChange={(v) => dispatch({ type: "set_portCfg", value: { port: v as number | null } })}
             style={{ width: 100 }}
             placeholder="8080"
           />
@@ -456,8 +449,8 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
         >
           <Switch
             size="small"
-            checked={debugCfg.enabled}
-            onChange={(enabled) => setDebugCfg((c) => ({ ...c, enabled }))}
+            checked={cfg.debugCfg.enabled}
+            onChange={(enabled) => dispatch({ type: "set_debugCfg", value: { enabled } })}
           />
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 13, color: "var(--text)" }}>
@@ -467,23 +460,23 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
               </Tooltip>
             </div>
             <div style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "var(--text-3)", letterSpacing: "0.04em" }}>
-              -agentlib:jdwp · {debugCfg.suspend ? "启动时挂起等待" : "不等待，立即启动"}
+              -agentlib:jdwp · {cfg.debugCfg.suspend ? "启动时挂起等待" : "不等待，立即启动"}
             </div>
           </div>
           <InputNumber
             min={1} max={65535}
-            value={debugCfg.port ?? undefined}
-            disabled={!debugCfg.enabled}
-            onChange={(v) => setDebugCfg((c) => ({ ...c, port: v as number | null }))}
+            value={cfg.debugCfg.port ?? undefined}
+            disabled={!cfg.debugCfg.enabled}
+            onChange={(v) => dispatch({ type: "set_debugCfg", value: { port: v as number | null } })}
             style={{ width: 80 }}
             placeholder="5005"
           />
-          <Tooltip title={debugCfg.suspend ? "当前：启动时挂起等待调试器" : "当前：不等待，立即启动"}>
+          <Tooltip title={cfg.debugCfg.suspend ? "当前：启动时挂起等待调试器" : "当前：不等待，立即启动"}>
             <Switch
               size="small"
-              checked={debugCfg.suspend}
-              disabled={!debugCfg.enabled}
-              onChange={(suspend) => setDebugCfg((c) => ({ ...c, suspend }))}
+              checked={cfg.debugCfg.suspend}
+              disabled={!cfg.debugCfg.enabled}
+              onChange={(suspend) => dispatch({ type: "set_debugCfg", value: { suspend } })}
               checkedChildren="挂起"
               unCheckedChildren="不等待"
             />
@@ -504,8 +497,8 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
         >
           <Input
             placeholder="如 -Dspring.devtools.restart.enabled=false --debug"
-            value={restOpts}
-            onChange={(e) => setRestOpts(e.target.value)}
+            value={cfg.restOpts}
+            onChange={(e) => dispatch({ type: "set_restOpts", value: e.target.value })}
           />
         </Form.Item>
 
@@ -523,8 +516,8 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
             mode="multiple"
             allowClear
             placeholder="选择需要先启动的服务（可选）"
-            value={dependencies}
-            onChange={setDependencies}
+            value={cfg.dependencies}
+            onChange={(v) => dispatch({ type: "set_dependencies", value: v })}
             style={{ width: "100%" }}
             options={allServices
               .filter((s) => s.id !== service?.id && s.project_id === service?.project_id)
@@ -542,16 +535,14 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
 
         {/* 覆盖属性 key-value 编辑器 */}
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {overrides.map((item) => (
+          {cfg.overrides.map((item) => (
             <div key={item.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <Input
                 placeholder="key，如 spring.cloud.nacos.discovery.ip"
                 value={item.key}
                 onChange={(e) => {
                   const v = e.target.value;
-                  setOverrides((list) =>
-                    list.map((x) => (x.id === item.id ? { ...x, key: v } : x))
-                  );
+                  dispatch({ type: "set_overrides", value: cfg.overrides.map((x) => (x.id === item.id ? { ...x, key: v } : x)) });
                 }}
                 style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 12 }}
               />
@@ -561,9 +552,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
                 value={item.value}
                 onChange={(e) => {
                   const v = e.target.value;
-                  setOverrides((list) =>
-                    list.map((x) => (x.id === item.id ? { ...x, value: v } : x))
-                  );
+                  dispatch({ type: "set_overrides", value: cfg.overrides.map((x) => (x.id === item.id ? { ...x, value: v } : x)) });
                 }}
                 style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 12 }}
               />
@@ -571,9 +560,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
                 size="small"
                 type="text"
                 danger
-                onClick={() =>
-                  setOverrides((list) => list.filter((x) => x.id !== item.id))
-                }
+                onClick={() => dispatch({ type: "set_overrides", value: cfg.overrides.filter((x) => x.id !== item.id) })}
                 style={{ flexShrink: 0, padding: "0 6px" }}
               >
                 <Trash size={13} />
@@ -584,7 +571,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
             size="small"
             type="dashed"
             block
-            onClick={() => setOverrides((list) => [...list, { id: newOverrideId(), key: "", value: "" }])}
+            onClick={() => dispatch({ type: "set_overrides", value: [...cfg.overrides, { id: newOverrideId(), key: "", value: "" }] })}
             style={{ marginTop: 2 }}
           >
             <Plus size={12} /> 添加属性
@@ -600,16 +587,14 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
 
         {/* 环境变量 key-value 编辑器 */}
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {envVars.map((item) => (
+          {cfg.envVars.map((item) => (
             <div key={item.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <Input
                 placeholder="key，如 FOO"
                 value={item.key}
                 onChange={(e) => {
                   const v = e.target.value;
-                  setEnvVars((list) =>
-                    list.map((x) => (x.id === item.id ? { ...x, key: v } : x))
-                  );
+                  dispatch({ type: "set_envVars", value: cfg.envVars.map((x) => (x.id === item.id ? { ...x, key: v } : x)) });
                 }}
                 style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 12 }}
               />
@@ -619,9 +604,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
                 value={item.value}
                 onChange={(e) => {
                   const v = e.target.value;
-                  setEnvVars((list) =>
-                    list.map((x) => (x.id === item.id ? { ...x, value: v } : x))
-                  );
+                  dispatch({ type: "set_envVars", value: cfg.envVars.map((x) => (x.id === item.id ? { ...x, value: v } : x)) });
                 }}
                 style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 12 }}
               />
@@ -629,9 +612,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
                 size="small"
                 type="text"
                 danger
-                onClick={() =>
-                  setEnvVars((list) => list.filter((x) => x.id !== item.id))
-                }
+                onClick={() => dispatch({ type: "set_envVars", value: cfg.envVars.filter((x) => x.id !== item.id) })}
                 style={{ flexShrink: 0, padding: "0 6px" }}
               >
                 <Trash size={13} />
@@ -642,7 +623,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
             size="small"
             type="dashed"
             block
-            onClick={() => setEnvVars((list) => [...list, { id: newEnvVarId(), key: "", value: "" }])}
+            onClick={() => dispatch({ type: "set_envVars", value: [...cfg.envVars, { id: newEnvVarId(), key: "", value: "" }] })}
             style={{ marginTop: 2 }}
           >
             <Plus size={12} /> 添加环境变量

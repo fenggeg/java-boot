@@ -3,7 +3,6 @@
 
 import * as monaco from "monaco-editor";
 import { loader } from "@monaco-editor/react";
-// @ts-expect-error — Vite ?worker 后缀在 tsc 下无类型声明
 import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 
 // 关键：让 @monaco-editor/react 的 loader 使用本地 ESM 打包的 monaco 实例，

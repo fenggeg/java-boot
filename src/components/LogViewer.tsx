@@ -10,10 +10,14 @@ interface Props {
 
 type LogLevel = "all" | "info" | "warn" | "error";
 
+// 预编译日志分类正则，避免 classifyLine 每行调用时重复创建 RegExp 对象
+const ERROR_RE = /\b(error|exception|fail(ed)?|fatal)\b/;
+const WARN_RE = /\b(warn(ing)?)\b/;
+
 function classifyLine(line: string): "info" | "warn" | "error" {
   const lower = line.toLowerCase();
-  if (/\b(error|exception|fail(ed)?|fatal)\b/.test(lower)) return "error";
-  if (/\b(warn(ing)?)\b/.test(lower)) return "warn";
+  if (ERROR_RE.test(lower)) return "error";
+  if (WARN_RE.test(lower)) return "warn";
   return "info";
 }
 

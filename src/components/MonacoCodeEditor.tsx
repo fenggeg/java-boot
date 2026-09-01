@@ -1,7 +1,7 @@
 // Monaco 代码编辑器组件
 // 替换原 textarea+pre 双层叠加方案，内置语法高亮 / 行号 / 搜索 / 代码折叠
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import Editor from "@monaco-editor/react";
 import type { editor } from "monaco-editor";
 import { monaco, getMonacoTheme, setMonacoTheme } from "../monaco-setup";
@@ -52,6 +52,36 @@ export default function MonacoCodeEditor({
   // 保存回调的 ref（避免每次 render 重建 editor addCommand）
   const onSaveRef = useRef(onSave);
   onSaveRef.current = onSave;
+
+  // ---- 多标签滚动位置隔离 ----
+  // 背景：@monaco-editor/react 自带的 saveViewState 存在缺陷——切换标签时，
+  // 它会读「已更新为新 path」的闭包作为保存 key，导致把上一标签的滚动位置
+  // 错误地覆盖到新标签名下，从而出现「滚动一个文件会带动其他已打开文件」。
+  // 因此这里关闭库的 saveViewState，改为在组件内自行按 path 精确保存/恢复。
+  const previousPathRef = useRef<string | null>(null);
+  const viewStatesRef = useRef(new Map<string, editor.ICodeEditorViewState>());
+
+  // 「保存」放在 useLayoutEffect：它先于库内部切换 model 的 useEffect 执行，
+  // 此时 editor 仍挂在旧 model 上，saveViewState() 拿到的正是即将离开的标签的位置。
+  useLayoutEffect(() => {
+    const ed = editorInstanceRef.current;
+    const prev = previousPathRef.current;
+    if (ed && prev !== null && prev !== path) {
+      const state = ed.saveViewState();
+      if (state) viewStatesRef.current.set(prev, state);
+    }
+  }, [path]);
+
+  // 「恢复」放在 useEffect：此时库已完成 model 切换到新 path，
+  // 对当前 model 恢复对应标签保存过的滚动位置。
+  useEffect(() => {
+    const ed = editorInstanceRef.current;
+    const saved = path ? viewStatesRef.current.get(path) : undefined;
+    if (ed && saved) {
+      ed.restoreViewState(saved);
+    }
+    previousPathRef.current = path;
+  }, [path]);
 
   /** 编辑器挂载 */
   const handleMount = useCallback(
@@ -118,6 +148,7 @@ export default function MonacoCodeEditor({
       theme={getMonacoTheme()}
       onMount={handleMount}
       onChange={(v) => onChange(v ?? "")}
+      saveViewState={false}
       loading={<div style={{ padding: 40, textAlign: "center", color: "#a1a1a6" }}>加载编辑器…</div>}
       options={{
         readOnly: readonly,

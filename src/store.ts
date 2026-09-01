@@ -51,6 +51,19 @@ let flushTimer: ReturnType<typeof setTimeout> | null = null;
 /** 节流间隔（ms）：在窗口内到达的所有日志合并为一次 store 更新 */
 const FLUSH_INTERVAL = 50;
 
+// HMR 清理：Vite 热更新时清除旧定时器，避免旧 flushTimer 触发新模块的 store
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    for (const k of Object.keys(pendingLogs)) {
+      delete pendingLogs[k];
+    }
+  });
+}
+
 export const useStore = create<Store>((set, get) => {
   // 从 localStorage 恢复 openedTabs
   const loadOpenedTabs = (): string[] => {
