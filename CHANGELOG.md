@@ -7,6 +7,39 @@
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-01
+
+### 新增
+
+- **快速打开（Ctrl+P）**：文件浏览器新增项目级文件名/路径过滤跳转面板，`Ctrl+P` 唤起后输入文件名或路径片段，按文件名前缀 > 文件名包含 > 路径包含排序，↑↓ 选择、回车打开、Esc 关闭；打开时后台拉取全量扁平文件列表（`walkFiles` API），失败时保留上次结果退化为旧数据可用
+- **ErrorBoundary 自动恢复**：渲染错误时新增「尝试恢复」按钮，重置组件状态（不刷新页面）重新渲染，最多自动恢复 2 次，超过后仅保留「重新加载」整页刷新
+
+### 变更
+
+- **FilePanel 拆分**：将 600+ 行的 `FilePanel.tsx` 拆分为 `filePanelUtils.ts`（文件类型分类、树节点类型、紧凑路径加载、不可变更新工具函数）、`FileTreeRow.tsx`（`FileTypeIcon` 与递归 `TreeRow` 行组件，含拖拽合法性判断与 drop 高亮）、`QuickOpenPanel.tsx`（快速打开面板）三个独立模块，`FilePanel.tsx` 仅保留面板编排逻辑
+- **环境变量/覆盖属性公共逻辑提取**：`ProjectConfigModal` 与 `ServiceConfigModal` 中重复的 `parseEnvVars`/`serializeEnvVars`/`parseOverrideProperties`/`serializeOverrideProperties` 及 ID 生成器提取到 `src/utils/envVars.ts`，统一 ID 计数器避免两组件各自维护独立计数器导致 ID 碰撞；ID 生成改为 `Date.now()+random` 确保跨组件唯一
+- **ServiceConfigModal 状态管理迁移 useReducer**：将散落的多个 `useState` 合并为单一 `useReducer`（`ConfigState` + `ConfigAction`），集中管理内存模式、端口、调试、覆盖属性、环境变量、依赖等配置字段，减少中间状态不一致
+- **全局快捷键拦截移入 React 生命周期**：`main.tsx` 中顶层的 `document.addEventListener`/`window.addEventListener` 模块级副作用移入 `useGlobalKeyGuard` 自定义 Hook 的 `useEffect`，确保在 React 生命周期内执行并在卸载时清理监听器
+- **注册表 PATH 读取改用 windows crate**：`process/env.rs` 的 `merge_registry_path` 从手写 `extern "system"` 绑定 `RegOpenKeyExW`/`RegQueryValueExW`/`RegCloseKey` 改为使用 `windows` crate 的 `Win32::System::Registry` 类型安全 API（`HKEY`/`KEY_READ`/`REG_VALUE_TYPE`/`PCWSTR`），`Cargo.toml` 启用 `Win32_System_Registry` feature
+
+### 修复
+
+- **watcher 重建无限循环**：worker panic 后的重建改为限制最大重试次数（5 次）+ 指数退避（5s/10s/20s/40s/80s），超过上限后停止重建避免根因持续存在时空转 CPU；正常退出（cancel 或 channel 断开）时重置重建计数
+- **自动重启标志永久卡住**：`trigger_restart` 中 `RESTART_IN_PROGRESS` 标志的清理改为 RAII `RestartGuard`，确保 `compile_and_start` 正常返回、报错或 panic 时 guard drop 都会清理标志，避免永久卡住后续重启
+- **退出超时死锁**：`lib.rs` 窗口关闭流程新增 10 秒兜底强杀线程，若 async task panic 或 runtime 提前关闭导致 `app.exit(0)` 未执行，10 秒后 `std::process::exit(0)` 强制退出，避免用户只能通过任务管理器强杀
+- **Monaco 多标签滚动位置串扰**：`@monaco-editor/react` 自带 `saveViewState` 在切换标签时用「已更新为新 path」的闭包作为保存 key，导致把上一标签滚动位置错误覆盖到新标签名下；改为关闭库的 `saveViewState`，在组件内用 `useLayoutEffect`（先于库切换 model）按旧 path 保存、`useEffect`（库切换 model 后）按新 path 恢复，`viewStatesRef` 按 path 精确隔离
+- **更新接口响应未校验**：`update.ts` 的 `checkForUpdate` 直接将 `res.json()` 断言为 `GithubRelease`，新增 `isGithubRelease` 运行时类型守卫校验 `tag_name`/`name`/`html_url`/`published_at`/`draft`/`prerelease`/`assets` 字段，格式异常时抛出明确错误而非访问 undefined
+- **数据库迁移重复执行**：`schema.rs` 的 `run_migrations` 此前每次启动都顺序执行 v1~v6 全部迁移，改为读取 `PRAGMA user_version` 后仅执行未执行的版本，执行完毕更新 `user_version`，避免重复迁移与 seed 覆盖
+
+### 优化
+
+- **JDK/Maven 探测缓存改 RwLock**：`commands.rs` 的 `JDK_CACHE`/`MAVEN_CACHE` 从 `Mutex` 改为 `RwLock`，快速路径用读锁检查缓存命中（并发读不阻塞），慢路径用写锁 + 双重检查避免并发重复启动 JVM/Maven 探测进程
+- **SYS 锁持锁时间缩短**：`manager.rs` 的 `restore_running` 与 `refresh_resource_usage` 拆分为两阶段——阶段 1 在 SYS 锁内仅采集进程存活状态/CPU 内存快照，阶段 2 释放 SYS 锁后仅持有 runtimes 锁写回，缩短 SYS 锁持锁时间，减少与 `wait_for_pid_exit`/`start` 的争用
+- **Tab 未读状态精确订阅**：`App.tsx` 此前订阅整个 `logs` 对象导致任意服务一条日志触发所有 Tab 标签重算，改为精确订阅 `hasUnread` map（仅未读状态变化触发），用 ref 浅比较稳定引用避免每帧产生新对象导致 `useMemo` 失效
+- **日志分类正则预编译**：`LogViewer.tsx` 的 `classifyLine` 每行调用时重复创建 `RegExp`，改为模块级预编译 `ERROR_RE`/`WARN_RE` 常量复用
+- **store HMR 清理**：`store.ts` 新增 `import.meta.hot.dispose` 钩子，Vite 热更新时清除旧 `flushTimer` 与 `pendingLogs`，避免旧定时器触发新模块的 store
+- **manager.rs start 流程拆分**：将 200+ 行的 `start` 方法拆分为 `prepare_start_placeholder`（清理残留 handle 并创建 placeholder）、`build_java_args`（构造 Java 启动参数）、`spawn_and_monitor`（spawn 子进程、绑定 Job Object、启动日志读取与 reaper）三个独立方法，降低单方法复杂度
+
 ## [0.14.0] - 2026-08-28
 
 ### 新增
