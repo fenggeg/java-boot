@@ -48,8 +48,9 @@ jobs:
 
             $lines = Get-Content $Path -Encoding UTF8
             $escapedVersion = [Regex]::Escape($Version)
-            $versionHeadingPattern = "^\s*##\s+\[?v?$escapedVersion\]?(?:\s+-\s+.*)?\s*$"
-            $unreleasedHeadingPattern = "^\s*##\s+\[?Unreleased\]?\s*$"
+            # 容忍 markdown 转义形式 `\[x.y]` / Unreleased（历史标题带反斜杠）
+            $versionHeadingPattern = "^\s*##\s+\\?\[?v?$escapedVersion\\?\]?(?:\s+-\s+.*)?\s*$"
+            $unreleasedHeadingPattern = "^\s*##\s+\\?\[?Unreleased\\?\]?\s*$"
             $headingPattern = if ($UseUnreleased) { $unreleasedHeadingPattern } else { $versionHeadingPattern }
             $capture = $false
             $section = New-Object System.Collections.Generic.List[string]
@@ -77,19 +78,17 @@ jobs:
           # 本项目暂无 CHANGELOG.md：缺失章节时回退到最近 20 条提交，不阻断构建
           # （引入 CHANGELOG.md 后，tag 发布要求存在对应 "## [x.y.z]" 章节，可再改为硬校验）
           if (-not $notes) {
-            $commits = git log -20 --pretty=format:"- %s (%h)" |
-              Where-Object { $_ -and $_.Trim() -ne "" }
+              $commits = git log -20 --pretty=format:"- %s (%h)" |
+                Where-Object { $_ -and $_.Trim() -ne "" }
 
-            if (-not $commits -or $commits.Count -eq 0) {
-              $commits = @("- This build contains generated artifacts.")
+              if (-not $commits -or $commits.Count -eq 0) {
+                $commits = @("- This build contains generated artifacts.")
+              }
+
+              # 先 join 成字符串再拼接，避免数组元素被 ToString 成 System.Object[]
+              $commitLines = $commits -join "`n"
+              $notes = ("## Changes`n`n" + $commitLines).Trim()
             }
-
-            $notes = @(
-              "## Changes",
-              "",
-              $commits
-            ) -join "`n"
-          }
 
           $delimiter = "RELEASE_NOTES_" + [Guid]::NewGuid().ToString("N")
           "body<<$delimiter" >> $env:GITHUB_OUTPUT
