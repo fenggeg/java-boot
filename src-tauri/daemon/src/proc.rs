@@ -62,7 +62,7 @@ pub struct ProcHandle {
     run_id: i64,
     project_id: String,
     module_name: String,
-    pid_slot: Mutex<Option<u32>>,
+    pid_slot: Arc<Mutex<Option<u32>>>,
     seq: Arc<AtomicI64>,
     /// 共享状态：Starting/Running/Error（lifecycle 退出时置 Stopped）。
     status: Arc<Mutex<ProcStatus>>,
@@ -176,7 +176,7 @@ impl ProcService {
             run_id,
             project_id: req.project_id.clone(),
             module_name: req.module_name.clone(),
-            pid_slot: Mutex::new(Some(pid)),
+            pid_slot: Arc::new(Mutex::new(Some(pid))),
             seq: Arc::new(AtomicI64::new(0)),
             status,
             port: req.startup_port,
@@ -316,7 +316,7 @@ impl ProcService {
             run_id,
             project_id: "recovered".into(),
             module_name: module,
-            pid_slot: Mutex::new(Some(pid)),
+            pid_slot: Arc::new(Mutex::new(Some(pid))),
             seq: Arc::new(AtomicI64::new(0)),
             status: Arc::new(Mutex::new(ProcStatus::Running)),
             port: entry.startup_port,
@@ -459,6 +459,7 @@ impl ProcService {
         let store = Arc::clone(&self.store);
         let runs = Arc::clone(&self.runs);
         let log = Arc::clone(&self.log);
+        let job = Arc::clone(&self.job);
         let status_handle = Arc::clone(&handle.status);
         let started = Arc::clone(&handle.status);
 
@@ -483,10 +484,10 @@ impl ProcService {
             let stderr = child.stderr.take();
 
             if let Some(so) = stdout {
-                stdin_split_reader(Arc::clone(&log), handle.seq.clone(), Arc::clone(&started), bus.clone(), run_id, so, Stream::Stdout);
+                stdin_split_reader(Arc::clone(&log), handle.seq.clone(), Arc::clone(&started), bus.clone(), run_id, so, Stream::Stdout, Arc::clone(&job), handle.pid_slot.clone());
             }
             if let Some(se) = stderr {
-                stdin_split_reader(Arc::clone(&log), handle.seq.clone(), Arc::clone(&started), bus.clone(), run_id, se, Stream::Stderr);
+                stdin_split_reader(Arc::clone(&log), handle.seq.clone(), Arc::clone(&started), bus.clone(), run_id, se, Stream::Stderr, Arc::clone(&job), handle.pid_slot.clone());
             }
 
             // 等待真退出
@@ -559,6 +560,9 @@ fn spawn_port_probe(handle: Arc<ProcHandle>, port: u16, bus: broadcast::Sender<M
 }
 
 /// 逐行读取某管道的输出：送日志管线 + 就绪正则判定。
+///
+/// `job`/`pid_slot` 用于「启动失败(Error)自动回收」：一旦日志判到启动失败，
+/// 立即终止该进程并从托管移除，避免出错实例持续占用端口成为孤儿。
 fn stdin_split_reader<R>(
     log: Arc<LogPipeline>,
     seq: Arc<AtomicI64>,
@@ -567,6 +571,8 @@ fn stdin_split_reader<R>(
     run_id: i64,
     pipe: R,
     stream: Stream,
+    job: Arc<JobObject>,
+    pid_slot: Arc<parking_lot::Mutex<Option<u32>>>,
 )
 where
     R: AsyncRead + Unpin + Send + 'static,
@@ -588,6 +594,20 @@ where
                             log::info!("run {run_id} 日志判定 → {st_str}");
                             let st = serde_json::json!({ "run_id": run_id, "status": st_str });
                             let _ = bus.send(Message::Notification(Notification::raw(event::PROC_STATUS, Some(st))));
+
+                            // 启动失败：终止该进程，释放端口，避免孤儿实例继续占用
+                            if is_fail {
+                                if let Some(pid) = *pid_slot.lock() {
+                                    let job = job.clone();
+                                    tokio::task::spawn_blocking(move || {
+                                        if let Err(e) = job.terminate_pid(pid) {
+                                            log::warn!("run {run_id} 启动失败后终止 pid {pid} 失败: {e}");
+                                        } else {
+                                            log::info!("run {run_id} 启动失败，已终止 pid {pid}");
+                                        }
+                                    });
+                                }
+                            }
                         }
                     }
                 }
