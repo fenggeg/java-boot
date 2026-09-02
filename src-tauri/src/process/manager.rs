@@ -371,7 +371,9 @@ impl ProcessManager {
             pids.iter()
                 .map(|(sid, pid)| {
                     let proc = sys.process(sysinfo::Pid::from_u32(*pid));
-                    let cpu = proc.map(|p| p.cpu_usage());
+                    // sysinfo 的 cpu_usage() 在采样窗口过短或首次采样时可能瞬时超过 100%，
+                    // 这里 clamp 到 [0, 100] 保证前端展示不越界。
+                    let cpu = proc.map(|p| p.cpu_usage().clamp(0.0, 100.0));
                     let mem = proc.map(|p| p.memory() as f64 / 1024.0 / 1024.0);
                     (sid.clone(), cpu, mem)
                 })

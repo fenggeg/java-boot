@@ -63,12 +63,19 @@ export default function MonacoCodeEditor({
 
   // 「保存」放在 useLayoutEffect：它先于库内部切换 model 的 useEffect 执行，
   // 此时 editor 仍挂在旧 model 上，saveViewState() 拿到的正是即将离开的标签的位置。
+  // 注意：previousPathRef 初始为 null，第一次切换时需要保存「当前 path」（即初始标签）
+  // 的状态，否则初始标签的滚动位置会丢失，切回时回到文件头。
   useLayoutEffect(() => {
     const ed = editorInstanceRef.current;
     const prev = previousPathRef.current;
-    if (ed && prev !== null && prev !== path) {
+    if (!ed) return;
+    if (prev !== null && prev !== path) {
       const state = ed.saveViewState();
       if (state) viewStatesRef.current.set(prev, state);
+    } else if (prev === null) {
+      // 首次切换：保存初始标签的状态（此时 editor 仍挂在初始 model 上）
+      const state = ed.saveViewState();
+      if (state) viewStatesRef.current.set(path, state);
     }
   }, [path]);
 

@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-09-02
+
+### 修复
+
+- **CPU 使用率超过 100%**：sysinfo 的 `cpu_usage()` 在采样窗口过短或首次采样时可能瞬时返回超过 100% 的值，`refresh_resource_usage` 采集时用 `.clamp(0.0, 100.0)` 限制到合法区间，避免服务卡片显示越界
+- **编辑器切换 tab 回到文件头**：`MonacoCodeEditor` 的 `useLayoutEffect` 中 `previousPathRef` 初始为 `null`，首次切换标签时初始标签的滚动位置不会被保存，导致切回时回到文件头；新增 `prev === null` 分支，在首次切换时保存当前（初始）标签的视图状态
+
 ## [0.15.0] - 2026-09-01
 
 ### 新增
