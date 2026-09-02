@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-09-02
+
+### 新增
+
+- **daemon 断连自愈**：`spawn_daemon_process` 由一次性 `AtomicBool` 改为带 2s 冷却的可重复拉起机制（`LAST_SPAWN_AT` + `RESPAWN_COOLDOWN`），IPC `driver` 连接失败重试循环中自动调用 `spawn_daemon_process` 尝试重新拉起 daemon，断连后无需重启 UI 即可恢复守护连接；冷却机制避免重试风暴刷屏
+- **启动主动拉起 daemon**：`lib.rs` `setup` 最早期（合并注册表 PATH 之后）主动调用 `ipc::spawn_daemon_process` 拉起常驻 daemon，`IpcState` 只负责连接不负责拉起；daemon 单实例保证幂等——新拉的 daemon 因命名管道被占会自行退出，安全无副作用
+
 ## [0.16.0] - 2026-09-02
 
 ### 新增
