@@ -353,6 +353,33 @@ pub fn is_daemon_alive() -> bool {
         .any(|p| p.name().to_string_lossy().to_lowercase().contains("javaboot-daemon"))
 }
 
+/// 结束运行中的 javaboot-daemon 进程（升级安装前调用）。
+///
+/// 仅结束 daemon 自身进程：daemon 持有的 Job **不设 KILL_ON_JOB_CLOSE**，
+/// 因此已托管的 java 服务进程不会随 daemon 被连带杀掉。这些服务进程在
+/// 新版 daemon 启动后经崩溃恢复（`recover`）重新接管。返回被结束的进程数。
+pub fn stop_daemon() -> usize {
+    let mut sys = sysinfo::System::new_all();
+    sys.refresh_all();
+    let mut killed = 0;
+    let ids: Vec<sysinfo::Pid> = sys
+        .processes()
+        .iter()
+        .filter(|(_, p)| {
+            p.name().to_string_lossy().to_lowercase().contains("javaboot-daemon")
+        })
+        .map(|(pid, _)| *pid)
+        .collect();
+    for pid in ids {
+        if let Some(p) = sys.process(pid) {
+            p.kill();
+            killed += 1;
+            log::info!("已结束 daemon 进程 pid={pid}");
+        }
+    }
+    killed
+}
+
 /// 定位 daemon 可执行文件：优先当前 exe 同级，其次常见安装/数据目录，最后 PATH。
 fn locate_daemon_exe() -> Option<std::path::PathBuf> {
     let mut v: Vec<std::path::PathBuf> = Vec::new();

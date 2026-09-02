@@ -121,17 +121,25 @@ pub fn run() {
                 e
             })?;
 
-            // 恢复上次运行中的服务：等 daemon 连上后，在线则经 delegate 重建映射
-            // （实时日志随事件恢复，无需重启服务）；离线则回退本地恢复路径
+            // 恢复上次运行中的服务：本地托管（service_run_pids）与 daemon 托管（run_id
+            // 映射）两类进程**并行恢复**，而非二选一。
+            //
+            // - `restore_running_services`：恢复 launcher 本地直接 spawn 的存活 Java 进程
+            //   （严格按 PID + java.exe/javaw.exe 进程名校验），并重新绑定 Job Object。
+            // - `delegate::rebind`：daemon 在线时，用 daemon `proc.list` 的 run_id 重建
+            //   service_id ↔ run_id 映射，让 daemon 托管服务的实时日志/状态/metrics 续传。
+            //
+            // 二者互斥、幂等。此前按 daemon 在线与否二选一，会漏掉「daemon 离线时本地
+            // 启动、重启后 daemon 又在线」的服务，导致 UI 错误显示为已停止。
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    let online = handle.state::<Arc<ipc::IpcState>>().inner().is_connected();
-                    if online {
+                    // 先恢复本地托管的存活进程（不受 daemon 在线状态影响）
+                    process::get_manager().restore_running_services(&handle);
+                    // daemon 在线时，再叠加重建 daemon 托管服务的映射
+                    if handle.state::<Arc<ipc::IpcState>>().inner().is_connected() {
                         let _ = process::delegate::rebind(&handle).await;
-                    } else {
-                        process::get_manager().restore_running_services(&handle);
                     }
                 });
             }

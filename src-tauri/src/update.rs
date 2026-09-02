@@ -331,6 +331,15 @@ pub async fn install_update(app: AppHandle, path: String) -> AppResult<()> {
         .spawn()
         .map_err(|e| AppError::Process(format!("启动安装器失败: {}", e)))?;
 
+    // 升级前结束运行中的 daemon：主程序退出后仅有 daemon 常驻、占用
+    // javaboot-daemon.exe，若不结束，Windows 会锁定该文件导致安装器无法覆盖
+    // resources 里的新版 daemon。daemon 的 Job 不设 KILL_ON_JOB_CLOSE，其托管的
+    // java 服务进程不会被连带杀掉，新版 daemon 启动后经崩溃恢复重新接管。
+    let killed = crate::ipc::stop_daemon();
+    if killed > 0 {
+        log::info!("升级前已结束 {} 个旧 daemon 进程", killed);
+    }
+
     log::info!("安装器已启动: {}，即将退出当前应用", installer.display());
     tokio::time::sleep(Duration::from_millis(800)).await;
     app.exit(0);
