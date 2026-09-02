@@ -385,9 +385,11 @@ fn locate_daemon_exe() -> Option<std::path::PathBuf> {
     let mut v: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(me) = std::env::current_exe() {
         if let Some(dir) = me.parent() {
-            // 同目录 & 其上两级（target 布局: .../target/debug ↔ daemon 也在 debug；安装布局则在同目录）
+            // 同目录 & 其上两级（target 布局: .../target/debug ↔ daemon 也在 debug）
             v.push(dir.join("javaboot-daemon.exe"));
             v.push(dir.join("resources").join("javaboot-daemon.exe"));
+            // bundle.resources 相对路径会原样落到安装目录：target/release/javaboot-daemon.exe
+            v.push(dir.join("target").join("release").join("javaboot-daemon.exe"));
             if let Some(gp) = dir.parent().and_then(|p| p.parent()) {
                 v.push(gp.join("release").join("javaboot-daemon.exe"));
             }

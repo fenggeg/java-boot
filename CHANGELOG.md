@@ -7,11 +7,18 @@
 
 ## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.13.0...HEAD)
 
+## \[0.17.6] - 2026-09-02
+
+### 修复
+
+- **daemon 安装位置找不到**：`bundle.resources` 用相对路径 `"target/release/javaboot-daemon.exe"` 时，Tauri 2 会把该相对路径原样落到安装目录的 `target\release\` 子目录，而 `locate_daemon_exe` 未覆盖该布局，新安装机启动时 WARN「找不到 javaboot-daemon.exe，跳过拉起」、daemon 无法拉起；现将 `bundle.resources` 改为映射对象，显式把 daemon 安装到规范的 `resources\javaboot-daemon.exe`（`locate_daemon_exe` 已有该候选路径），并为 `locate_daemon_exe` 补充 `target\release\` 候选以兼容旧布局安装遗留
+
 ## \[0.17.5] - 2026-09-02
 
 ### 修复
 
-- **重启后本地托管服务丢失**：应用退出并重新打开后，launcher 需按「daemon 是否在线」二选一恢复——daemon 在线时仅经 `delegate::rebind` 恢复 daemon 托管进程，导致 daemon 离线期间本地直接 spawn 的存活 Java 服务（仅记在 launcher `service_run_pids`）被忽略，UI 错误显示为已停止且无法关闭；现改为**并行恢复**：先 `restore_running_services`（按 `service_run_pids` 校验存活的 java.exe/javaw.exe 进程并重绑 Job Object），daemon 在线时再叠加 `rebind` 重建 run_id 映射，两类托管进程重启后状态均正确
+- **重启后本地托管服务丢失**：应用退出并重新打开后，launcher 需按「daemon 是否在线」二选一恢复——daemon 在线时仅经 `delegate::rebind` 恢复 daemon 托管进程，导致 daemon 离线期间本地直接 spawn 的存活 Java 服务（仅记在 launcher `service_run_pids`）被忽略，UI 错误显示为已停止且无法关闭；现改为**并行恢复**：先 `restore_running_services`（按 `service_run_pids` 校验存活的 java.exe/javaw\.exe 进程并重绑 Job Object），daemon 在线时再叠加 `rebind` 重建 run\_id 映射，两类托管进程重启后状态均正确
+
 - **升级时旧 daemon 占用可执行文件**：`install_update` 退出主程序后旧 daemon 仍常驻、占用 `javaboot-daemon.exe`，Windows 锁定该文件导致 NSIS 安装器无法覆盖 `resources` 里的新版 daemon；现新增 `ipc::stop_daemon`，安装器拉起后、退出前结束旧 daemon——daemon 的 Job 不设 `KILL_ON_JOB_CLOSE`，其托管服务不被连带杀掉，新版 daemon 启动后经崩溃恢复（`recover`）重新接管
 
 ### 修复
