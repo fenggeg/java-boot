@@ -2,9 +2,8 @@
 
 **Windows 桌面端的 Spring Boot 多服务启动/管理器**，基于 Tauri 2 + React + Rust 实现。定位类似"轻量版 IDEA Services 面板"：从磁盘选择一个 Maven 聚合工程，一键识别、勾选、启动、停止、重编译多个 Spring Boot 服务，并集中查看日志、端口、CPU/内存；同时内置项目文件浏览器（浏览 / 编辑）、服务打包与一键更新。
 
-> ⚠️ **仅支持 Spring Boot 项目。** 判定标准与 IDEA 一致：模块 `packaging` 为 `jar` / `war` **且** `src/main/java` 下存在带 `@SpringBootApplication` 注解的类。工具包 / 公共模块（无主类的 jar）不会出现在服务列表中。
+> **仅支持 Spring Boot 项目。** 判定标准与 IDEA 一致：模块 `packaging` 为 `jar` / `war` **且** `src/main/java` 下存在带 `@SpringBootApplication` 注解的类。工具包 / 公共模块（无主类的 jar）不会出现在服务列表中。
 
-> 当前版本：**v0.15.0**。完整变更历史见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ---
 
