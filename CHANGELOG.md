@@ -7,6 +7,12 @@
 
 ## [Unreleased]
 
+## [0.17.3] - 2026-09-02
+
+### 修复
+
+- **daemon 停止超时回退本地强杀**：委托 daemon 停止服务此前无超时上限，daemon 异常或网络阻塞时 UI 会无限等待；现对 `delegate::stop_service` 加 25s 超时（daemon 最坏约 20s = 8s 等退出 + 12s 端口释放探测，多留余量避免误回退），超时或失败时回退本地 `kill_process_tree_by_pid` + `wait_for_pid_exit` 强杀进程树，停止完成后统一调用 `delegate::clear` 清理 `service_id ↔ run_id` 映射，避免残留映射导致后续启动对账异常
+
 ## [0.17.2] - 2026-09-02
 
 ### 修复
