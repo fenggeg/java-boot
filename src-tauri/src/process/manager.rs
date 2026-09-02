@@ -520,6 +520,20 @@ impl ProcessManager {
         }
     }
 
+    /// P4：daemon 周期性回填的 CPU/内存指标，写入 runtime 并推送前端。
+    pub fn set_metrics(&self, app: &AppHandle, service_id: &str, cpu: Option<f32>, mem: Option<f64>) {
+        let mut rt = self.runtimes.lock();
+        let entry = rt.entry(service_id.to_string()).or_default();
+        entry.service_id = service_id.to_string();
+        entry.cpu_usage = cpu;
+        entry.memory_mb = mem;
+        let snapshot = entry.clone();
+        drop(rt);
+        if let Err(e) = app.emit("service://status", snapshot) {
+            log::warn!("emit service://status 失败: {}", e);
+        }
+    }
+
     /// 标记端口冲突
     ///
     /// 仅统计非噪声端口（过滤 JMX/devtools/H2/JMXMP 等），避免误报冲突；
@@ -801,7 +815,31 @@ impl ProcessManager {
         mut cmd: Command,
         kill_token: Arc<AtomicBool>,
         working_dir: &Path,
+        daemon_launch: Option<super::delegate::Launch>,
     ) -> AppResult<()> {
+        // P4：daemon 在线且可委托时，把 java 进程整体交给 daemon 托管
+        // （spawn / 管道消费 / 退出 / 就绪 / 指标均由 daemon 承担）
+        if let Some(l) = daemon_launch {
+            if super::delegate::daemon_online(app) {
+                Self::emit_log(&app, &service.id, LogSource::Mvn, "[javaboot] 启动（daemon 托管）...");
+                let (run_id, pid) = super::delegate::spawn_service(
+                    app, &service.id, &l.module_name, &l.project_id,
+                    l.argv, l.env_vars, l.working_dir, l.startup_port,
+                )
+                .await
+                .map_err(|e| {
+                    self.handles.lock().remove(&service.id);
+                    self.set_status(app, &service.id, ServiceStatus::Stopped);
+                    AppError::Process(format!("daemon 启动失败: {}", e))
+                })?;
+                let _ = run_id;
+                if pid > 0 {
+                    self.set_pid(app, &service.id, pid);
+                }
+                // 状态转 Running/Error 由 daemon proc.status 事件归一驱动
+                return Ok(());
+            }
+        }
         Self::emit_log(&app, &service.id, LogSource::Mvn, "[javaboot] 启动 java 子进程...");
         let mut child = cmd.spawn().map_err(|e| {
             let msg = format!("启动失败: {}", e);
@@ -1275,8 +1313,26 @@ impl ProcessManager {
             );
         }
 
+        // P4：构造可委托给 daemon 的启动载荷（超长命令行的 argfile/CLASSPATH
+        // 模式保持本地启动，避免 daemon 侧对 @argfile 的引号语义差异）
+        let daemon_launch = if over_limit {
+            None
+        } else {
+            let mut argv = Vec::with_capacity(args.len() + 1);
+            argv.push(java_bin.clone());
+            argv.extend(args.iter().cloned());
+            Some(super::delegate::Launch {
+                argv,
+                env_vars: env_cfg.env_vars.clone(),
+                working_dir: working_dir.to_string_lossy().to_string(),
+                project_id: service.project_id.as_deref().unwrap_or("").to_string(),
+                module_name: service.name.clone(),
+                startup_port: None,
+            })
+        };
+
         self.spawn_and_monitor(
-            &app, &service, cmd, kill_token, &working_dir,
+            &app, &service, cmd, kill_token, &working_dir, daemon_launch,
         ).await
     }
 
@@ -1691,6 +1747,18 @@ impl ProcessManager {
     }
 
     pub async fn stop(&self, app: AppHandle, service_id: &str) -> AppResult<()> {
+        // P4：daemon 托管的服务，停止交给 daemon（进程/管道/退出由 daemon 承担）
+        if super::delegate::daemon_online(&app) && super::delegate::is_managed(service_id) {
+            Self::emit_log(&app, service_id, LogSource::Mvn, "[javaboot] 停止（daemon 托管）...");
+            self.handles.lock().remove(service_id);
+            self.set_status(&app, service_id, ServiceStatus::Stopping);
+            super::delegate::stop_service(&app, service_id).await?;
+            self.set_status(&app, service_id, ServiceStatus::Stopped);
+            let _ = db::clear_run_pid(service_id);
+            Self::emit_log(&app, service_id, LogSource::Mvn, "[javaboot] 服务已停止");
+            return Ok(());
+        }
+
         Self::emit_log(&app, service_id, LogSource::Mvn, "[javaboot] 正在停止服务...");
         let handle = {
             let mut handles = self.handles.lock();

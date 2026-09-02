@@ -1,5 +1,5 @@
 import {create} from "zustand";
-import type {AppConfig, LogLine, Project, Service, ServiceRuntime,} from "./types";
+import type {AppConfig, DaemonHello, DaemonProcessInfo, LogLine, Project, Service, ServiceRuntime,} from "./types";
 import * as api from "./api";
 
 interface LogBuffer {
@@ -23,6 +23,15 @@ interface Store {
   loading: boolean;
   /** 初始化失败时的错误信息，UI 据此展示提示 */
   initError: string | null;
+  // ---- P3 daemon 监控闭环 ----
+  /** daemon 连接状态 */
+  daemonConnected: boolean;
+  /** daemon 握手信息 */
+  daemonHello: DaemonHello | null;
+  /** daemon 托管进程实时事实（run_id 键） */
+  daemonProcesses: DaemonProcessInfo[];
+  /** 最近一次指标刷新时间戳，UI 判断数据新鲜度 */
+  daemonMetricsAt: number | null;
 
   // actions
   init: () => Promise<void>;
@@ -37,6 +46,12 @@ interface Store {
   updateConfig: (cfg: AppConfig) => Promise<void>;
   removeProject: (projectId: string) => void;
   removeService: (serviceId: string) => void;
+  // ---- P3 daemon 监控闭环 ----
+  setDaemonConnected: (connected: boolean) => void;
+  setDaemonHello: (hello: DaemonHello | null) => void;
+  setDaemonProcesses: (list: DaemonProcessInfo[]) => void;
+  updateDaemonMetrics: (runId: number, cpu: number | null, mem: number | null) => void;
+  refreshDaemon: () => Promise<void>;
 }
 
 // ================================================================
@@ -151,6 +166,10 @@ export const useStore = create<Store>((set, get) => {
   openedTabs: loadOpenedTabs(),
   loading: false,
   initError: null,
+  daemonConnected: false,
+  daemonHello: null,
+  daemonProcesses: [],
+  daemonMetricsAt: null,
 
   init: async () => {
     set({ loading: true, initError: null });
@@ -374,6 +393,34 @@ export const useStore = create<Store>((set, get) => {
             : state.selectedServiceId,
       };
     });
+  },
+
+  setDaemonConnected: (connected) => set({ daemonConnected: connected }),
+  setDaemonHello: (hello) => set({ daemonHello: hello }),
+  setDaemonProcesses: (list) =>
+    set({ daemonProcesses: list, daemonMetricsAt: Date.now() }),
+  updateDaemonMetrics: (runId, cpu, mem) =>
+    set((state) => {
+      const idx = state.daemonProcesses.findIndex((p) => p.run_id === runId);
+      const cur = state.daemonProcesses[idx];
+      if (!cur) return {};
+      const next = state.daemonProcesses.slice();
+      const updated: DaemonProcessInfo = { ...cur, cpu_usage: cpu, memory_mb: mem };
+      next[idx] = updated;
+      return { daemonProcesses: next, daemonMetricsAt: Date.now() };
+    }),
+  refreshDaemon: async () => {
+    const hello = await api.getDaemonHello();
+    const connected = await api.getDaemonConnected();
+    let list: DaemonProcessInfo[] = [];
+    if (connected) {
+      try {
+        list = await api.reconcileDaemon();
+      } catch {
+        list = [];
+      }
+    }
+    set({ daemonConnected: connected, daemonHello: hello, daemonProcesses: list, daemonMetricsAt: Date.now() });
   },
   };
 });

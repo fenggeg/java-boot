@@ -1,0 +1,41 @@
+[package]
+name = "javaboot-daemon"
+version = "0.1.0"
+description = "javaboot-launcher 常驻守护进程：进程/日志/扫描/监控"
+edition = "2021"
+rust-version = "1.77"
+
+[[bin]]
+name = "javaboot-daemon"
+path = "src/main.rs"
+
+[dependencies]
+jb-core = { path = "../shared" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["net", "io-util", "process", "sync", "time", "rt", "rt-multi-thread", "macros", "fs"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+futures = "0.3"
+regex = "1"
+ignore = "0.4"
+sysinfo = "0.32"
+quick-xml = "0.37"
+chrono = "0.4"
+dirs = "5.0"
+uuid = { version = "1.0", features = ["v4"] }
+log = "0.4"
+env_logger = "0.11"
+thiserror = "2.0"
+anyhow = "1.0"
+parking_lot = "0.12"
+once_cell = "1.0"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_System_Pipes",
+] }

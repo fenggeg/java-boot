@@ -42,10 +42,13 @@
 
 ### 进程生命周期
 - Windows Job Object 绑定子进程 → 主程序退出 / 崩溃时自动带走 java 进程，杜绝残留
+- **独立 daemon 守护进程**（v0.16.0+）：Java 进程的 spawn / 管道消费 / 退出监控 / 就绪判定 / CPU 内存指标整体下沉到常驻 daemon（`src-tauri/daemon/`），launcher UI 崩溃或重启时 daemon 独立存活，托管服务不受影响；UI 重启后通过对账（`daemon_reconcile`）恢复实时事实与日志续传
+- **崩溃恢复**：daemon 启动时扫描磁盘上仍存活的 java 进程，三态处置——接管监控 / 干净重启（原 spec，新 run_id，日志续传）/ 忽略；launcher 启动时 daemon 在线则重建服务映射，离线回退本地恢复
+- **委托启动**：daemon 在线且命令行未超长时，java 进程整体交给 daemon 托管；超长 classpath（`@argfile` 模式）保持本地启动避免引号语义差异
+- **顶栏守护状态**：在线绿点 / 离线灰点 + 托管运行数 + 合计内存，实时 CPU / 内存由 `daemon-proc-metrics` 事件推送，4 秒周期对账刷新进程列表
 - 无锁取消令牌（`AtomicBool`），并发 `stop_all`
 - `stop()` 发出 kill 后轮询 sysinfo 等待 PID 真正退出（超时 8 秒），避免 JVM shutdown hook 撞上端口占用 / class 文件锁
 - 支持异常退出后重启（`auto_restart` 开关，按服务粒度；防抖 + `RESTART_IN_PROGRESS` 标志防并发重编译）
-- 应用重启后能识别磁盘上仍存活的 java 进程，恢复其运行状态
 - 服务操作按钮防抖：启动 / 停止 / 重启 / 编译 / 重新编译期间禁用，避免并发触发误杀刚启动的进程
 
 ### 服务打包
@@ -154,16 +157,20 @@ npm run tauri:build
 │   │   ├── db/                # SQLite (rusqlite + r2d2 连接池) - schema/models/mod，PRAGMA user_version 幂等迁移
 │   │   ├── pom/               # Maven pom 解析 + SpringBoot 识别（module 路径越界校验）
 │   │   ├── process/
-│   │   │   ├── manager.rs     # 进程管理器（start/stop/stop_all、三档策略编排、restore_running、refresh_resource_usage）
+│   │   │   ├── manager.rs     # 进程管理器（start/stop/stop_all、三档策略编排、restore_running、refresh_resource_usage、daemon 委托分流）
+│   │   │   ├── delegate.rs    # daemon 委托启动 / 事件归一（P4：spawn/stop/rebind/normalize_event）
 │   │   │   ├── build.rs       # classpath 缓存、mtime 决策、Maven 执行器（离线优先）、Java 主版本检测 + argfile JDK8 回退
 │   │   │   ├── env.rs         # JAVA_HOME / MAVEN_OPTS 解析注入（windows crate 注册表 PATH 合并）
 │   │   │   ├── log_pipe.rs    # 启动/失败模式匹配
 │   │   │   └── job.rs         # Windows Job Object 封装
+│   │   ├── ipc.rs             # daemon IPC 客户端（TCP 连接 / 握手 / 请求响应 / 事件转发）
 │   │   ├── port/              # 端口占用扫描（噪声端口过滤）
 │   │   ├── project_fs.rs      # 项目文件浏览/读写/重命名/复制/移动/资源管理器定位/walk_files
 │   │   ├── watcher.rs         # 文件变更监听（notify）+ 模块脏标记 + worker panic 重建（指数退避）
 │   │   ├── update.rs          # 应用自更新（下载白名单 / 安装包校验 / 取消令牌）
 │   │   └── util.rs            # 通用工具（junction 解析、输出解码等）
+│   ├── daemon/                # 独立 daemon 二进制 crate（进程托管 / 崩溃恢复 / 扫描 / 监控指标采集）
+│   ├── shared/                # jb-core 共享 crate（协议 method/HelloResult、模型 ProcessInfo/SpawnRequest/RecoveryEntry）
 │   └── Cargo.toml
 └── package.json
 ```

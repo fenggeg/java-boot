@@ -3,6 +3,8 @@ import type {
     AppConfig,
     BatchStartResult,
     BatchPackageResult,
+    DaemonHello,
+    DaemonProcessInfo,
     FileContent,
     FileEntry,
     JdkInfo,
@@ -113,6 +115,18 @@ export const getRuntime = (id: string) =>
 export const getAllRuntimes = () =>
   invoke<ServiceRuntime[]>("get_all_runtimes");
 export const refreshPortConflicts = () => invoke<void>("refresh_port_conflicts");
+
+// ============================ Daemon（P3 监控闭环） ============================
+
+/** daemon 是否已连接（Tauri 命令层拉取） */
+export const getDaemonConnected = () =>
+  invoke<boolean>("daemon_connected");
+/** daemon 握手信息（版本协商 / 摘要） */
+export const getDaemonHello = () =>
+  invoke<DaemonHello | null>("daemon_hello");
+/** 对账：拉取 daemon 托管进程实时事实（含 CPU/内存指标） */
+export const reconcileDaemon = () =>
+  invoke<DaemonProcessInfo[]>("daemon_reconcile");
 
 // ============================ Files（项目文件浏览/编辑） ============================
 

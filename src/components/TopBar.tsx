@@ -85,6 +85,22 @@ export default function TopBar({ onOpenSettings }: Props) {
     return { running: r, errorCount: e };
   }, [services, runtimes]);
 
+  // ---- P3：daemon 常驻守护监控（连接状态 + 托管进程实时指标） ----
+  const daemonConnected = useStore((s) => s.daemonConnected);
+  const daemonProcs = useStore((s) => s.daemonProcesses);
+  const daemonSummary = useMemo(() => {
+    const procs = daemonProcs.filter((p) => p.status === "running");
+    let mem = 0;
+    let hasMem = false;
+    for (const p of procs) {
+      if (p.memory_mb != null) {
+        mem += p.memory_mb;
+        hasMem = true;
+      }
+    }
+    return { count: procs.length, total: daemonProcs.length, mem, hasMem };
+  }, [daemonProcs]);
+
   const handleStopAll = async () => {
     try {
       await api.stopAll();
@@ -117,6 +133,31 @@ export default function TopBar({ onOpenSettings }: Props) {
             <span className="stat-val" style={{ color: "#ff3b30" }}>{errorCount}</span>
           </span>
         )}
+
+        {/* P3：daemon 常驻守护监控 */}
+        <Tooltip
+          title={
+            daemonConnected
+              ? `守护进程在线 · 托管 ${daemonSummary.count}/${daemonSummary.total} 运行\n合计内存 ${daemonSummary.mem.toFixed(0)} MB`
+              : "守护进程离线（UI 崩溃时其仍独立存活）"
+          }
+        >
+          <span className="stat-item" style={{ cursor: "default" }}>
+            <span
+              className="stat-dot"
+              style={{
+                background: daemonConnected ? "#34c759" : "#9ca3af",
+                color: daemonConnected ? "#34c759" : "#9ca3af",
+                transition: "background .2s",
+              }}
+            />
+            <span className="stat-label">守护</span>
+            <span className="stat-val">{daemonConnected ? daemonSummary.count : "—"}</span>
+            {daemonConnected && daemonSummary.hasMem && (
+              <span className="stat-label">· {daemonSummary.mem.toFixed(0)}MB</span>
+            )}
+          </span>
+        </Tooltip>
       </div>
 
       <div className="topbar-actions">

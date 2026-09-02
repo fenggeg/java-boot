@@ -90,6 +90,28 @@ export interface ServiceRuntime {
   memory_mb: number | null;
 }
 
+/** daemon 托管进程事实（proc.list / daemon_proc_metrics，P3 监控闭环）。
+ *  以 daemon run_id 为键，与旧 launcher 的 service_id 独立。 */
+export interface DaemonProcessInfo {
+  run_id: number;
+  module_name: string;
+  pid: number | null;
+  status: string;
+  started_at: number | null;
+  /** 就绪判定服务端口 */
+  service_ports: number[];
+  cpu_usage: number | null;
+  memory_mb: number | null;
+}
+
+/** daemon 连接/握手信息（供 UI 展示连接状态与集群摘要） */
+export interface DaemonHello {
+  daemon_version: string;
+  protocol_version: number;
+  has_running: boolean;
+  has_pending_recovery: boolean;
+}
+
 export interface AppConfig {
   port_refresh_interval_secs: number;
   stop_on_compile_fail: boolean;

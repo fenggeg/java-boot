@@ -7,6 +7,30 @@
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-02
+
+### 新增
+
+- **独立 daemon 守护进程架构**：新增 `src-tauri/daemon/`（独立二进制 crate）与 `src-tauri/shared/`（`jb-core` 协议/模型共享 crate），将 Java 进程的 spawn / 管道消费 / 退出监控 / 就绪判定 / CPU 内存指标采集整体下沉到常驻 daemon；UI（launcher）崩溃或重启时 daemon 仍独立存活，托管服务不受影响，UI 重启后通过对账（`daemon_reconcile`）恢复实时事实与日志续传
+- **IPC 客户端**（`src-tauri/src/ipc.rs`）：launcher 启动时自动连接 / 拉起 daemon，`IpcState` 管理 TCP 连接、握手（`HelloResult` 版本协商）、请求/响应、事件订阅；daemon 事件（日志 / 状态 / 监控指标 / 连接）转发到前端 `daemon-connected` / `daemon-disconnected` / `daemon-proc-metrics`
+- **崩溃恢复**（P1）：daemon 启动时扫描磁盘上仍存活的 java 进程，三态处置——`recovery_takeover`（接管监控）、`recovery_restart`（用原 spec 干净重启，新 run_id，日志续传）、`recovery_ignore`（忽略）；launcher 启动时若 daemon 在线则走 `delegate::rebind` 重建服务映射，离线回退本地 `restore_running_services`
+- **pom 扫描委托**（P2）：`daemon_scan_start` / `daemon_scan_cancel` 把 Maven 聚合 pom 解析下沉到 daemon，命中缓存秒级返回，否则后台扫描并通过事件推送进度 / 完成
+- **监控闭环**（P3）：顶栏新增「守护」状态指示（在线绿点 / 离线灰点 + 托管运行数 + 合计内存），`App.tsx` 订阅 `daemon-proc-metrics` 实时更新 CPU / 内存，4 秒周期对账刷新进程列表；`store.ts` 新增 `daemonConnected` / `daemonHello` / `daemonProcesses` / `daemonMetricsAt` 状态与 `refreshDaemon` action
+- **委托启动**（P4）：`process/delegate.rs` 在 daemon 在线且命令行未超长时，把 java 进程整体交给 daemon 托管（spawn / 管道 / 退出 / 就绪 / 指标均由 daemon 承担），`manager.rs` 的 `spawn_and_monitor` / `stop` 新增 daemon 分支；超长 classpath（`@argfile` 模式）保持本地启动避免引号语义差异
+- **daemon 命令面**（`commands.rs`）：新增 12 个 Tauri 命令——`daemon_connected` / `daemon_hello` / `daemon_reconcile` / `daemon_ensure_started` / `daemon_spawn` / `daemon_stop` / `daemon_logtail` / `daemon_recovery_list` / `daemon_recovery_takeover` / `daemon_recovery_restart` / `daemon_recovery_ignore` / `daemon_scan_start` / `daemon_scan_cancel`
+- **验收脚本**：`scripts/p0-daemon-smoke.ps1` ~ `p4-delegate.ps1` 覆盖 daemon 冒烟 / 崩溃恢复 / 扫描 / 监控闭环 / 委托启动五阶段验收
+- **设计文档**：`docs/p0-design.md` / `docs/p1-design.md` 与 `docs/adr/` 记录 daemon 架构决策
+
+### 变更
+
+- **Cargo workspace 拆分**：`src-tauri/Cargo.toml` 新增 `[workspace] members = ["daemon", "shared"]`，主 crate 依赖 `jb-core = { path = "shared" }`；tokio 启用 `net` feature 支持 IPC TCP
+- **服务恢复路径分流**：`lib.rs` 启动流程改为等 daemon 连接（2 秒延迟）后判断在线——在线走 `delegate::rebind` 重建映射（实时日志随事件恢复，无需重启服务），离线回退本地 `restore_running_services`
+- **指标回填**：`manager.rs` 新增 `set_metrics` 方法，daemon 周期性回填的 CPU / 内存写入 runtime 并推送 `service://status`；`delegate::normalize_event` 把 daemon 进程事件归一到 service 维度驱动既有 `service://status` / `service://log`
+
+### CI
+
+- 构建流水线需适配 Cargo workspace（daemon / shared 子 crate 编译产物）
+
 ## [0.15.2] - 2026-09-02
 
 ### 修复

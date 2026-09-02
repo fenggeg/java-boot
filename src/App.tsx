@@ -34,6 +34,11 @@ export default function App() {
   const closeTab = useStore((s) => s.closeTab);
   const openedTabs = useStore((s) => s.openedTabs);
   const initError = useStore((s) => s.initError);
+  // ---- P3 daemon 监控闭环 ----
+  const setDaemonConnected = useStore((s) => s.setDaemonConnected);
+  const setDaemonProcesses = useStore((s) => s.setDaemonProcesses);
+  const updateDaemonMetrics = useStore((s) => s.updateDaemonMetrics);
+  const refreshDaemon = useStore((s) => s.refreshDaemon);
 
   // 精确订阅 hasUnread：只在未读状态变化时触发重渲染，日志行变化不触发。
   // 避免任意服务一条日志导致所有 Tab 标签重算。
@@ -98,13 +103,49 @@ export default function App() {
       }
     })();
 
+    // ---- P3 daemon 事件订阅：连接状态 / 实时监控指标 ----
+    const unlisteners: UnlistenFn[] = [];
+    let disposed2 = false;
+    (async () => {
+      const on = <T,>(name: string, fn: (payload: T) => void) => {
+        listen<T>(name, (e) => {
+          if (!disposed2) fn(e.payload);
+        }).then((u) => {
+          if (disposed2) u();
+          else unlisteners.push(u);
+        });
+      };
+      on("daemon-connected", () =>
+        setDaemonConnected(true),
+      );
+      on("daemon-disconnected", () => {
+        setDaemonConnected(false);
+        setDaemonProcesses([]);
+      });
+      on("daemon-proc-metrics", (m: { run_id: number; cpu_usage: number | null; memory_mb: number | null }) =>
+        updateDaemonMetrics(m.run_id, m.cpu_usage, m.memory_mb),
+      );
+      // 首次拉一次对账，让 daemon 进程列表与连接状态就绪
+      void refreshDaemon();
+    })();
+
     return () => {
       disposedRef.current = true;
+      disposed2 = true;
+      for (const u of unlisteners) u();
       unlistenStatus?.();
       unlistenLog?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ---- P3：周期对账 daemon 进程列表（加入/退出），指标由 proc-metrics 事件实时更新 ----
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void refreshDaemon();
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [refreshDaemon]);
 
   const handleAdded = useCallback(async () => {
     await refreshServices();

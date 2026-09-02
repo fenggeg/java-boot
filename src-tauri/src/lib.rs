@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod db;
 pub mod error;
+pub mod ipc;
 pub mod pom;
 pub mod port;
 pub mod process;
@@ -8,6 +9,8 @@ pub mod project_fs;
 pub mod update;
 pub mod util;
 pub mod watcher;
+
+use std::sync::Arc;
 
 use tauri::Manager;
 
@@ -78,6 +81,22 @@ pub fn run() {
             // 最早期：从注册表合并完整 PATH（修复安装器启动时 PATH 不完整导致 git/java/maven 检测失败）
             process::env::merge_registry_path();
 
+            // IPC 客户端：连接/拉起 daemon（UI 崩溃不影响 daemon）
+            let ipc_state = ipc::IpcState::spawn();
+            app.manage(ipc_state.clone());
+            // daemon 事件（日志/状态/监控指标/连接）转发到前端
+            ipc_state.forward_to_frontend(app.handle().clone());
+            // P4：daemon 事件归一到 service 维度，驱动既有 service://status / service://log
+            {
+                let app = app.handle().clone();
+                let mut rx = ipc_state.events.subscribe();
+                tauri::async_runtime::spawn(async move {
+                    while let Ok(ev) = rx.recv().await {
+                        process::delegate::normalize_event(&app, &ev);
+                    }
+                });
+            }
+
             // 诊断：打印关键环境变量（排查安装器启动时环境缺失问题）
             {
                 log::info!("=== 环境变量诊断 ===");
@@ -96,9 +115,20 @@ pub fn run() {
                 e
             })?;
 
-            // 恢复上次运行中的服务
-            let handle = app.handle().clone();
-            process::get_manager().restore_running_services(&handle);
+            // 恢复上次运行中的服务：等 daemon 连上后，在线则经 delegate 重建映射
+            // （实时日志随事件恢复，无需重启服务）；离线则回退本地恢复路径
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    let online = handle.state::<Arc<ipc::IpcState>>().inner().is_connected();
+                    if online {
+                        let _ = process::delegate::rebind(&handle).await;
+                    } else {
+                        process::get_manager().restore_running_services(&handle);
+                    }
+                });
+            }
 
             // 初始化文件监听
             let handle = app.handle().clone();
@@ -189,6 +219,20 @@ pub fn run() {
             commands::open_in_browser,
             commands::detect_jdks,
             commands::detect_mavens,
+            // daemon (IPC 代理)
+            commands::daemon_connected,
+            commands::daemon_hello,
+            commands::daemon_reconcile,
+            commands::daemon_ensure_started,
+            commands::daemon_spawn,
+            commands::daemon_stop,
+            commands::daemon_logtail,
+            commands::daemon_recovery_list,
+            commands::daemon_recovery_takeover,
+            commands::daemon_recovery_restart,
+            commands::daemon_recovery_ignore,
+            commands::daemon_scan_start,
+            commands::daemon_scan_cancel,
             // update
             update::download_update,
             update::install_update,
