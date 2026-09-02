@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-09-02
+
+### 变更
+
+- **daemon 打包集成**：`tauri.conf.json` 的 `beforeBuildCommand` 追加 `cargo build --release -p javaboot-daemon`，`bundle.resources` 纳入 `target/release/javaboot-daemon.exe`，安装包自带 daemon 副本，解决此前安装版找不到 daemon exe 的问题
+
+### 修复
+
+- **daemon exe 定位路径扩展**：`locate_daemon_exe` 此前仅覆盖当前 exe 同级与 PATH，安装布局（resources/ 子目录）、开发布局（target/release 上两级）与个别安装器把 sidecar 放入 launcher 数据目录的场景均会落空；现补齐 `resources/` 子目录、上两级 `target/release`、`dirs::data_dir()/javaboot-launcher/` 三类候选路径，覆盖安装与开发两种布局
+
 ## [0.17.0] - 2026-09-02
 
 ### 新增
