@@ -72,6 +72,9 @@ export default function FilePanel({
   const tabsRef = useRef<OpenTab[]>([]);
   tabsRef.current = tabs;
   const [activePath, setActivePath] = useState<string | null>(null);
+  // activePath 的实时镜像：异步流程里读取最新激活路径（避免闭包过期）
+  const activePathRef = useRef<string | null>(null);
+  activePathRef.current = activePath;
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -123,16 +126,25 @@ export default function FilePanel({
    * 外部修改同步：把无未保存编辑的文本标签页从磁盘静默重读。
    * 聚焦/可见刷新时一并重读，避免缓冲区停留在外部修改前。
    * updater 内二次校验「仍未保存」，保护 await 期间用户产生的新编辑。
+   *
+   * 滚动位置保护：更新当前激活 tab 的内容会触发编辑器 value prop 变化，
+   * 库内部 executeEdits 全量替换会重置滚动位置。因此在更新前保存 viewState，
+   * 更新后恢复，避免用户滚动位置因外部同步丢失。
    */
   const syncCleanTabsFromDisk = useCallback(async () => {
     const clean = tabsRef.current.filter(
       (t) =>
         t.fileType === "text" && t.content === t.meta.content
     );
+    const curActive = activePathRef.current;
     for (const t of clean) {
       try {
         const fresh = await api.readProjectFile(project.id, t.path);
         const buf = toBufferEol(fresh.content);
+        // 若即将更新的是当前激活 tab，先保存编辑器滚动位置
+        if (t.path === curActive && monacoRef.current) {
+          monacoRef.current.saveViewState();
+        }
         setTabs((prev) =>
           prev.map((tb) =>
             tb.path === t.path && tb.content === tb.meta.content
@@ -145,6 +157,10 @@ export default function FilePanel({
               : tb
           )
         );
+        // 内容更新后恢复滚动位置（rAF 延迟一帧，等库 executeEdits 完成）
+        if (t.path === curActive && monacoRef.current) {
+          monacoRef.current.restoreViewState();
+        }
       } catch {
         /* 文件可能已被外部删除 / 移动：保留原标签内容 */
       }

@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+## [0.15.2] - 2026-09-02
+
+### 修复
+
+- **编辑器切换 tab 滚动位置跳回文件头**：`MonacoCodeEditor` 的 `previousPathRef` 初始为 `null`，首次切换标签时 `useLayoutEffect` 走 `prev === null` 分支，将初始标签的 viewState 错误地保存到新 path 名下，导致初始标签的滚动位置从未被保存，切回时回到文件头；改为在 `handleMount` 中将 `previousPathRef` 初始化为当前 `path`，删除 `prev === null` 分支，首次切换即走 `prev !== null && prev !== path` 分支正确保存初始标签状态
+- **编辑器切换 tab 后 executeEdits 覆盖滚动位置**：`@monaco-editor/react` 的 `value` prop 变化时内部用 `executeEdits` 全量替换内容会重置滚动位置，而库的 `value` effect 在 `path` effect 之后、本组件恢复 effect 之前执行；恢复 viewState 的 `useEffect` 改用 `requestAnimationFrame` 延迟一帧，确保在库 `executeEdits` 完成后再恢复滚动位置
+- **外部磁盘同步重置编辑器滚动位置**：`FilePanel` 的 `syncCleanTabsFromDisk` 重读未编辑标签内容时，当前激活 tab 的 `value` prop 变化触发库 `executeEdits` 全量替换，重置滚动位置；新增 `activePathRef` 实时镜像，`syncCleanTabsFromDisk` 更新激活 tab 内容前调用 `saveViewState`、更新后调用 `restoreViewState`（通过 `MonacoCodeEditorHandle` 新暴露的 `saveViewState`/`restoreViewState` 方法），保持外部同步时滚动位置不丢失
+
 ## [0.15.1] - 2026-09-02
 
 ### 修复

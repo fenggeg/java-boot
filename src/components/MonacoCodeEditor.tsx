@@ -14,6 +14,10 @@ export interface MonacoCodeEditorHandle {
   setValue: (value: string) => void;
   /** 滚动到指定行 */
   revealLine: (line: number) => void;
+  /** 保存当前滚动位置/光标状态（外部内容同步前调用） */
+  saveViewState: () => void;
+  /** 恢复滚动位置/光标状态（外部内容同步后调用） */
+  restoreViewState: () => void;
   /** 获取编辑器实例 */
   getEditor: () => editor.IStandaloneCodeEditor | null;
 }
@@ -58,13 +62,21 @@ export default function MonacoCodeEditor({
   // 它会读「已更新为新 path」的闭包作为保存 key，导致把上一标签的滚动位置
   // 错误地覆盖到新标签名下，从而出现「滚动一个文件会带动其他已打开文件」。
   // 因此这里关闭库的 saveViewState，改为在组件内自行按 path 精确保存/恢复。
+  //
+  // 时序说明（React effect 执行顺序）：
+  //   1. 本组件 useLayoutEffect（保存旧 tab 的 viewState）—— layout 阶段，先于库内部 effect
+  //   2. 库 path effect（setModel 切换 model）
+  //   3. 库 value effect（executeEdits 全量替换内容，会重置滚动位置/光标）
+  //   4. 本组件 useEffect（restoreViewState 恢复滚动位置）—— 此时内容已同步，恢复有效
+  // 为防御库 value effect 与本组件恢复 effect 的潜在时序偏差，恢复放在
+  // requestAnimationFrame 中，确保浏览器绘制前完成恢复。
   const previousPathRef = useRef<string | null>(null);
   const viewStatesRef = useRef(new Map<string, editor.ICodeEditorViewState>());
 
   // 「保存」放在 useLayoutEffect：它先于库内部切换 model 的 useEffect 执行，
   // 此时 editor 仍挂在旧 model 上，saveViewState() 拿到的正是即将离开的标签的位置。
-  // 注意：previousPathRef 初始为 null，第一次切换时需要保存「当前 path」（即初始标签）
-  // 的状态，否则初始标签的滚动位置会丢失，切回时回到文件头。
+  // previousPathRef 在 handleMount 中已初始化为初始 path，因此首次切换时
+  // prev !== null && prev !== path 成立，能正确保存初始标签的状态。
   useLayoutEffect(() => {
     const ed = editorInstanceRef.current;
     const prev = previousPathRef.current;
@@ -72,20 +84,26 @@ export default function MonacoCodeEditor({
     if (prev !== null && prev !== path) {
       const state = ed.saveViewState();
       if (state) viewStatesRef.current.set(prev, state);
-    } else if (prev === null) {
-      // 首次切换：保存初始标签的状态（此时 editor 仍挂在初始 model 上）
-      const state = ed.saveViewState();
-      if (state) viewStatesRef.current.set(path, state);
     }
   }, [path]);
 
-  // 「恢复」放在 useEffect：此时库已完成 model 切换到新 path，
+  // 「恢复」放在 useEffect：此时库已完成 model 切换到新 path 并同步了 value，
   // 对当前 model 恢复对应标签保存过的滚动位置。
+  // 用 requestAnimationFrame 延迟一帧，确保在库 value effect 的 executeEdits
+  // 完成后再恢复，避免内容全量替换覆盖掉刚恢复的滚动位置。
   useEffect(() => {
     const ed = editorInstanceRef.current;
+    if (!ed) {
+      previousPathRef.current = path;
+      return;
+    }
     const saved = path ? viewStatesRef.current.get(path) : undefined;
-    if (ed && saved) {
-      ed.restoreViewState(saved);
+    if (saved) {
+      const raf = requestAnimationFrame(() => {
+        ed.restoreViewState(saved);
+      });
+      previousPathRef.current = path;
+      return () => cancelAnimationFrame(raf);
     }
     previousPathRef.current = path;
   }, [path]);
@@ -94,6 +112,9 @@ export default function MonacoCodeEditor({
   const handleMount = useCallback(
     (ed: editor.IStandaloneCodeEditor) => {
       editorInstanceRef.current = ed;
+      // 初始化 previousPathRef 为当前 path，使首次 tab 切换时保存逻辑
+      // 走 prev !== null && prev !== path 分支，正确保存初始标签的 viewState。
+      previousPathRef.current = path;
 
       // 暴露 handle 方法给父组件
       if (editorRef) {
@@ -106,6 +127,20 @@ export default function MonacoCodeEditor({
           revealLine: (line: number) => {
             ed.revealLineInCenter(line + 1);
           },
+          saveViewState: () => {
+            const cur = previousPathRef.current;
+            if (!cur) return;
+            const state = ed.saveViewState();
+            if (state) viewStatesRef.current.set(cur, state);
+          },
+          restoreViewState: () => {
+            const cur = previousPathRef.current;
+            if (!cur) return;
+            const state = viewStatesRef.current.get(cur);
+            if (state) {
+              requestAnimationFrame(() => ed.restoreViewState(state));
+            }
+          },
           getEditor: () => ed,
         };
       }
@@ -115,7 +150,7 @@ export default function MonacoCodeEditor({
         onSaveRef.current();
       });
     },
-    [editorRef]
+    [editorRef, path]
   );
 
   // 监听主题切换
