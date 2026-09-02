@@ -70,7 +70,8 @@ fn sample(
             continue;
         };
         let cpu = f32::clamp(proc.cpu_usage(), 0.0, 100.0);
-        let mem_mb = proc.memory() as f64 / 1024.0;
+        // sysinfo Process::memory() 返回字节；换算为 MB。
+        let mem_mb = proc.memory() as f64 / 1024.0 / 1024.0;
         *slot.lock() = (Some(cpu), Some(mem_mb));
         out.push(ProcMetrics {
             run_id: *run_id,
