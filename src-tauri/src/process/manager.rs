@@ -66,6 +66,8 @@ const STOP_WAIT_PID_SECS: u64 = 8;
 const KILL_WAIT_SECS: u64 = 10;
 /// 依赖服务启动等待超时（秒）
 const DEPENDENCY_START_TIMEOUT_SECS: u64 = 120;
+/// P4：委托 daemon 停止的等待上限（秒）。daemon 最坏约 20s，这里多留余量避免误回退。
+const STOP_DELEGATE_TIMEOUT_SECS: u64 = 25;
 /// 轮询间隔
 const POLL_INTERVAL_MS: u64 = 250;
 const POLL_INTERVAL_FAST_MS: u64 = 200;
@@ -1752,9 +1754,36 @@ impl ProcessManager {
             Self::emit_log(&app, service_id, LogSource::Mvn, "[javaboot] 停止（daemon 托管）...");
             self.handles.lock().remove(service_id);
             self.set_status(&app, service_id, ServiceStatus::Stopping);
-            super::delegate::stop_service(&app, service_id).await?;
+            // 带超时：daemon 停止最坏约 20s（8s 等退出 + 12s 端口释放探测）。
+            // 超过上限或失败则回退本地强杀 PID，避免 UI 无限等待。
+            let stopped = match tokio::time::timeout(
+                std::time::Duration::from_secs(STOP_DELEGATE_TIMEOUT_SECS),
+                super::delegate::stop_service(&app, service_id),
+            )
+            .await
+            {
+                Ok(Ok(_)) => true,
+                Ok(Err(e)) => {
+                    log::warn!("daemon 停止 {service_id} 失败: {e}，回退本地强杀");
+                    false
+                }
+                Err(_) => {
+                    log::warn!("daemon 停止 {service_id} 超时，回退本地强杀");
+                    false
+                }
+            };
+            if !stopped {
+                if let Some(pid) = self.get_runtime(service_id).pid {
+                    kill_process_tree_by_pid(pid);
+                    let _ = Self::wait_for_pid_exit(
+                        pid,
+                        std::time::Duration::from_secs(STOP_WAIT_PID_SECS),
+                    ).await;
+                }
+            }
             self.set_status(&app, service_id, ServiceStatus::Stopped);
             let _ = db::clear_run_pid(service_id);
+            super::delegate::clear(service_id);
             Self::emit_log(&app, service_id, LogSource::Mvn, "[javaboot] 服务已停止");
             return Ok(());
         }

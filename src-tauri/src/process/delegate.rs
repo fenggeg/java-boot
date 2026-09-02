@@ -142,6 +142,11 @@ pub fn is_managed(service_id: &str) -> bool {
     bridge().is_managed(service_id)
 }
 
+/// 主动解除映射（停止完成 / 回退本地强杀后调用）。
+pub fn clear(service_id: &str) {
+    bridge().remove(service_id);
+}
+
 /// 应用重启 / daemon 重连后，重建 `service_id ↔ run_id` 映射。
 ///
 /// 原理：daemon 重启后仍在托管之前的 java 进程（管道、退出、就绪、日志均存活），
