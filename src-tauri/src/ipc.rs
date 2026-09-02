@@ -152,6 +152,8 @@ async fn driver(
                 Ok(p) => p,
                 Err(_) => {
                     log::info!("daemon 未就绪，{}ms 后重试", backoff.as_millis());
+                    // 断连自愈：尝试重新拉起 daemon（内部带 2s 冷却，不会刷屏）
+                    let _ = spawn_daemon_process();
                     tokio::time::sleep(backoff).await;
                     backoff = (backoff * 2).min(Duration::from_millis(C::RECONNECT_MAX_MS));
                     continue;
@@ -335,7 +337,12 @@ fn dispatch_notification(state: &IpcState, n: &Notification) -> bool {
 // daemon 进程管理（拉起 / 存活探测）——同步接口，供命令层调用
 // ---------------------------------------------------------------------------
 
-static SPAWN_ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// 上次尝试拉起 daemon 的时刻（用于断连重拉冷却，避免重试风暴）。
+static LAST_SPAWN_AT: std::sync::Mutex<std::option::Option<std::time::Instant>> =
+    std::sync::Mutex::new(None);
+
+/// 重拉冷却：两次拉起尝试至少间隔此值。
+const RESPAWN_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// daemon 是否已在运行（按进程名匹配）。
 pub fn is_daemon_alive() -> bool {
@@ -366,11 +373,19 @@ fn locate_daemon_exe() -> Option<std::path::PathBuf> {
     candidates.into_iter().find(|p| p.exists())
 }
 
-/// 拉起 daemon。返回是否成功启动（是否「已经在跑」由 daemon 自己判定并退出）。
+/// 拉起 daemon。返回是否实际执行了拉起（是否「已经在跑」由 daemon 自己判定并退出）。
+///
+/// 可反复调用：内部带 2s 冷却，故「连接失败自动重拉」不会刷屏；幂等（daemon 单实例）。
 pub fn spawn_daemon_process() -> std::io::Result<bool> {
-    // 已尝试过则不再重复拉（daemon 侧有单实例判定，也不会造成双跑）
-    if SPAWN_ONCE.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        return Ok(false);
+    // 冷却：距上次尝试不足阈值则跳过（防断连重试风暴）
+    {
+        let mut last = LAST_SPAWN_AT.lock().unwrap();
+        if let Some(t) = *last {
+            if t.elapsed() < RESPAWN_COOLDOWN {
+                return Ok(false);
+            }
+        }
+        *last = Some(std::time::Instant::now());
     }
     let Some(exe) = locate_daemon_exe() else {
         log::warn!("找不到 javaboot-daemon.exe，跳过拉起");

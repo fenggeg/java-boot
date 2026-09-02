@@ -81,6 +81,12 @@ pub fn run() {
             // 最早期：从注册表合并完整 PATH（修复安装器启动时 PATH 不完整导致 git/java/maven 检测失败）
             process::env::merge_registry_path();
 
+            // 确保常驻 daemon 已拉起（IpcState 只负责连接，不负责拉起）。
+            // 若已在跑，新拉的 daemon 会因命名管道被占而自行退出，安全幂等。
+            if let Err(e) = ipc::spawn_daemon_process() {
+                log::warn!("拉起 daemon 失败: {}（守护将保持离线，启动/恢复回退本地路径）", e);
+            }
+
             // IPC 客户端：连接/拉起 daemon（UI 崩溃不影响 daemon）
             let ipc_state = ipc::IpcState::spawn();
             app.manage(ipc_state.clone());
