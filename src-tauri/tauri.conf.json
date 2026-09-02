@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run build && cargo build --release --manifest-path src-tauri/Cargo.toml -p javaboot-daemon"
   },
   "app": {
     "windows": [
@@ -44,7 +44,10 @@
       "nsis": {
         "installMode": "currentUser"
       }
-    }
+    },
+    "resources": [
+      "target/release/javaboot-daemon.exe"
+    ]
   },
   "plugins": {}
 }

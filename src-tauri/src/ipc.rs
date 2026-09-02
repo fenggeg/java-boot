@@ -353,24 +353,30 @@ pub fn is_daemon_alive() -> bool {
         .any(|p| p.name().to_string_lossy().to_lowercase().contains("javaboot-daemon"))
 }
 
-/// 定位 daemon 可执行文件：优先当前 exe 同级，其次 PATH，最后 release 产物目录。
+/// 定位 daemon 可执行文件：优先当前 exe 同级，其次常见安装/数据目录，最后 PATH。
 fn locate_daemon_exe() -> Option<std::path::PathBuf> {
-    let candidates: Vec<std::path::PathBuf> = {
-        let mut v = Vec::new();
-        if let Ok(me) = std::env::current_exe() {
-            if let Some(dir) = me.parent() {
-                v.push(dir.join("javaboot-daemon.exe"));
-            }
-            v.push(me.with_file_name("javaboot-daemon.exe"));
-        }
-        if let Ok(path) = std::env::var("PATH") {
-            for dir in std::env::split_paths(&path) {
-                v.push(dir.join("javaboot-daemon.exe"));
+    let mut v: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(me) = std::env::current_exe() {
+        if let Some(dir) = me.parent() {
+            // 同目录 & 其上两级（target 布局: .../target/debug ↔ daemon 也在 debug；安装布局则在同目录）
+            v.push(dir.join("javaboot-daemon.exe"));
+            v.push(dir.join("resources").join("javaboot-daemon.exe"));
+            if let Some(gp) = dir.parent().and_then(|p| p.parent()) {
+                v.push(gp.join("release").join("javaboot-daemon.exe"));
             }
         }
-        v
-    };
-    candidates.into_iter().find(|p| p.exists())
+        v.push(me.with_file_name("javaboot-daemon.exe"));
+    }
+    // launcher 数据目录（个别安装器把 sidecar 放这里）
+    if let Some(data) = dirs::data_dir() {
+        v.push(data.join("javaboot-launcher").join("javaboot-daemon.exe"));
+    }
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path) {
+            v.push(dir.join("javaboot-daemon.exe"));
+        }
+    }
+    v.into_iter().find(|p| p.exists())
 }
 
 /// 拉起 daemon。返回是否实际执行了拉起（是否「已经在跑」由 daemon 自己判定并退出）。
