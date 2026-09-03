@@ -14,6 +14,26 @@ use std::sync::Arc;
 
 use tauri::Manager;
 
+/// env_logger 自定义格式：使用**本地时区**时间戳。
+///
+/// 默认 `format_timestamp_secs()` 输出 UTC（带 `Z` 后缀），排查日志时与系统时间
+/// 对上不；这里改用 `chrono::Local` 生成本地时间，便于对照告警/操作时刻。
+fn log_writer(
+    buf: &mut env_logger::fmt::Formatter,
+    record: &log::Record,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let now = chrono::Local::now();
+    writeln!(
+        buf,
+        "[{} {:<5} {}] {}",
+        now.format("%Y-%m-%dT%H:%M:%S"),
+        record.level(),
+        record.target(),
+        record.args()
+    )
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 日志写入文件（%APPDATA%/javaboot-launcher/javaboot.log），便于排查安装器启动时环境缺失等问题
@@ -29,11 +49,12 @@ pub fn run() {
         if let Ok(f) = log_file {
             env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
                 .target(env_logger::Target::Pipe(Box::new(f)))
-                .format_timestamp_secs()
+                .format(log_writer)
                 .try_init()
                 .ok();
         } else {
             env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+                .format(log_writer)
                 .try_init()
                 .ok();
         }

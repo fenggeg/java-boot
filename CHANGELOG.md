@@ -7,11 +7,19 @@
 
 ## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.13.0...HEAD)
 
+## \[0.18.1] - 2026-09-03
+
+### 修复
+
+- **日志时间显示为 UTC**：launcher 的 `env_logger` 用默认 `format_timestamp_secs()` 输出 UTC 时间戳（带 `Z` 后缀），与系统本地时间对不上、排查不便；改为自定义 `log_writer` 用 `chrono::Local` 输出本地时区时间
+- **daemon 定位被旧版劫持**：`locate_daemon_exe` 按候选顺序取第一个存在，安装根目录可能遗留**旧版** `javaboot-daemon.exe`（如 v0.17.x 手动同步），优先命中后导致新版 daemon（`resources\` 下的 v0.18+ 随包副本，含 `recovery.rescan` 新协议）永远不被拉起，本地进程纳管（L2）静默失效；现调整优先级，`resources\`（规范安装位置）优先于同目录旧版，daemon 始终用随包升级的新版本
+
 ## \[0.18.0] - 2026-09-03
 
 ### 新增
 
 - **daemon 托管统一（就绪门控）**：此前服务启动时若 daemon 尚未握手成功会被静默回退到本地 spawn，导致同一批启动的服务托管归属不一致（一部分走 daemon、一部分本地），重启后状态展示分裂；现新增 `ipc::ensure_daemon_ready`，服务启动前先拉起 daemon 并最多等待 5s 握手（`manager.rs` 就绪门控），daemon 就绪则统一走 daemon 托管，超时才降级本地并显式告警
+
 - **本地进程归统一**：新增 daemon `recovery.rescan`（运行时重新枚举存活 java 进程）；launcher 重启恢复后调用 `adopt_local_processes`，把此前 daemon 离线期间本地托管的存活进程按 pid 引导 `recovery.takeover` 纳管进 daemon，注册 `service_id ↔ run_id` 映射，消除「同一服务被 launcher 与 daemon 双源跟踪」的状态分裂
 
 ### 修复

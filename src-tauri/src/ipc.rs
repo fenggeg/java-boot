@@ -414,9 +414,12 @@ fn locate_daemon_exe() -> Option<std::path::PathBuf> {
     let mut v: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(me) = std::env::current_exe() {
         if let Some(dir) = me.parent() {
-            // 同目录 & 其上两级（target 布局: .../target/debug ↔ daemon 也在 debug）
-            v.push(dir.join("javaboot-daemon.exe"));
+            // 优先 v0.18+ 的规范安装位置 resources/（与 launcher 随包升级），避免
+            // 被安装根目录遗留的**旧版** javaboot-daemon.exe 劫持——旧 daemon 不支持
+            // recovery.rescan 等新协议，会让本地进程纳管（L2）静默失效。
             v.push(dir.join("resources").join("javaboot-daemon.exe"));
+            // 开发/旧安装布局：同目录
+            v.push(dir.join("javaboot-daemon.exe"));
             // bundle.resources 相对路径会原样落到安装目录：target/release/javaboot-daemon.exe
             v.push(dir.join("target").join("release").join("javaboot-daemon.exe"));
             if let Some(gp) = dir.parent().and_then(|p| p.parent()) {
