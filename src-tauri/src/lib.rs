@@ -140,6 +140,8 @@ pub fn run() {
                     // daemon 在线时，再叠加重建 daemon 托管服务的映射
                     if handle.state::<Arc<ipc::IpcState>>().inner().is_connected() {
                         let _ = process::delegate::rebind(&handle).await;
+                        // L2：把本地托管且存活的进程引导纳管进 daemon，归一托管归属
+                        let _ = process::delegate::adopt_local_processes(&handle).await;
                     }
                 });
             }

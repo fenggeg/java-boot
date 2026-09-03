@@ -186,11 +186,62 @@ pub async fn rebind(app: &AppHandle) -> crate::error::AppResult<()> {
     Ok(())
 }
 
-/// 把 daemon 事件归一到 launcher 的 service 维度：
-/// 命中映射的服务，驱动 `service://status` / `service://log` 与 runtime 指标。
+/// 把本地托管且存活的进程引导纳管进 daemon（L2：归一托管归属）。
 ///
-/// 由 launcher setup 订阅 `IpcState.events` 调用；未命中映射的事件直接忽略
-/// （这些 run 不属于 launcher 管理的服务，常见于崩溃恢复枚举的存活进程）。
+/// 背景：此前 daemon 短暂离线时启动的服务会降级为本地托管进程，仅记在
+/// launcher `service_run_pids`。重启后 daemon 在线，这些进程需尽可能收归
+/// daemon 统一托管，避免「同一服务同时被 launcher 与 daemon 跟踪」的双源状态。
+///
+/// 做法：调用 daemon `recovery.rescan` 让 daemon 主动枚举存活 java 进程，
+/// 再按本地托管服务的 module_name 在 pending 中精确匹配 pid → `recovery.takeover`
+/// 纳入 daemon，并注册 bridge 映射。匹配不中或 daemon 离线则跳过（保持本地托管）。
+pub async fn adopt_local_processes(app: &AppHandle) -> crate::error::AppResult<()> {
+    if !daemon_online(app) {
+        return Ok(());
+    }
+    let state = app.state::<Arc<IpcState>>().inner().clone();
+    // daemon 运行时默认不自发枚举存活进程，先主动 rescan 刷新 pending 列表
+    let res: serde_json::Value = state.request(
+        P::method::RECOVERY_RESCAN,
+        serde_json::json!({}),
+    ).await.map_err(|e| crate::error::AppError::Other(format!("daemon rescan 失败: {e}")))?;
+    let pending = res.get("pending").cloned().unwrap_or_default();
+    let entries: Vec<jb_core::model::RecoveryEntry> =
+        serde_json::from_value(pending).unwrap_or_default();
+    let saved = match crate::db::load_all_run_pids() {
+        Ok(v) => v,
+        Err(_) => return Ok(()),
+    };
+    let mgr = crate::process::get_manager();
+    for (sid, pid, _started_at) in saved {
+        // 该服务已是 daemon 托管则跳过（避免重复纳管）
+        if bridge().run_of(&sid).is_some() {
+            continue;
+        }
+        // 仅纳管 launcher 运行时判定为运行的服务（本地托管且存活）
+        if !mgr.is_running(&sid) {
+            continue;
+        }
+        let Some(entry) = entries
+            .iter()
+            .find(|e| e.pid == pid)
+        else {
+            continue;
+        };
+        let takeover: serde_json::Value = state.request(
+            P::method::RECOVERY_TAKEOVER,
+            serde_json::json!({ "pid": pid }),
+        ).await.map_err(|e| crate::error::AppError::Other(format!("daemon takeover 失败: {e}")))?;
+        let _ = takeover;
+        bridge().register(&sid, entry.run_id.unwrap_or(0));
+        mgr.set_status(app, &sid, crate::db::models::ServiceStatus::Running);
+        log::info!(
+            "本地进程引导纳管进 daemon: service={sid} pid={pid} module={}",
+            entry.module_name
+        );
+    }
+    Ok(())
+}
 pub fn normalize_event(app: &AppHandle, ev: &IpcEvent) {
     match ev {
         IpcEvent::Disconnected => {

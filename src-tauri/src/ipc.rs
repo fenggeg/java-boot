@@ -104,6 +104,35 @@ impl IpcState {
         *self.connected.borrow()
     }
 
+    /// 确保 daemon 就绪（最多等待 `timeout`）：尝试拉起 daemon 并等待握手成立。
+    ///
+    /// 用于服务启动前的就绪门控——避免「daemon 尚未握手成功时启动服务」被
+    /// 静默回退到本地路径，导致同一批服务托管归属不一致。
+    pub async fn ensure_daemon_ready(&self, timeout: Duration) -> bool {
+        // 已就绪：直接返回
+        if self.is_connected() {
+            return true;
+        }
+        // 先尝试拉起 daemon（内部带 2s 冷却，失败/已在跑会自行退出，幂等）
+        let _ = spawn_daemon_process();
+        // 克隆 connected 接收端，等待握手成立（Receiver 支持 Clone，监听状态变化）
+        let mut rx = self.connected.clone();
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if self.is_connected() {
+                return true;
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                log::warn!("等待 daemon 就绪超时（{}ms），服务将降级本地托管", timeout.as_millis());
+                return false;
+            }
+            // 以短超时轮询监看状态变化；driver 退避重连时 connected 不会频繁变更，
+            // 但对每次 changed 施加超时，确保外层 deadline 得以被周期性检查。
+            let _ = tokio::time::timeout(Duration::from_millis(100), rx.changed()).await;
+        }
+    }
+
     /// 把 daemon 服务端事件转发为 Tauri 前端事件（UI 订阅即得实时状态/日志/指标）。
     pub fn forward_to_frontend(&self, app: tauri::AppHandle) {
         use tauri::Emitter;

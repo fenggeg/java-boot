@@ -7,6 +7,17 @@
 
 ## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.13.0...HEAD)
 
+## \[0.18.0] - 2026-09-03
+
+### 新增
+
+- **daemon 托管统一（就绪门控）**：此前服务启动时若 daemon 尚未握手成功会被静默回退到本地 spawn，导致同一批启动的服务托管归属不一致（一部分走 daemon、一部分本地），重启后状态展示分裂；现新增 `ipc::ensure_daemon_ready`，服务启动前先拉起 daemon 并最多等待 5s 握手（`manager.rs` 就绪门控），daemon 就绪则统一走 daemon 托管，超时才降级本地并显式告警
+- **本地进程归统一**：新增 daemon `recovery.rescan`（运行时重新枚举存活 java 进程）；launcher 重启恢复后调用 `adopt_local_processes`，把此前 daemon 离线期间本地托管的存活进程按 pid 引导 `recovery.takeover` 纳管进 daemon，注册 `service_id ↔ run_id` 映射，消除「同一服务被 launcher 与 daemon 双源跟踪」的状态分裂
+
+### 修复
+
+- **本地托管进程 CPU 占用虚高（持续 100%）**：launcher `refresh_resource_usage` 只调用 `refresh_processes(部分 pids)` 刷新指定进程，从未调用 `refresh_cpu_usage()` 更新全局 CPU 差分基准，导致进程 `cpu_usage()` 的「全局时间差分」趋近 0、占比被放大到近 100%；现于采集前先刷新全局 CPU 基准，恢复正确的差分计算
+
 ## \[0.17.6] - 2026-09-02
 
 ### 修复

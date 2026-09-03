@@ -30,7 +30,7 @@ use std::time::Instant;
 use chrono::Utc;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex as PMutex;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
@@ -369,6 +369,10 @@ impl ProcessManager {
         // 缩短 SYS 锁持锁时间，减少与其他调用方（wait_for_pid_exit、start）的争用
         let snapshots: Vec<(String, Option<f32>, Option<f64>)> = {
             let mut sys = SYS.lock();
+            // 先刷新全局 CPU 基准：sysinfo 的进程 cpu_usage() 基于「进程 cpu 时间差分 /
+            // 全局 cpu 时间差分」计算，若只刷新部分进程而不更新全局 CPU，全局时间差
+            // 极小，占比会被放大到近 100%（本地托管进程持续满格的假象）。
+            sys.refresh_cpu_usage();
             sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&pid_refs), true);
             pids.iter()
                 .map(|(sid, pid)| {
@@ -819,10 +823,25 @@ impl ProcessManager {
         working_dir: &Path,
         daemon_launch: Option<super::delegate::Launch>,
     ) -> AppResult<()> {
-        // P4：daemon 在线且可委托时，把 java 进程整体交给 daemon 托管
+        // daemon 就绪门控：确保 daemon 已握手后再决定托管归属，避免「daemon 尚未
+        // 就绪时启动服务」被静默回退到本地路径，导致同一批服务托管归属不一致。
+        let daemon_ready = if daemon_launch.is_some() {
+            if super::delegate::daemon_online(app) {
+                true
+            } else {
+                // 未就绪：尝试拉起 daemon 并等待握手（有上限，超时才降级本地）
+                let state = app.state::<Arc<crate::ipc::IpcState>>();
+                state.inner().ensure_daemon_ready(std::time::Duration::from_secs(5)).await
+            }
+        } else {
+            false // 无 daemon_launch（超长命令行等）本身就不走 daemon
+        };
+
+        let has_daemon_launch = daemon_launch.is_some();
+        // P4：daemon 就绪且可委托时，把 java 进程整体交给 daemon 托管
         // （spawn / 管道消费 / 退出 / 就绪 / 指标均由 daemon 承担）
         if let Some(l) = daemon_launch {
-            if super::delegate::daemon_online(app) {
+            if daemon_ready {
                 Self::emit_log(&app, &service.id, LogSource::Mvn, "[javaboot] 启动（daemon 托管）...");
                 let (run_id, pid) = super::delegate::spawn_service(
                     app, &service.id, &l.module_name, &l.project_id,
@@ -841,6 +860,14 @@ impl ProcessManager {
                 // 状态转 Running/Error 由 daemon proc.status 事件归一驱动
                 return Ok(());
             }
+        }
+        // 走到这里是本地托管：要么无 daemon_launch（超长命令行不走 daemon），
+        // 要么 daemon 未就绪降级。显式提示便于排查托管归属不一致问题。
+        if has_daemon_launch && !daemon_ready {
+            Self::emit_log(
+                &app, &service.id, LogSource::Mvn,
+                "[javaboot] daemon 未就绪，服务以本地模式运行（重启后可能需手动恢复）",
+            );
         }
         Self::emit_log(&app, &service.id, LogSource::Mvn, "[javaboot] 启动 java 子进程...");
         let mut child = cmd.spawn().map_err(|e| {

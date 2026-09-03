@@ -210,6 +210,15 @@ async fn route(
             })
             .map_err(|e| RpcError::new(ERR_INTERNAL_ERROR, e.to_string()))
         }
+        method::RECOVERY_RESCAN => {
+            // 运行时重新枚举存活 java 并刷新待处置列表（daemon 长驻不自发枚举，
+            // 供 launcher 将本地启动的进程引导纳管进 daemon）
+            state.procs.recover().await.map_err(Error::rpc)?;
+            serde_json::to_value(RecoveryListResult {
+                pending: state.procs.pending_recovery(),
+            })
+            .map_err(|e| RpcError::new(ERR_INTERNAL_ERROR, e.to_string()))
+        }
         method::RECOVERY_TAKEOVER => {
             let a: RecoveryAct = parse_params(req)?;
             state.procs.recovery_takeover(a.pid).await.map_err(Error::rpc)?;

@@ -34,6 +34,9 @@ pub mod method {
     pub const RECOVERY_TAKEOVER: &str = "recovery.takeover";
     pub const RECOVERY_RESTART: &str = "recovery.restart";
     pub const RECOVERY_IGNORE: &str = "recovery.ignore";
+    /// 运行时重新枚举存活 java 进程并刷新待处置列表（daemon 长期运行时不自发枚举，
+    /// 供 launcher 将本地启动的进程引导纳管进 daemon）。
+    pub const RECOVERY_RESCAN: &str = "recovery.rescan";
 }
 
 pub mod event {
