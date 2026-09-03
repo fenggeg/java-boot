@@ -10,6 +10,7 @@ mod job;
 mod log_pipe;
 mod monitor;
 mod proc;
+mod run_logs;
 mod scan;
 mod server;
 mod store;

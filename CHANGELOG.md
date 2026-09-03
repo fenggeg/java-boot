@@ -7,11 +7,25 @@
 
 ## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.13.0...HEAD)
 
+## \[0.18.5] - 2026-09-03
+
+### 变更
+
+- **运行期文件不再写入用户项目**：daemon 为服务生成的日志镜像（`<module>.log`）与进程 spec 快照（`.spec-<id>.json`）此前写在 `<working_dir>/.javaboot/`，会污染用户源码树（Git 默认不忽略、易被误提交）；现统一改写到软件自身数据目录 `<data_dir>/javaboot-launcher/run/<working_dir 哈希>/`，按 working\_dir 稳定哈希分目录、跨重启可复现
+
+### 新增
+
+- **设置页「运行数据」**：展示软件自身生成数据（日志镜像 / spec 快照）的文件数与占用大小，支持一键清除；运行中的服务其日志文件可能被 daemon 占用，无法即时删除时会提示停止服务后再清
+
+### 优化
+
+- **运行数据按保留期自动回收**：daemon 周期性清理 `run/` 下超过日志保留期的镜像/spec 文件，空目录一并移除，避免数据目录无限膨胀（兜底于手动清除）
+
 ## \[0.18.4] - 2026-09-03
 
 ### 修复
 
-- **误报「日志输出管道已断开」**：`restore_running_services` 在 `rebind`/`adopt_local_processes` 之前对**所有**恢复的服务无条件推送「管道已断开，请重启」，但 daemon 托管的服务经 `rebind` 重建 run_id 映射后实时日志可经 daemon 续传，并不需要重启；现将该提示延后到恢复流程末尾，仅对**仍为本地托管**（daemon 离线或纳管失败、日志管道确已断开且无法重接）的服务推送
+- **误报「日志输出管道已断开」**：`restore_running_services` 在 `rebind`/`adopt_local_processes` 之前对**所有**恢复的服务无条件推送「管道已断开，请重启」，但 daemon 托管的服务经 `rebind` 重建 run\_id 映射后实时日志可经 daemon 续传，并不需要重启；现将该提示延后到恢复流程末尾，仅对**仍为本地托管**（daemon 离线或纳管失败、日志管道确已断开且无法重接）的服务推送
 
 ## \[0.18.3] - 2026-09-03
 

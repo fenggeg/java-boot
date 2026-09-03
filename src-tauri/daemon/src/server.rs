@@ -276,6 +276,8 @@ fn spawn_cleanup_loop(state: Arc<AppState>) {
             if let Err(e) = state.store.clone().cleanup(C::LOG_RETENTION_DAYS).await {
                 log::warn!("日志保留清理失败: {}", e);
             }
+            // 数据目录运行期产物（日志镜像/spec 快照）按保留期回收，防无限膨胀
+            crate::run_logs::prune_old(C::LOG_RETENTION_DAYS);
         }
     });
 }

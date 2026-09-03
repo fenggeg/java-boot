@@ -2,8 +2,8 @@
 //!
 //! 流程：子进程 stdout/stderr 管道 reader → `mpsc` → 后台攒批
 //! → 200ms 定时 / 500 条阈值 触发的 `spawn_blocking` 双写
-//!   - `service_log`（SQLite 批量，prepare_cached）
-//!   - `.javaboot/<module>.log` 文件镜像（append）
+//! - `service_log`（SQLite 批量，prepare_cached）
+//!   - 数据目录 `run_logs::run_log_dir/<module>.log` 文件镜像（append）
 //! → 同时经 `broadcast` 实时推送给已连接客户端（`log.append` 事件）。
 //!
 //! 保证：UI 断连期间日志照常落库；文件镜像与数据库都无阻塞 async 上下文。
@@ -62,9 +62,11 @@ impl LogPipeline {
     }
 
     /// 注册一个 run 的镜像目标。返回该 run 的镜像文件路径（用于回写 `process_spec.log_file`）。
+    ///
+    /// 镜像落在 launcher 数据目录（`run_logs::run_log_dir`），不再写入用户项目
+    /// `<working_dir>/.javaboot/`，避免污染用户源码树。
     pub fn attach(&self, run_id: i64, working_dir: &str, module: &str) -> PathBuf {
-        let base = PathBuf::from(working_dir);
-        let dir = base.join(jb_core::model::LOG_MIRROR_DIR);
+        let dir = crate::run_logs::run_log_dir(working_dir);
         let path = dir.join(format!("{}.log", sanitize(module)));
         self.infos.lock().insert(
             run_id,

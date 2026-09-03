@@ -522,11 +522,11 @@ impl ProcService {
     }
 
     fn write_spec_json(&self, spec: &ProcessSpec, working_dir: &str) -> Result<()> {
-        let path = PathBuf::from(working_dir)
-            .join(".javaboot")
-            .join(format!(".spec-{}.json", spec.run_id));
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(Error::Io)?;
+        // spec 快照写入 launcher 数据目录（按 working_dir 分目录），不再写进用户项目
+        let dir = crate::run_logs::run_log_dir(working_dir);
+        let path = dir.join(format!(".spec-{}.json", spec.run_id));
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(Error::Io)?;
         }
         let json = serde_json::to_string_pretty(spec).map_err(Error::Json)?;
         std::fs::write(&path, json).map_err(Error::Io)

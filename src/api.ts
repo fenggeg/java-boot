@@ -180,6 +180,21 @@ export const getConfig = () => invoke<AppConfig>("get_config");
 export const saveConfig = (config: AppConfig) =>
   invoke<void>("save_config", { config });
 
+// ============================ 运行数据（软件自身数据目录） ============================
+
+export interface RunDataResult {
+  path: string;
+  fileCount: number;
+  totalBytes: number;
+}
+
+/** 查询软件自身运行期数据占用的总大小（日志镜像 / spec 快照） */
+export const getRunDataUsage = () =>
+  invoke<RunDataResult>("get_run_data_usage");
+/** 一键清除软件自身运行期数据，返回清除后的剩余占用 */
+export const clearRunData = () =>
+  invoke<RunDataResult>("clear_run_data");
+
 // ============================ Util ============================
 
 export const openInBrowser = (port: number) =>

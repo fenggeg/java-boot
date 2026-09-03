@@ -1,9 +1,9 @@
-import {App, Divider, Drawer, Form, InputNumber, Switch, Typography} from "antd";
+import {App, Button, Divider, Drawer, Form, InputNumber, Switch, Typography} from "antd";
 import {Settings} from "./Icons";
 import {useStore} from "../store";
 import type {AppConfig} from "../types";
 import {useEffect, useRef, useState} from "react";
-import {toErrMsg} from "../api";
+import {clearRunData, getRunDataUsage, toErrMsg, type RunDataResult } from "../api";
 
 const { Text } = Typography;
 
@@ -24,6 +24,10 @@ export default function SettingsDrawer({ open, onClose }: Props) {
   // 防抖：InputNumber 每次击键都触发 onChange，改为 500ms 后统一落盘，减少 DB 写
   const timerRef = useRef<number | null>(null);
   const pendingRef = useRef<AppConfig | null>(null);
+
+  // 运行数据占用展示与清除
+  const [runData, setRunData] = useState<RunDataResult | null>(null);
+  const [clearing, setClearing] = useState(false);
 
   useEffect(() => {
     setLocal(config);
@@ -70,6 +74,48 @@ export default function SettingsDrawer({ open, onClose }: Props) {
       }
     }
     onClose();
+  };
+
+  // 打开设置抽屉时拉取运行数据占用
+  useEffect(() => {
+    if (!open) return;
+    getRunDataUsage()
+      .then(setRunData)
+      .catch(() => setRunData(null));
+  }, [open]);
+
+  const refreshRunData = async () => {
+    try {
+      setRunData(await getRunDataUsage());
+    } catch (e) {
+      message.error(`读取占用信息失败: ${toErrMsg(e)}`);
+    }
+  };
+
+  const handleClearRunData = async () => {
+    setClearing(true);
+    try {
+      const res = await clearRunData();
+      setRunData(res);
+      if (res.fileCount === 0 && res.totalBytes === 0) {
+        message.success("运行数据已全部清除");
+      } else {
+        message.info(
+          `仍有 ${res.fileCount} 个文件、${formatBytes(res.totalBytes)} 被运行中的服务占用，停止服务后可再清除`
+        );
+      }
+    } catch (e) {
+      message.error(`清除运行数据失败: ${toErrMsg(e)}`);
+    } finally {
+      setClearing(false);
+    }
+  };
+
+  const formatBytes = (n: number) => {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+    return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
   };
 
   return (
@@ -161,6 +207,37 @@ export default function SettingsDrawer({ open, onClose }: Props) {
             }
             style={{ width: "100%" }}
           />
+        </Form.Item>
+
+        <Divider orientation="left">运行数据</Divider>
+        <Form.Item
+          label="软件生成数据"
+          tooltip="daemon 为运行的服务生成的日志镜像与 spec 快照，存放在软件自身数据目录（不再写入您的项目目录）。服务运行中可能处于占用状态，无法即时清除。"
+        >
+          <Text type="secondary">
+            {runData
+              ? `${runData.fileCount} 个文件，占用 ${formatBytes(runData.totalBytes)}`
+              : "读取中…"}
+          </Text>
+        </Form.Item>
+        <Form.Item>
+          <Button
+            size="small"
+            onClick={refreshRunData}
+            loading={clearing}
+            style={{ marginRight: 8 }}
+          >
+            刷新
+          </Button>
+          <Button
+            size="small"
+            danger
+            loading={clearing}
+            onClick={handleClearRunData}
+            disabled={!runData || (runData.fileCount === 0 && runData.totalBytes === 0)}
+          >
+            清除运行数据
+          </Button>
         </Form.Item>
 
         <Divider orientation="left">退出行为</Divider>

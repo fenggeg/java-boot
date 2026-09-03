@@ -278,6 +278,9 @@ pub fn run() {
             // config
             commands::get_config,
             commands::save_config,
+            // 运行数据（软件自身数据目录）
+            commands::get_run_data_usage,
+            commands::clear_run_data,
             // util
             commands::open_in_browser,
             commands::detect_jdks,
