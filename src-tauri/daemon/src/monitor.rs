@@ -10,7 +10,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use sysinfo::{ProcessRefreshKind, RefreshKind, System};
+use once_cell::sync::Lazy;
+use parking_lot::Mutex as PMutex;
+use sysinfo::System;
 use tokio::sync::broadcast;
 
 use jb_core::protocol::{event, Message, Notification, ProcMetrics};
@@ -52,19 +54,34 @@ impl MonitorService {
     }
 }
 
+/// 复用的全局 `System` 实例。
+///
+/// **关键**：cpu_usage() 需要「进程 CPU 时间差分 / 全局 CPU 时间差分」同一采样窗口的
+/// 基线。若每次 `new System`，全局差分恒为 0，占比会被放大到 ~100%（CPU 虚高）。
+/// 这里跨采样复用同一实例，`cpu_usage()` 才能算出差分。采样是阻塞 sysinfo 调用，
+/// 用 Mutex 串行化（间隔 2s，量级可忽略）。
+static SYSTEM: Lazy<PMutex<System>> = Lazy::new(|| PMutex::new(System::new()));
+
 /// 对一批采样槽位做一次 sysinfo 采集。返回每个（进程仍存活的）槽位的指标。
 fn sample(
     slots: &[(i64, Option<u32>, Arc<parking_lot::Mutex<(Option<f32>, Option<f64>)>>)],
 ) -> Vec<ProcMetrics> {
-    // 控制刷新范围：仅刷新进程，不做全量网络/磁盘等，减少开销。
-    let sys_kind = RefreshKind::new().with_processes(ProcessRefreshKind::everything());
-    let mut sys = System::new();
-    sys.refresh_specifics(sys_kind);
+    let mut sys = SYSTEM.lock();
+    // 先刷新全局 CPU 基线，再刷新托管进程：二者需同窗（本采样），
+    // 否则全局时间差分过小会把进程占比放大到近 100%。
+    sys.refresh_cpu_usage();
+    // 只刷新托管中的 pid，remove_dead=true 清理已退出进程。
+    let pids: Vec<sysinfo::Pid> = slots
+        .iter()
+        .filter_map(|(_, pid, _)| *pid)
+        .map(|p| sysinfo::Pid::from_u32(p))
+        .collect();
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&pids), true);
 
     let mut out = Vec::with_capacity(slots.len());
     for (run_id, pid, slot) in slots {
         let Some(pid) = pid else { continue };
-        let Some(proc) = sys.processes().get(&sysinfo::Pid::from_u32(*pid)) else {
+        let Some(proc) = sys.process(sysinfo::Pid::from_u32(*pid)) else {
             // 进程已退出：本次回填 None，等 lifecycle 收尾移除。
             *slot.lock() = (None, None);
             continue;

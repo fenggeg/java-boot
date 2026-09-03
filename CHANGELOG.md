@@ -7,11 +7,22 @@
 
 ## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.13.0...HEAD)
 
+## \[0.18.2] - 2026-09-03
+
+### 修复
+
+- **daemon 托管服务 CPU 占用虚高（持续 100%，0.18.0 未修复）**：daemon `monitor.rs` 每次采样都 `new` 一个全新 `System`，`cpu_usage()` 失去跨采样的「全局 CPU 时间差分」基线，差值趋近 0 导致占比被放大到近 100%；现改为复用全局 `System` 实例，并在采样前先 `refresh_cpu_usage()` 刷新全局 CPU 基准，恢复正确的差分计算
+
+- **同时启动两个服务只有一个被托管**：`manager.rs` 把所有超长命令行（>30000 字符）的服务一律强制本地运行，只要项目里有任一服务 classpath 过长（日志表现为 `Java 版本检测 … major`），该服务就不走 daemon、托管归属分裂；现对超长 + JDK<9（classpath 改用 `CLASSPATH` 环境变量模式）的服务也纳入 daemon 托管（移除 `-cp`、把 classpath 并入 env\_vars 后委托），与同批其他服务归属一致
+
+- **launcher 重复计算覆盖 daemon 权威指标**：`refresh_resource_usage` 此前对全部运行中服务（含 daemon 托管）都用本进程 sysinfo 重新采样并写回，可能覆盖 daemon 更准确的指标、并因首采无基线偶发 100%；现跳过 daemon 托管服务，其 CPU/内存统一以 daemon `proc.metrics` 事件为准
+
 ## \[0.18.1] - 2026-09-03
 
 ### 修复
 
 - **日志时间显示为 UTC**：launcher 的 `env_logger` 用默认 `format_timestamp_secs()` 输出 UTC 时间戳（带 `Z` 后缀），与系统本地时间对不上、排查不便；改为自定义 `log_writer` 用 `chrono::Local` 输出本地时区时间
+
 - **daemon 定位被旧版劫持**：`locate_daemon_exe` 按候选顺序取第一个存在，安装根目录可能遗留**旧版** `javaboot-daemon.exe`（如 v0.17.x 手动同步），优先命中后导致新版 daemon（`resources\` 下的 v0.18+ 随包副本，含 `recovery.rescan` 新协议）永远不被拉起，本地进程纳管（L2）静默失效；现调整优先级，`resources\`（规范安装位置）优先于同目录旧版，daemon 始终用随包升级的新版本
 
 ## \[0.18.0] - 2026-09-03

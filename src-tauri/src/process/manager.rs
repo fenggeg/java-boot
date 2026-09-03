@@ -352,11 +352,16 @@ impl ProcessManager {
     /// 带脏检查：仅当 CPU 变化超过 0.5% 或内存变化超过 1MB 时才更新并 emit，
     /// 避免每轮定时刷新都向所有前端全量推送事件（服务多时事件风暴）。
     pub fn refresh_resource_usage(&self, app: &AppHandle) {
+        // 仅采样**本地托管**的服务：daemon 托管的服务其 CPU/内存由 daemon 的
+        // MonitorService 周期采样并经 proc.metrics 事件权威回填（set_metrics）。
+        // 若这里也重复计算，会用本进程另采的值覆盖 daemon 的结果，造成双源抖动；
+        // 且本进程首次采样（无基线）会被 clamp 到 100%，正是此前托管服务 CPU 虚高的诱因。
         let pids: Vec<(String, u32)> = {
             let rt = self.runtimes.lock();
             rt.values()
                 .filter(|r| r.status == ServiceStatus::Running)
                 .filter_map(|r| r.pid.map(|p| (r.service_id.clone(), p)))
+                .filter(|(sid, _)| !super::delegate::is_managed(sid))
                 .collect()
         };
         if pids.is_empty() {
@@ -1189,6 +1194,11 @@ impl ProcessManager {
         let use_argfile = over_limit && java_major.is_some_and(|v| v >= 9);
         let use_env_classpath = over_limit && !use_argfile;
 
+        // CLASSPATH 环境变量模式下的启动参数（供本地 cmd 与 daemon 委托复用）。
+        // 提升到分支外：后续构造 daemon 载荷时仍需要这两份数据。
+        let mut clp_filtered_args: Vec<String> = Vec::new();
+        let mut clp_value = String::new();
+
         let mut cmd = Command::new(&java_bin);
 
         if use_env_classpath {
@@ -1212,6 +1222,8 @@ impl ProcessManager {
                 }
                 filtered_args.push(arg.clone());
             }
+            clp_filtered_args = filtered_args.clone();
+            clp_value = cp_value.clone();
             // 检查移除 -cp 后命令行是否仍在限制内
             let new_cmd_len = java_bin.len() + 1
                 + filtered_args.iter().map(|a| a.len() + 1).sum::<usize>();
@@ -1342,10 +1354,33 @@ impl ProcessManager {
             );
         }
 
-        // P4：构造可委托给 daemon 的启动载荷（超长命令行的 argfile/CLASSPATH
-        // 模式保持本地启动，避免 daemon 侧对 @argfile 的引号语义差异）
-        let daemon_launch = if over_limit {
+        // P4：构造可委托给 daemon 的启动载荷，保证**同一批服务托管归属一致**。
+        //
+        // 三种情形：
+        // - 常规（未超长）：传完整 java 命令。
+        // - 超长 + JDK<9（@argfile 不可用，改用 CLASSPATH 环境变量模式）：把 `-cp`
+        //   从 argv 移除、CLASSPATH 并入 env_vars 后委托。该类命令行没有 @argfile
+        //   引号问题，daemon 的 Command::args() 可安全托管；否则只要项目里有任一服务
+        //   命令行长于 30000 字符就会被强制本地运行，出现「同时启动两个服务只有
+        //   一个被托管」。
+        // - 超长 + JDK>=9（@argfile 模式）：daemon 的 Command::args() 会把含空格的
+        //   @argfile 路径再套一层引号，Java 不识别带引号的 @file 形式，故保持本地。
+        let daemon_launch = if over_limit && !use_env_classpath {
             None
+        } else if use_env_classpath {
+            let mut argv = Vec::with_capacity(clp_filtered_args.len() + 1);
+            argv.push(java_bin.clone());
+            argv.extend(clp_filtered_args.iter().cloned());
+            let mut env_vars = env_cfg.env_vars.clone();
+            env_vars.push(("CLASSPATH".to_string(), clp_value.clone()));
+            Some(super::delegate::Launch {
+                argv,
+                env_vars,
+                working_dir: working_dir.to_string_lossy().to_string(),
+                project_id: service.project_id.as_deref().unwrap_or("").to_string(),
+                module_name: service.name.clone(),
+                startup_port: None,
+            })
         } else {
             let mut argv = Vec::with_capacity(args.len() + 1);
             argv.push(java_bin.clone());
