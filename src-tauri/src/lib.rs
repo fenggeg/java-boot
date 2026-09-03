@@ -157,12 +157,38 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     // 先恢复本地托管的存活进程（不受 daemon 在线状态影响）
-                    process::get_manager().restore_running_services(&handle);
+                    let restored = process::get_manager().restore_running_services(&handle);
                     // daemon 在线时，再叠加重建 daemon 托管服务的映射
                     if handle.state::<Arc<ipc::IpcState>>().inner().is_connected() {
                         let _ = process::delegate::rebind(&handle).await;
                         // L2：把本地托管且存活的进程引导纳管进 daemon，归一托管归属
                         let _ = process::delegate::adopt_local_processes(&handle).await;
+                    }
+                    // 仅对「仍为本地托管」的恢复服务提示日志管道已断开：
+                    // - daemon 托管的服务经 rebind 重建 run_id 映射，实时日志可经 daemon
+                    //   续传，无需提示「管道已断开」；
+                    // - 本地托管（daemon 离线或纳管失败）的服务，stdout/stderr 管道随应用
+                    //   重启已断开且无法重新接管，提示用户重启该服务才能看实时日志。
+                    let still_local: Vec<String> = restored
+                        .into_iter()
+                        .filter(|sid| !process::delegate::is_managed(sid))
+                        .collect();
+                    if !still_local.is_empty() {
+                        let app_clone = handle.clone();
+                        let ids = still_local.clone();
+                        tauri::async_runtime::spawn(async move {
+                            // 延迟推送：setup 阶段前端 WebView 可能还没加载完、
+                            // listen("service://log") 尚未注册，立即 emit 会丢失。
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                            for sid in &ids {
+                                process::ProcessManager::emit_log_static(
+                                    &app_clone,
+                                    sid,
+                                    "[javaboot]",
+                                    "[javaboot] 应用重启后已恢复对该服务的托管，但日志输出管道已断开。如需查看实时日志，请重启该服务。",
+                                );
+                            }
+                        });
                     }
                 });
             }

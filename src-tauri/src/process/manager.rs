@@ -218,13 +218,17 @@ impl ProcessManager {
     ///
     /// 恢复的服务会尝试重新绑定 Job Object，确保 Launcher 崩溃后再次退出时
     /// 这些进程能随之清理。若 OpenProcess 失败（权限不足等），回退到无 Job 模式。
-    pub fn restore_running_services(&self, app: &AppHandle) {
+    ///
+    /// 返回本次成功恢复的 service_id 列表。调用方（setup 恢复流程）应在 `rebind` /
+    /// `adopt_local_processes` 之后，针对**仍为本地托管**的服务再提示「日志管道已断开」：
+    /// daemon 托管的服务经 `rebind` 重建 run_id 映射后实时日志可续传，不应误报。
+    pub fn restore_running_services(&self, app: &AppHandle) -> Vec<String> {
         let pids = match db::load_all_run_pids() {
             Ok(p) => p,
-            Err(_) => return,
+            Err(_) => return Vec::new(),
         };
         if pids.is_empty() {
-            return;
+            return Vec::new();
         }
 
         let pid_refs: Vec<sysinfo::Pid> =
@@ -327,24 +331,9 @@ impl ProcessManager {
             }
         }
 
-        // 恢复的服务其 stdout/stderr 管道在应用重启时已断开，无法重新接管。
-        // 延迟推送提示日志：setup 阶段前端 WebView 可能还没加载完、
-        // listen("service://log") 尚未注册，立即 emit 会丢失。
-        if !restored_ids.is_empty() {
-            let app_clone = app.clone();
-            let ids = restored_ids.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                for sid in &ids {
-                    Self::emit_log_static(
-                        &app_clone,
-                        sid,
-                        "[javaboot]",
-                        "[javaboot] 应用重启后已恢复对该服务的托管，但日志输出管道已断开。如需查看实时日志，请重启该服务。",
-                    );
-                }
-            });
-        }
+        // 返回本次恢复的 service_id。日志管道断开提示由调用方在 rebind/adopt 之后
+        // 对「仍为本地托管」的服务统一推送，避免对 daemon 托管（可续传日志）误报。
+        restored_ids
     }
 
     /// 刷新所有运行中服务的 CPU/内存占用

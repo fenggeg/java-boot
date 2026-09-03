@@ -7,6 +7,12 @@
 
 ## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.13.0...HEAD)
 
+## \[0.18.4] - 2026-09-03
+
+### 修复
+
+- **误报「日志输出管道已断开」**：`restore_running_services` 在 `rebind`/`adopt_local_processes` 之前对**所有**恢复的服务无条件推送「管道已断开，请重启」，但 daemon 托管的服务经 `rebind` 重建 run_id 映射后实时日志可经 daemon 续传，并不需要重启；现将该提示延后到恢复流程末尾，仅对**仍为本地托管**（daemon 离线或纳管失败、日志管道确已断开且无法重接）的服务推送
+
 ## \[0.18.3] - 2026-09-03
 
 ### 修复
