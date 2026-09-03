@@ -48,11 +48,24 @@ enum Readiness {
 }
 
 /// 对单行启动日志做就绪判定。
+///
+/// 就绪信号与 launcher `log_pipe::check_started` 对齐（daemon 托管服务只靠日志判定，
+/// launcher 本地路径的丰富信号必须在此同样生效，否则服务启动成功也会一直 'starting'）：
+/// - 失败：`APPLICATION FAILED TO START` / `BUILD FAILURE`
+/// - 成功：`Started xxx in N.NNN seconds`、`Tomcat/Jetty/Netty started on port`、
+///   `Undertow started`
 fn classify_startup_line(line: &str) -> Option<Readiness> {
     if line.contains("APPLICATION FAILED TO START") || line.contains("BUILD FAILURE") {
         return Some(Readiness::Error);
     }
-    if STARTED_RE.is_match(line) {
+    let started = STARTED_RE.is_match(line)
+        // 宽匹配：与 launcher 一致，限制行长避免日志中段 "Started..." 误命中
+        || (line.len() <= 200 && line.contains("Started ") && line.contains(" in ") && line.contains("second"))
+        || line.contains("Tomcat started on port")
+        || line.contains("Jetty started on port")
+        || line.contains("Netty started on port")
+        || line.contains("Undertow started");
+    if started {
         return Some(Readiness::Started);
     }
     None
@@ -725,6 +738,36 @@ mod tests {
         // 同一行带 Started 又带 FAILED 时必须判 Error（应用可能启动后又失败）
         let line = "Started DemoApplication in 5s ... APPLICATION FAILED TO START";
         assert_eq!(classify_startup_line(line), Some(Readiness::Error));
+    }
+
+    #[test]
+    fn server_lines_detected_as_started() {
+        // daemon 就绪判定与 launcher log_pipe::check_started 对齐：
+        // 只认出 "Started ... in ... seconds" 会被部分 web 服务漏判 → 一直 starting。
+        assert_eq!(
+            classify_startup_line("2026-09-03 ... Tomcat started on port(s): 9090 (http) with context path ''"),
+            Some(Readiness::Started)
+        );
+        assert_eq!(
+            classify_startup_line("Netty started on port(s): 9090"),
+            Some(Readiness::Started)
+        );
+        assert_eq!(
+            classify_startup_line("Undertow started on port(s) 9090"),
+            Some(Readiness::Started)
+        );
+        assert_eq!(
+            classify_startup_line("   Started   gateway-service   in 12.0  seconds   "),
+            Some(Readiness::Started)
+        );
+    }
+
+    #[test]
+    fn non_startup_noise_not_started() {
+        // 日志中段与 "Started ..." 无关的噪音不应误判就绪
+        assert_eq!(classify_startup_line("Started in-memory broker"), None);
+        assert_eq!(classify_startup_line("  .   ____          _            __ _ _"), None);
+        assert_eq!(classify_startup_line("Tomcat started on port 8080"), Some(Readiness::Started));
     }
 
     #[test]

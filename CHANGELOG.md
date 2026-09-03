@@ -7,6 +7,12 @@
 
 ## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.13.0...HEAD)
 
+## \[0.18.3] - 2026-09-03
+
+### 修复
+
+- **服务已启动成功但状态一直显示“启动中”**：daemon 托管的服务只靠日志正则 `Started … in … seconds` 判就绪，biz 等服务没打这条标准线（如只输出 `Tomcat started on port(s)` 或行超长）时 daemon 永不判 Running，而 launcher 委托时 `startup_port` 固定为 `None`（端口探测主通道被禁用），于是 UI 卡“启动中”；现将 daemon 的 `classify_startup_line` 与 launcher 本地路径 `log_pipe::check_started` 对齐（新增 `Tomcat/Jetty/Netty started on port`、`Undertow started` 及宽匹配 `Started … in … second`），托管服务与本地服务获得一致的就绪判定
+
 ## \[0.18.2] - 2026-09-03
 
 ### 修复
