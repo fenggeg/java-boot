@@ -7,28 +7,36 @@
 
 ## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.13.0...HEAD)
 
-## [0.19.1] - 2026-09-04
+## \[0.19.1] - 2026-09-04
 
 ### 修复
 
 - **子目录仓库（monorepo / submodule）Git 集成错位**：当项目根是 git 仓库的子目录时，前端此前把 `rev-parse --show-toplevel` 解析出的**真实仓库根**当命令基准传参，而 filePath 是**项目根相对**路径——且 git 的 pathspec 以 cwd 为基准、status 输出以仓库根为基准，导致 gutter 变更标记 / 文件树状态 / Diff 对比全部错位或失效。现将 git 命令工作目录统一设为真实仓库根（内部一律用仓库根相对路径做 pathspec），`status_all` 返回路径转回项目根相对（与前端文件树口径一致），前端统一以 `project.root_path` 为命令基准；新增真实 git 集成测试（`integration_subdir_project_relative_paths`）覆盖该场景
 
-## [0.19.0] - 2026-09-04
+## \[0.19.0] - 2026-09-04
 
 ### 新增
 
 - **Git 集成（文件编辑器）**：基于 git CLI 的完整只读集成，全部 git 调用在 Rust 后端完成（前端不直接执行 shell 命令；repoRoot canonicalize + filePath strip\_prefix 校验 + `--` 分隔杜绝注入，git 子进程并发上限 2）：
+
   - **Gutter 变更标记**：行号旁绿（新增）/ 黄（修改）/ 红（删除）标记，含 minimap 与 overview ruler 着色；`git diff HEAD -U0` 解析 hunk（含纯删除 `newStart+1` 语义）；打字不重算 diff（decoration 锚点 stickiness 自动跟随），仅文件加载与 `git://changed` 事件时刷新
+
   - **Diff 对比面板**：工具栏 Diff 按钮打开并排独立面板，Monaco DiffEditor 对比 HEAD 版本（`git cat-file`）与当前缓冲区（实时跟随输入）
+
   - **文件树状态标记**：`git status --porcelain=v1 -z` 解析，未跟踪 / 新增 / 修改 / 删除 / 重命名以彩色圆点标注
+
   - **Blame 悬浮**：hover 行号显示提交摘要、作者、时间（`git blame --porcelain` 懒加载，`git://changed` 后失效重载）
+
   - **删除代码内联查看**：点击删除标记，view zone 内联展示被删除的原始代码
-- **git 目录实时监听**：notify-debouncer-full（500ms）监听项目目录与真实 git 目录（worktree / submodule 解析 `--absolute-git-dir`），`.git` 内只关心 index/HEAD、过滤 target/node_modules/dist；status 结果 hash 去重防死循环；git 未安装显示轻量提示条、非 git 目录静默隐藏
+
+- **git 目录实时监听**：notify-debouncer-full（500ms）监听项目目录与真实 git 目录（worktree / submodule 解析 `--absolute-git-dir`），`.git` 内只关心 index/HEAD、过滤 target/node\_modules/dist；status 结果 hash 去重防死循环；git 未安装显示轻量提示条、非 git 目录静默隐藏
 
 ### 优化
 
 - **Monaco 语言映射修正**：monaco 无 `groovy` / `makefile` 语言，`groovy`/`gradle` 退用 `kotlin` 高亮、Makefile 走 plaintext，消除控制台 "Unknown language" 警告
+
 - **Monaco 补齐语言 worker**：新增 json / css / html / typescript 四个 worker，编辑 JSON/CSS/HTML/TS/JS 时获得校验与补全能力（按语言标签分发，Vite 按需拆包）
+
 - **Monaco 编辑器内存优化**：移除 handle 中未使用的 API；标签关闭时清理缓存的 viewState，避免长时间会话内存累积
 
 ## \[0.18.6] - 2026-09-04
@@ -677,3 +685,4 @@
 
 - 基于 Tauri 2 + React + Zustand 构建，Windows x64 NSIS 安装器（免管理员权限）
 
+<br />
