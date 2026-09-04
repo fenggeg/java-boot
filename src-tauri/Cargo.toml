@@ -1,6 +1,6 @@
 [package]
 name = "javaboot-launcher"
-version = "0.19.3"
+version = "0.19.4"
 description = "轻量 SpringBoot 启动器"
 authors = ["you"]
 edition = "2021"

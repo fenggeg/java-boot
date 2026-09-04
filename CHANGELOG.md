@@ -7,7 +7,13 @@
 
 ## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.13.0...HEAD)
 
-## [0.19.3] - 2026-09-04
+## [0.19.4] - 2026-09-05
+
+### 修复
+
+- **Diff 对比面板左右两侧无法同步滚动**：v0.19.2 的手动同步是纯像素级（直接复制 scrollTop），在两侧行数不同时位置必然错位，还会覆盖 Monaco 原生（正确的行映射）同步；现改为按 diff 行号映射的双向同步——source 顶部可见行经 `getLineChanges()` 的 `ILineChange` 映射到对端行号，再用 `getTopForLineNumber` 换算 scrollTop，带回环守卫 + 位置守卫
+
+## \[0.19.3] - 2026-09-04
 
 ### 修复
 

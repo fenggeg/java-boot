@@ -1,8 +1,9 @@
 // DiffView：Git 差异对比面板（P0），与编辑器并排共存。
 // original = HEAD 版本内容（git cat-file 取回），modified = 当前缓冲区内容（实时跟随输入）。
-// 滚动同步：monaco 0.52 内置同步依赖 diff 计算与 view zone，在模型经 @monaco-editor/react
-// 反复 setModel 的集成下可能失效；这里在 onMount 里补一组双向手动同步（带位置守卫防回环），
-// 保证左右两侧滚动行为一致。
+// 滚动同步：monaco 0.52 内置同步在 @monaco-editor/react 反复 setModel 的集成下可能失效，
+// 且纯像素级同步（直接复制 scrollTop）在两侧行数不同时位置必然错位。这里在 onMount 里
+// 按「行号映射」做双向同步：source 顶部可见行 → 经 diff 的 ILineChange 映射到对端行号 →
+// getTopForLineNumber 换算目标 scrollTop。带回环守卫 + 位置守卫，native 生效时天然 no-op。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DiffEditor } from "@monaco-editor/react";
@@ -62,7 +63,7 @@ export default function DiffView({
     };
   }, [repoRoot, filePath]);
 
-  /** 双向手动滚动同步（带位置守卫，防 setScrollPosition 触发对端回环） */
+  /** 双向手动滚动同步：按 diff 行号映射（像素级复制在两侧行数不同时必然错位） */
   const disposablesRef = useRef<IDisposable[]>([]);
   const handleDiffMount = useCallback((diffEditor: editor.IDiffEditor) => {
     const originalEditor = diffEditor.getOriginalEditor();
@@ -72,22 +73,92 @@ export default function DiffView({
     disposablesRef.current.forEach((d) => d.dispose());
     disposablesRef.current = [];
 
-    const sync = (
+    // 回环守卫：手动设置对端滚动位置时不再反向触发同步
+    let syncing = false;
+
+    // 从 scrollTop 求顶部可见行号（二分查找）
+    const topLineAt = (ed: editor.ICodeEditor, scrollTop: number): number => {
+      const model = ed.getModel();
+      if (!model) return 1;
+      const lineCount = model.getLineCount();
+      let lo = 1;
+      let hi = lineCount;
+      while (lo < hi) {
+        const mid = Math.floor((lo + hi + 1) / 2);
+        if (ed.getTopForLineNumber(mid) <= scrollTop) {
+          lo = mid;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      return lo;
+    };
+
+    // 原行号 <-> 改后行号 映射。
+    // ILineChange 空区间语义：originalStart>originalEnd → 纯新增（原侧无行）；
+    // modifiedStart>modifiedEnd → 纯删除（改后无行）。changes 按起始行号升序。
+    const mapLine = (
+      line: number,
+      forward: boolean,
+      changes: editor.ILineChange[]
+    ): number => {
+      if (changes.length === 0) return line;
+      let offset = 0;
+      for (const c of changes) {
+        if (forward) {
+          const oStart = c.originalStartLineNumber;
+          const oEnd = c.originalEndLineNumber;
+          if (line < oStart) return line + offset;
+          if (line <= oEnd) {
+            // 落在变更块内：有改后行则块内对齐；纯删除映射到删除后的下一行
+            return c.modifiedStartLineNumber <= c.modifiedEndLineNumber
+              ? c.modifiedStartLineNumber + (line - oStart)
+              : c.modifiedStartLineNumber;
+          }
+          offset = c.modifiedEndLineNumber - oEnd;
+        } else {
+          const mStart = c.modifiedStartLineNumber;
+          const mEnd = c.modifiedEndLineNumber;
+          if (line < mStart) return line + offset;
+          if (line <= mEnd) {
+            // 落在变更块内：有原行则块内对齐；纯新增锚定到插入位置前的原行
+            return c.originalStartLineNumber <= c.originalEndLineNumber
+              ? c.originalStartLineNumber + (line - mStart)
+              : c.originalStartLineNumber;
+          }
+          offset = c.originalEndLineNumber - mEnd;
+        }
+      }
+      return line + offset;
+    };
+
+    const attach = (
       source: editor.ICodeEditor,
-      target: editor.ICodeEditor
+      target: editor.ICodeEditor,
+      forward: boolean
     ) => {
       const disposable = source.onDidScrollChange((e) => {
-        // 目标已在相近位置（native 同步生效时天然 no-op）→ 跳过，防回环
-        if (Math.abs(target.getScrollTop() - e.scrollTop) < 1) return;
-        target.setScrollPosition({
-          scrollTop: e.scrollTop,
-          scrollLeft: e.scrollLeft,
-        });
+        if (syncing) return;
+        const changes = diffEditor.getLineChanges() ?? [];
+        const mapped = mapLine(topLineAt(source, e.scrollTop), forward, changes);
+        const targetTop = target.getTopForLineNumber(mapped);
+        // 位置守卫：目标已在相近位置（native 同步或已同步）→ no-op，防回环
+        if (Math.abs(target.getScrollTop() - targetTop) < 2) return;
+        syncing = true;
+        try {
+          target.setScrollPosition({
+            scrollTop: targetTop,
+            scrollLeft: e.scrollLeft,
+          });
+        } finally {
+          syncing = false;
+        }
       });
       disposablesRef.current.push(disposable);
     };
-    sync(originalEditor, modifiedEditor);
-    sync(modifiedEditor, originalEditor);
+
+    attach(originalEditor, modifiedEditor, true);
+    attach(modifiedEditor, originalEditor, false);
   }, []);
 
   // 组件卸载时清理所有 disposable，避免内存泄漏
