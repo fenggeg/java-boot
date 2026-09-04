@@ -142,6 +142,9 @@ pub async fn add_project(path: String, selected_modules: Vec<ScannedModule>) -> 
         }
     }
 
+    // 为新增项目注册 git 监听（非 git 仓库静默跳过；幂等）
+    crate::git_watcher::get_git_watch_manager().watch(&project.root_path);
+
     Ok(project)
 }
 
@@ -218,6 +221,10 @@ pub async fn delete_project(project_id: String, app: AppHandle) -> AppResult<()>
                 .await?;
         }
         watcher::get_watch_manager().unwatch(&s.id);
+    }
+    // 停止该项目的 git 监听
+    if let Ok(p) = db::get_project(&project_id) {
+        crate::git_watcher::get_git_watch_manager().unwatch(&p.root_path);
     }
     db::delete_project(&project_id)?;
     Ok(())
@@ -1468,4 +1475,98 @@ fn clear_entry(p: &std::path::Path, files: &mut usize, bytes: &mut u64) {
 
 fn entries_placeholder() -> std::fs::DirEntry {
     unreachable!()
+}
+
+// ============================ Git（只读集成） ============================
+// 所有 git 调用在 Rust 端完成，前端不直接执行 shell 命令。
+// 安全边界 = 本层：repoRoot canonicalize + filePath strip_prefix 校验 + 拒绝
+// `-` 开头 / `..` 越界；git_cli 内部再把参数放在 `--` 之后。
+
+use crate::git_cli::{self, FileDiff, FileStatusEntry, GitAvailability};
+
+/// 探测 git 可用性与仓库状态，并解析真实仓库根
+/// （worktree/submodule 场景仓库根可能高于 project_root）
+#[tauri::command]
+pub async fn git_availability(repo_root: String) -> GitAvailability {
+    let root = canonicalize_repo_root(&repo_root);
+    match root {
+        Ok(r) => git_cli::availability(&r),
+        Err(_) => GitAvailability {
+            installed: git_cli::is_git_installed(),
+            is_repo: false,
+            repo_root: None,
+        },
+    }
+}
+
+/// 全仓库文件状态列表（P1 文件树标记）
+#[tauri::command]
+pub async fn git_status_all(repo_root: String) -> Result<Vec<FileStatusEntry>, String> {
+    let root = canonicalize_repo_root(&repo_root)?;
+    tokio::task::spawn_blocking(move || git_cli::status_all(&root))
+        .await
+        .map_err(|e| format!("git status 任务失败: {}", e))?
+}
+
+/// 单文件 diff hunk（P0 gutter 数据源）
+#[tauri::command]
+pub async fn git_file_diff(repo_root: String, file_path: String) -> Result<FileDiff, String> {
+    let root = canonicalize_repo_root(&repo_root)?;
+    let rel = validate_file_path(&root, &file_path)?;
+    tokio::task::spawn_blocking(move || git_cli::file_diff(&root, &rel))
+        .await
+        .map_err(|e| format!("git diff 任务失败: {}", e))?
+}
+
+/// HEAD 版本内容（P0 DiffEditor original）；新文件不在 HEAD → null
+#[tauri::command]
+pub async fn git_file_at_head(
+    repo_root: String,
+    file_path: String,
+) -> Result<Option<String>, String> {
+    let root = canonicalize_repo_root(&repo_root)?;
+    let rel = validate_file_path(&root, &file_path)?;
+    tokio::task::spawn_blocking(move || git_cli::file_at_head(&root, &rel))
+        .await
+        .map_err(|e| format!("git cat-file 任务失败: {}", e))?
+}
+
+/// 单文件 blame（P2 hover 归属）
+#[tauri::command]
+pub async fn git_blame(repo_root: String, file_path: String) -> Result<Vec<git_cli::BlameLine>, String> {
+    let root = canonicalize_repo_root(&repo_root)?;
+    let rel = validate_file_path(&root, &file_path)?;
+    tokio::task::spawn_blocking(move || git_cli::blame(&root, &rel))
+        .await
+        .map_err(|e| format!("git blame 任务失败: {}", e))?
+}
+
+/// repoRoot：canonicalize 后使用（拒绝不存在 / 无法解析的路径）
+fn canonicalize_repo_root(repo_root: &str) -> Result<std::path::PathBuf, String> {
+    crate::util::canonicalize_clean(std::path::Path::new(repo_root))
+        .filter(|p| p.is_dir())
+        .ok_or_else(|| format!("项目根目录无效: {}", repo_root))
+}
+
+/// filePath：必须是仓库/项目内的相对路径；拒绝 `..` 越界、绝对路径。
+/// 不拒绝 `-` 开头（真实文件可能叫 `-rf`），git_cli 内所有路径参数都放在
+/// `--` 之后，由 `--` 分隔符保证不被当作选项解析（与 git_cli::rel_of 双重校验）。
+fn validate_file_path(project_root: &std::path::Path, file_path: &str) -> Result<String, String> {
+    if file_path.is_empty() {
+        return Err("文件路径为空".to_string());
+    }
+    if file_path.starts_with('/') || file_path.starts_with("..") {
+        return Err(format!("非法的文件路径: {}", file_path));
+    }
+    if file_path
+        .split(['/', '\\'])
+        .any(|seg| seg == ".." || seg.is_empty())
+    {
+        return Err(format!("非法的文件路径: {}", file_path));
+    }
+    let abs = project_root.join(file_path);
+    if !abs.starts_with(project_root) {
+        return Err(format!("非法的文件路径: {}", file_path));
+    }
+    Ok(file_path.replace('\\', "/"))
 }

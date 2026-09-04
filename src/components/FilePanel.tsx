@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
-import {App, Dropdown, Input, Modal, Segmented, Spin, Tooltip} from "antd";
+import {App, Button, Dropdown, Input, Modal, Segmented, Spin, Tooltip} from "antd";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {convertFileSrc} from "@tauri-apps/api/core";
@@ -8,6 +8,7 @@ import {
   Binary,
   ChevronLeft,
   ClipboardPaste,
+  Commit,
   Copy,
   Edit,
   File,
@@ -43,6 +44,13 @@ import {
 import {FileTypeIcon} from "./FileTreeRow";
 import {TreeRow} from "./FileTreeRow";
 import QuickOpenPanel from "./QuickOpenPanel";
+import type {editor} from "monaco-editor";
+import {monaco} from "../monaco-setup";
+import {listen} from "@tauri-apps/api/event";
+import {useGitGutter} from "../features/git/useGitGutter";
+import DiffView from "../features/git/DiffView";
+import {GIT_CHANGED_EVENT, gitAvailability, gitStatusAll} from "../features/git/api";
+import type {GitStatus} from "../features/git/api";
 
 interface Props {
   project: Project;
@@ -85,6 +93,72 @@ export default function FilePanel({
   // ---- Monaco 编辑器 ref（暴露 getValue/setValue/revealLine/getEditor） ----
   const monacoRef = useRef<MonacoCodeEditorHandle | null>(null);
 
+  // ---- Git 集成状态 ----
+  // 可用性探测结果（git 是否安装 + 项目是否为仓库 + 真实仓库根）
+  const [gitInfo, setGitInfo] = useState<{
+    installed: boolean;
+    isRepo: boolean;
+    repoRoot: string | null;
+  }>({installed: false, isRepo: false, repoRoot: null});
+  // 探测是否完成（避免未探测时闪现「git 未安装」提示）
+  const [gitChecked, setGitChecked] = useState(false);
+  // 文件树 git 状态标记（path → 状态）
+  const [gitStatusMap, setGitStatusMap] = useState<Map<string, GitStatus>>(
+    new Map()
+  );
+  // Diff 对比面板是否打开
+  const [diffOpen, setDiffOpen] = useState(false);
+  // Monaco 编辑器实例（onEditorReady 获得，供 useGitGutter 挂载）
+  const [editorInstance, setEditorInstance] =
+    useState<editor.IStandaloneCodeEditor | null>(null);
+  const gitEnabled = gitInfo.installed && gitInfo.isRepo && gitInfo.repoRoot != null;
+
+  // 加载全仓库 git 状态（文件树标记数据源）
+  const loadGitStatuses = useCallback(async (repoRoot: string) => {
+    try {
+      const entries = await gitStatusAll(repoRoot);
+      const m = new Map<string, GitStatus>();
+      for (const e of entries) m.set(e.path, e.status);
+      setGitStatusMap(m);
+    } catch {
+      /* 非仓库 / git 异常：保留现有标记 */
+    }
+  }, []);
+
+  // 打开面板时探测 git 可用性并加载状态
+  useEffect(() => {
+    let cancelled = false;
+    setGitChecked(false);
+    setGitInfo({installed: false, isRepo: false, repoRoot: null});
+    setGitStatusMap(new Map());
+    gitAvailability(project.root_path)
+      .then((a) => {
+        if (cancelled) return;
+        setGitInfo(a);
+        if (a.isRepo && a.repoRoot) void loadGitStatuses(a.repoRoot);
+      })
+      .catch(() => {
+        if (!cancelled)
+          setGitInfo({installed: false, isRepo: false, repoRoot: null});
+      })
+      .finally(() => {
+        if (!cancelled) setGitChecked(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id, project.root_path, loadGitStatuses]);
+
+  // 后端 git://changed → 刷新文件树状态
+  useEffect(() => {
+    if (!gitEnabled || !gitInfo.repoRoot) return;
+    let unlisten: (() => void) | undefined;
+    listen<null>(GIT_CHANGED_EVENT, () => {
+      if (gitInfo.repoRoot) void loadGitStatuses(gitInfo.repoRoot);
+    }).then((f) => (unlisten = f));
+    return () => unlisten?.();
+  }, [gitEnabled, gitInfo.repoRoot, loadGitStatuses]);
+
   // 右键菜单 / 剪贴板 / 重命名弹窗 / 拖拽
   const [ctxMenu, setCtxMenu] = useState<{
     x: number;
@@ -117,9 +191,19 @@ export default function FilePanel({
     [tabs, activePath]
   );
 
-  // 切换激活标签时回到查看模式
+  // Git gutter：挂载到当前文本标签的 Monaco 编辑器
+  const {diff: gitDiff} = useGitGutter(
+    editorInstance,
+    monaco,
+    gitInfo.repoRoot,
+    activeTab && activeTab.fileType === "text" ? activeTab.path : "",
+    gitEnabled
+  );
+
+  // 切换激活标签时回到查看模式并关闭 Diff 面板
   useEffect(() => {
     setViewMode("view");
+    setDiffOpen(false);
   }, [activePath]);
 
   /**
@@ -359,6 +443,8 @@ export default function FilePanel({
       const tab = tabs[idx]!;
       const doClose = () => {
         setTabs((prev) => prev.filter((t) => t.path !== path));
+        // 清理 Monaco 缓存的该标签 viewState，避免内存累积
+        monacoRef.current?.clearViewState(path);
         if (activePath === path) {
           // 激活相邻标签（优先右侧，其次左侧）
           const next =
@@ -419,6 +505,8 @@ export default function FilePanel({
       }
       const doClose = () => {
         setTabs(remaining);
+        // 清理被关标签在 Monaco 中缓存的 viewState，避免内存累积
+        for (const t of targets) monacoRef.current?.clearViewState(t);
         setActivePath(next);
       };
       if (dirtyN > 0) {
@@ -711,6 +799,12 @@ export default function FilePanel({
       </div>
 
       <div className="file-panel-body" ref={panelBodyRef}>
+        {/* git 未安装 → 轻量提示条（非 git 目录则静默隐藏，不打扰） */}
+        {gitChecked && !gitInfo.installed && (
+          <div className="git-notice">
+            未检测到 Git（git 未安装或不在 PATH 中），Git 差异对比 / 变更标记不可用。
+          </div>
+        )}
         {/* 左侧文件树（自定义，点击整行展开/折叠；支持右键菜单与拖拽移动） */}
         <div className="file-tree" style={{ width: treeWidth, flexShrink: 0 }}>
           {treeData.map((node) => (
@@ -727,6 +821,7 @@ export default function FilePanel({
                 setCtxMenu({ x: e.clientX, y: e.clientY, path, isDir });
               }}
               dnd={dnd}
+              gitStatusMap={gitEnabled ? gitStatusMap : undefined}
             />
           ))}
         </div>
@@ -840,44 +935,78 @@ export default function FilePanel({
                         ]}
                       />
                     )}
+                  {activeTab.fileType === "text" &&
+                    gitEnabled &&
+                    gitDiff &&
+                    gitDiff.status !== "unmodified" && (
+                      <span
+                        className={`git-file-badge git-file-badge-${gitDiff.status}`}
+                        title={`Git 状态：${gitDiff.status}`}
+                      >
+                        {gitDiff.status}
+                      </span>
+                    )}
+                  {activeTab.fileType === "text" && gitEnabled && (
+                    <Button
+                      size="small"
+                      icon={<Commit size={13} />}
+                      type={diffOpen ? "primary" : "default"}
+                      onClick={() => setDiffOpen((o) => !o)}
+                    >
+                      Diff
+                    </Button>
+                  )}
                   <span className="file-editor-size">
                     {activeTab.meta.size.toLocaleString()} B
                   </span>
                 </div>
               </div>
-              {isMarkdown(activeTab.path) &&
-              (activeTab.meta.readonly || viewMode === "view") ? (
-                <div className="file-preview-scroll">
-                  <div className="file-preview-markdown">
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      components={{
-                        code({className, children, ...props}) {
-                          return (
-                            <code className={`${className ?? ""} file-md-code`} {...props}>
-                              {children}
-                            </code>
-                          );
-                        },
-                      }}
-                    >
-                      {activeTab.content}
-                    </ReactMarkdown>
-                  </div>
+              <div className="file-code-split">
+                <div className="file-code-main">
+                  {isMarkdown(activeTab.path) &&
+                  (activeTab.meta.readonly || viewMode === "view") ? (
+                    <div className="file-preview-scroll">
+                      <div className="file-preview-markdown">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            code({className, children, ...props}) {
+                              return (
+                                <code className={`${className ?? ""} file-md-code`} {...props}>
+                                  {children}
+                                </code>
+                              );
+                            },
+                          }}
+                        >
+                          {activeTab.content}
+                        </ReactMarkdown>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="file-code-wrap" style={{position: "relative", height: "100%", overflow: "hidden"}}>
+                      <MonacoCodeEditor
+                        path={activeTab.path}
+                        value={activeTab.content}
+                        readonly={activeTab.meta.readonly}
+                        eol={activeTab.eol ?? "\n"}
+                        onChange={updateActiveContent}
+                        onSave={handleSave}
+                        editorRef={monacoRef}
+                        onEditorReady={setEditorInstance}
+                      />
+                    </div>
+                  )}
                 </div>
-              ) : (
-                <div className="file-code-wrap" style={{position: "relative", height: "100%", overflow: "hidden"}}>
-                  <MonacoCodeEditor
-                    path={activeTab.path}
-                    value={activeTab.content}
+                {diffOpen && gitEnabled && gitInfo.repoRoot && (
+                  <DiffView
+                    repoRoot={gitInfo.repoRoot}
+                    filePath={activeTab.path}
+                    modified={activeTab.content}
                     readonly={activeTab.meta.readonly}
-                    eol={activeTab.eol ?? "\n"}
-                    onChange={updateActiveContent}
-                    onSave={handleSave}
-                    editorRef={monacoRef}
                   />
-                </div>
-              )}
+                )}
+              </div>
             </>
           ) : error ? (
             <div style={{ padding: 40, textAlign: "center", color: "#ff3b30" }}>

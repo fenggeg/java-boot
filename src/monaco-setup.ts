@@ -4,6 +4,10 @@
 import * as monaco from "monaco-editor";
 import { loader } from "@monaco-editor/react";
 import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
+import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
+import cssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker";
+import htmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
+import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
 
 // 关键：让 @monaco-editor/react 的 loader 使用本地 ESM 打包的 monaco 实例，
 // 而不是默认的 jsdelivr CDN（CSP 会拦截 CDN 脚本，导致首次打开编辑器永远加载不出来）。
@@ -12,9 +16,16 @@ import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 loader.config({ monaco });
 
 // Vite 环境下配置 Worker 环境
-// WebView2 支持 Worker，经 Vite 打包后为同源脚本
+// WebView2 支持 Worker，经 Vite 打包后为同源脚本；
+// 按语言标签分发对应 worker，使 json/css/html/typescript 获得校验 / 补全能力
 self.MonacoEnvironment = {
-  getWorker() {
+  getWorker(_: unknown, label: string) {
+    if (label === "json") return new jsonWorker();
+    if (label === "css" || label === "scss" || label === "less")
+      return new cssWorker();
+    if (label === "html" || label === "handlebars" || label === "razor")
+      return new htmlWorker();
+    if (label === "typescript" || label === "javascript") return new tsWorker();
     return new editorWorker();
   },
 };

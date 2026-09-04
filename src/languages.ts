@@ -7,8 +7,9 @@ const EXT_LANG_MAP: Record<string, string> = {
   // JVM
   kt: "kotlin",
   kts: "kotlin",
-  groovy: "groovy",
-  gradle: "groovy",
+  // monaco 无 groovy 语言，退用 kotlin 高亮（Gradle 脚本语法相近）
+  groovy: "kotlin",
+  gradle: "kotlin",
   // Web / 前端
   js: "javascript",
   mjs: "javascript",
@@ -83,6 +84,6 @@ export function getMonacoLang(filename: string): string {
   const lowerBase = base.toLowerCase();
   if (lowerBase === "dockerfile") return "dockerfile";
   if (lowerBase === ".gitignore" || lowerBase === ".gitattributes") return "plaintext";
-  if (lowerBase === "makefile") return "makefile";
+  // Makefile 无扩展名且 monaco 无对应语言，走下方兜底 plaintext
   return EXT_LANG_MAP[ext] ?? "plaintext";
 }

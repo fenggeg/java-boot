@@ -1,6 +1,8 @@
 pub mod commands;
 pub mod db;
 pub mod error;
+pub mod git_cli;
+pub mod git_watcher;
 pub mod ipc;
 pub mod pom;
 pub mod port;
@@ -72,6 +74,8 @@ pub fn run() {
                 // 退出竞态中可能恰好触发 trigger_restart → compile_and_start
                 // → stop 杀进程，导致 stop_all_on_exit=false 时服务被误杀。
                 watcher::get_watch_manager().unwatch_all();
+                // 停止 git 监听，避免退出时仍有 git 子进程/事件线程运行
+                git_watcher::get_git_watch_manager().unwatch_all();
                 let cfg = db::load_config().unwrap_or_default();
                 if cfg.stop_all_on_exit {
                     let app_handle = window.app_handle().clone();
@@ -196,6 +200,9 @@ pub fn run() {
             // 初始化文件监听
             let handle = app.handle().clone();
             watcher::get_watch_manager().refresh_all(&handle);
+            // 初始化 git 监听（防死循环；非 git 仓库静默跳过）
+            git_watcher::get_git_watch_manager().init(&handle);
+            git_watcher::get_git_watch_manager().refresh_all();
 
             // 后台预热：为历史服务回填 main_class（旧版本添加的服务可能为空，避免启动阶段现扫）
             // 把 7 秒消耗移到 app 启动后的后台，用户手动启动服务时已 DB 命中。
@@ -299,6 +306,12 @@ pub fn run() {
             commands::daemon_recovery_ignore,
             commands::daemon_scan_start,
             commands::daemon_scan_cancel,
+            // git（只读集成）
+            commands::git_availability,
+            commands::git_status_all,
+            commands::git_file_diff,
+            commands::git_file_at_head,
+            commands::git_blame,
             // update
             update::download_update,
             update::install_update,

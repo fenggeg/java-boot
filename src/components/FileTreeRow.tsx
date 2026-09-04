@@ -10,6 +10,8 @@ import {
 } from "./Icons";
 import type { DndHandlers, FileTreeNode } from "./filePanelUtils";
 import { getFileType } from "./filePanelUtils";
+import type { GitStatus } from "../features/git/api";
+import { GIT_STATUS_LABEL } from "../features/git/api";
 
 /** 按文件名渲染类型图标（文件树 / 标签栏 / 快速打开共用） */
 export function FileTypeIcon({name, size}: {name: string; size: number}) {
@@ -40,6 +42,7 @@ export function TreeRow({
   onToggle,
   onContextMenu,
   dnd,
+  gitStatusMap,
 }: {
   node: FileTreeNode;
   depth: number;
@@ -48,9 +51,12 @@ export function TreeRow({
   onToggle: (path: string) => void;
   onContextMenu: (e: React.MouseEvent, path: string, isDir: boolean) => void;
   dnd: DndHandlers;
+  /** git 状态标记（path → 状态；仅文件行展示） */
+  gitStatusMap?: ReadonlyMap<string, GitStatus>;
 }) {
   const [dropHover, setDropHover] = useState(false);
   const isActive = activePath === node.path;
+  const gitStatus = node.isDir ? undefined : gitStatusMap?.get(node.path);
 
   // 拖放合法性：目标目录不能是被拖动条目自身或其子孙目录
   // （把子目录拖回父目录 / 祖先目录是合法移动）
@@ -126,6 +132,7 @@ export function TreeRow({
                 onToggle={onToggle}
                 onContextMenu={onContextMenu}
                 dnd={dnd}
+                gitStatusMap={gitStatusMap}
               />
             ))}
           </div>
@@ -152,6 +159,12 @@ export function TreeRow({
       <span className="file-tree-caret" />
       <FileTypeIcon name={node.name} size={14} />
       <span className="file-tree-name">{node.name}</span>
+      {gitStatus && (
+        <span
+          className={`file-tree-git file-tree-git-${gitStatus}`}
+          title={GIT_STATUS_LABEL[gitStatus] ?? gitStatus}
+        />
+      )}
     </div>
   );
 }

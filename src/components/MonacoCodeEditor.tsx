@@ -8,18 +8,12 @@ import { monaco, getMonacoTheme, setMonacoTheme } from "../monaco-setup";
 import { getMonacoLang } from "../languages";
 
 export interface MonacoCodeEditorHandle {
-  /** 获取编辑器当前内容 */
-  getValue: () => string;
-  /** 设置编辑器内容（外部修改同步用） */
-  setValue: (value: string) => void;
-  /** 滚动到指定行 */
-  revealLine: (line: number) => void;
   /** 保存当前滚动位置/光标状态（外部内容同步前调用） */
   saveViewState: () => void;
   /** 恢复滚动位置/光标状态（外部内容同步后调用） */
   restoreViewState: () => void;
-  /** 获取编辑器实例 */
-  getEditor: () => editor.IStandaloneCodeEditor | null;
+  /** 清除指定路径缓存的 viewState（标签关闭时调用，防止内存累积） */
+  clearViewState: (path: string) => void;
 }
 
 interface Props {
@@ -37,6 +31,8 @@ interface Props {
   onSave: () => void;
   /** ref 转发 */
   editorRef?: React.RefObject<MonacoCodeEditorHandle | null>;
+  /** 编辑器实例就绪回调（供 Git gutter 等外部能力挂载） */
+  onEditorReady?: (editor: editor.IStandaloneCodeEditor) => void;
 }
 
 interface MutableRef<T> {
@@ -51,6 +47,7 @@ export default function MonacoCodeEditor({
   onChange,
   onSave,
   editorRef,
+  onEditorReady,
 }: Props) {
   const editorInstanceRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   // 保存回调的 ref（避免每次 render 重建 editor addCommand）
@@ -112,6 +109,8 @@ export default function MonacoCodeEditor({
   const handleMount = useCallback(
     (ed: editor.IStandaloneCodeEditor) => {
       editorInstanceRef.current = ed;
+      // 外部能力（如 Git gutter）挂载时机
+      onEditorReady?.(ed);
       // 初始化 previousPathRef 为当前 path，使首次 tab 切换时保存逻辑
       // 走 prev !== null && prev !== path 分支，正确保存初始标签的 viewState。
       previousPathRef.current = path;
@@ -119,14 +118,6 @@ export default function MonacoCodeEditor({
       // 暴露 handle 方法给父组件
       if (editorRef) {
         (editorRef as MutableRef<MonacoCodeEditorHandle | null>).current = {
-          getValue: () => ed.getValue() ?? "",
-          setValue: (v: string) => {
-            const model = ed.getModel();
-            if (model) model.setValue(v);
-          },
-          revealLine: (line: number) => {
-            ed.revealLineInCenter(line + 1);
-          },
           saveViewState: () => {
             const cur = previousPathRef.current;
             if (!cur) return;
@@ -141,7 +132,9 @@ export default function MonacoCodeEditor({
               requestAnimationFrame(() => ed.restoreViewState(state));
             }
           },
-          getEditor: () => ed,
+          clearViewState: (path: string) => {
+            viewStatesRef.current.delete(path);
+          },
         };
       }
 
@@ -150,7 +143,7 @@ export default function MonacoCodeEditor({
         onSaveRef.current();
       });
     },
-    [editorRef, path]
+    [editorRef, path, onEditorReady]
   );
 
   // 监听主题切换

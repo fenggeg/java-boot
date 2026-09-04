@@ -2362,3 +2362,219 @@ body {
   color: var(--text-4);
   font-size: 11px;
 }
+
+/* ================================================================
+   Git 集成样式
+   ================================================================ */
+
+/* —— git 未安装提示条 —— */
+.git-notice {
+  flex-shrink: 0;
+  padding: 5px 12px;
+  font-size: 11px;
+  color: var(--orange);
+  background: var(--orange-glow);
+  border-bottom: 1px solid var(--border);
+}
+
+/* —— 编辑器与 Diff 面板并排 —— */
+.file-code-split {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+}
+
+.file-code-main {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* —— Diff 对比面板 —— */
+.git-diff-panel {
+  width: 46%;
+  min-width: 320px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border-2);
+  background: var(--surface);
+  height: 100%;
+  min-height: 0;
+}
+
+.git-diff-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  flex-shrink: 0;
+}
+
+.git-diff-head-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.git-diff-head-sub {
+  font-size: 11px;
+  color: var(--text-4);
+}
+
+.git-diff-hint {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+/* —— 工具栏当前文件 git 状态徽标 —— */
+.git-file-badge {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  border: 1px solid transparent;
+  flex-shrink: 0;
+}
+
+.git-file-badge-added { color: #1a7f37; background: rgba(45, 164, 78, 0.14); border-color: rgba(45, 164, 78, 0.35); }
+.git-file-badge-modified { color: #9a6700; background: rgba(191, 135, 0, 0.14); border-color: rgba(191, 135, 0, 0.35); }
+.git-file-badge-deleted { color: #cf222e; background: rgba(207, 34, 46, 0.12); border-color: rgba(207, 34, 46, 0.35); }
+.git-file-badge-renamed { color: #8250df; background: rgba(130, 80, 223, 0.12); border-color: rgba(130, 80, 223, 0.35); }
+
+[data-theme="dark"] .git-file-badge-added { color: #3fb950; background: rgba(46, 160, 67, 0.16); border-color: rgba(46, 160, 67, 0.4); }
+[data-theme="dark"] .git-file-badge-modified { color: #d29922; background: rgba(210, 153, 34, 0.16); border-color: rgba(210, 153, 34, 0.4); }
+[data-theme="dark"] .git-file-badge-deleted { color: #f85149; background: rgba(248, 81, 73, 0.14); border-color: rgba(248, 81, 73, 0.4); }
+[data-theme="dark"] .git-file-badge-renamed { color: #d2a8ff; background: rgba(188, 140, 255, 0.14); border-color: rgba(188, 140, 255, 0.4); }
+
+/* —— 文件树 git 状态圆点 —— */
+.file-tree-git {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-left: 6px;
+  flex-shrink: 0;
+}
+
+.file-tree-git-added { background: #2da44e; }
+.file-tree-git-modified { background: #bf8700; }
+.file-tree-git-deleted { background: #cf222e; }
+.file-tree-git-renamed, .file-tree-git-copied { background: #8250df; }
+.file-tree-git-untracked { background: #2da44e; }
+
+/* —— Monaco gutter 变更标记 —— */
+.jb-gutter-added {
+  border-left: 3px solid #2da44e;
+  background: rgba(45, 164, 78, 0.14);
+}
+.jb-gutter-modified {
+  border-left: 3px solid #bf8700;
+  background: rgba(191, 135, 0, 0.14);
+}
+.jb-gutter-deleted {
+  border-left: 3px solid #cf222e;
+  background: rgba(207, 34, 46, 0.14);
+  cursor: pointer;
+}
+
+[data-theme="dark"] .jb-gutter-added { background: rgba(46, 160, 67, 0.18); }
+[data-theme="dark"] .jb-gutter-modified { background: rgba(210, 153, 34, 0.18); }
+[data-theme="dark"] .jb-gutter-deleted { background: rgba(248, 81, 73, 0.18); }
+
+/* —— 删除标记点击后内联展示的 view zone —— */
+.jb-deleted-zone {
+  background: rgba(207, 34, 46, 0.06);
+  border-left: 3px solid #cf222e;
+  border-bottom: 1px dashed rgba(207, 34, 46, 0.3);
+}
+
+.jb-deleted-zone-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: #cf222e;
+  user-select: none;
+}
+
+.jb-deleted-zone-close {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.jb-deleted-zone-close:hover {
+  background: rgba(207, 34, 46, 0.12);
+}
+
+.jb-deleted-zone-body {
+  margin: 0;
+  padding: 2px 12px 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-2);
+  white-space: pre;
+  overflow-x: auto;
+  user-select: text;
+}
+
+/* —— blame 悬浮提示 —— */
+.jb-blame-tooltip {
+  position: fixed;
+  z-index: 10000;
+  display: none;
+  max-width: 280px;
+  padding: 8px 11px;
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-2);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+  font-size: 11px;
+  pointer-events: none;
+}
+
+[data-theme="dark"] .jb-blame-tooltip {
+  background: #2c2c2e;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+
+.jb-blame-author {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.jb-blame-summary {
+  margin-top: 2px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.jb-blame-meta {
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--text-4);
+  font-family: var(--font-mono);
+}
+
