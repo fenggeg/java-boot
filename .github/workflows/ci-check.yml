@@ -1,12 +1,8 @@
 name: CI Check
 
+# 不再在云端自动触发（push / pull_request）：与发布流程的本地预检重复，
+# 云端执行浪费时间与额度。保留 workflow_dispatch 供需要时手动在 GitHub 上运行。
 on:
-  push:
-    branches:
-      - master
-  pull_request:
-    branches:
-      - master
   workflow_dispatch:
 
 jobs:
