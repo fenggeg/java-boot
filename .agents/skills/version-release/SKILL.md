@@ -1,9 +1,10 @@
----
+***
+
 name: version-release
-description: JavaBoot Launcher 项目专用版本发布流程：同步版本号、维护 CHANGELOG、本地预检、规范化提交并推送 master、打 v* 标签触发 CI 构建。当用户说「发版」「发布新版本」「打个 tag」「release」「发个版本」或要求升级版本号发布时使用。
+description: JavaBoot Launcher 项目专用版本发布流程：同步版本号、维护 CHANGELOG、本地预检、规范化提交并推送 master、打 v\* 标签触发 CI 构建。当用户说「发版」「发布新版本」「打个 tag」「release」「发个版本」或要求升级版本号发布时使用。
 metadata:
-  scope: project
----
+scope: project
+--------------
 
 # JavaBoot Launcher 版本发布技能
 
@@ -25,18 +26,20 @@ metadata:
 
 1. 读取当前版本：`src-tauri/tauri.conf.json` 的 `version` 字段（运行时唯一权威来源）
 2. 与用户确认新版本号，遵循语义化版本：
+
    - 新功能 → 次版本号 +1（如 0.1.2 → 0.2.0）
+
    - 仅缺陷修复 → 修订号 +1（如 0.1.2 → 0.1.3）
 3. 确认工作区干净：`git status` 必须无未提交变更（遗留变更应先单独提交）
 
 ## 第 2 步：同步版本号（4 处，缺一不可）
 
-| 文件 | 字段位置 | 说明 |
-|---|---|---|
-| `package.json` | 顶层 `"version"` | |
-| `package-lock.json` | 顶层 `"version"` **和** `"packages"."".version` | 两处都要改，否则 `npm ci` 校验失败、CI 直接红 |
-| `src-tauri/tauri.conf.json` | `"version"` | 应用内 `getVersion()` 取此值，**决定自更新比较基准** |
-| `src-tauri/Cargo.toml` | `[package] version` | 改完须跑一次 `cargo check` 让 `Cargo.lock` 同步 |
+| 文件                          | 字段位置                                         | 说明                                     |
+| --------------------------- | -------------------------------------------- | -------------------------------------- |
+| `package.json`              | 顶层 `"version"`                               | <br />                                 |
+| `package-lock.json`         | 顶层 `"version"` **和** `"packages"."".version` | 两处都要改，否则 `npm ci` 校验失败、CI 直接红          |
+| `src-tauri/tauri.conf.json` | `"version"`                                  | 应用内 `getVersion()` 取此值，**决定自更新比较基准**   |
+| `src-tauri/Cargo.toml`      | `[package] version`                          | 改完须跑一次 `cargo check` 让 `Cargo.lock` 同步 |
 
 > 历史教训：Cargo.toml 曾长期停在旧版本号、锁文件曾漂移一个版本。四处必须一致。
 
@@ -68,8 +71,11 @@ metadata:
 ```
 
 硬性要求：
+
 - 标题必须是 `## [x.y.z] - YYYY-MM-DD`（无 v 前缀），CI 用正则按此提取 Release Notes
+
 - 小节标题只用：新增 / 变更 / 修复 / 优化 / CI；无内容的节省略
+
 - 内容从本次发布的实际代码变更提炼，参考 git log 与会话中已完成的改动
 
 ## 第 4 步：本地预检（对齐 ci-check.yml）
@@ -120,14 +126,19 @@ git push origin vX.Y.Z
 ```
 
 - tag 名必须带 `v` 前缀且与第 2 步版本号严格一致（`v*` 是构建工作流的唯一触发条件）
+
 - 使用 annotated tag（`-a -m`），便于追溯
+
 - 推送成功即向用户报告发版完成：CI 将自动构建 NSIS 安装包并发布 GitHub Release，
   无需轮询监控；若用户事后反馈构建失败，再按下节处理
 
 ## 失败处理（仅应事后反馈时使用）
 
 - **master 推送被拒**：先 `git pull --rebase` 解决冲突后重推
+
 - **构建失败**：删除远端 tag 重打（`git push origin :refs/tags/vX.Y.Z && git tag -d vX.Y.Z`），
-  修复后再走第 5~7 步；若 Release 已创建为半成品，到 GitHub 页面手动删除后重试
+  修复后再走第 5\~7 步；若 Release 已创建为半成品，到 GitHub 页面手动删除后重试
+
 - **发错版本号**：同上删除 tag 与 Release，修正四处版本号后重新发布；
   已分发的安装包无法撤回，需评估是否补发修订版
+
