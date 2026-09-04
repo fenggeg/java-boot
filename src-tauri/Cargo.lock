@@ -2197,7 +2197,7 @@ dependencies = [
 
 [[package]]
 name = "javaboot-launcher"
-version = "0.19.2"
+version = "0.19.3"
 dependencies = [
  "chrono",
  "dirs 5.0.1",

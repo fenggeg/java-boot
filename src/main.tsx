@@ -1,3 +1,6 @@
+// 入口文件：组件不导出、由 ReactDOM 挂载，不参与 HMR fast-refresh，
+// 豁免 react-refresh/only-export-components 检查（入口文件属常规例外）。
+/* eslint-disable react-refresh/only-export-components */
 import {useEffect} from "react";
 import ReactDOM from "react-dom/client";
 import {App as AntApp, ConfigProvider, theme} from "antd";

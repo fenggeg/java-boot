@@ -24,6 +24,9 @@ export default defineConfig({
     target: "chrome105",
     minify: "esbuild",
     sourcemap: false,
+    // monaco（3.3MB，已 React.lazy 懒加载，不进首帧）与 antd（928KB，独立 vendor
+    // chunk 利于缓存）是有意保持的大 chunk；提高阈值避免误报，超出的才是真问题。
+    chunkSizeWarningLimit: 4000,
     rollupOptions: {
       output: {
         manualChunks: {

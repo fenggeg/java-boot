@@ -7,7 +7,22 @@
 
 ## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.13.0...HEAD)
 
-## [0.19.2] - 2026-09-04
+## [0.19.3] - 2026-09-04
+
+### 修复
+
+- **GitHub Release 发布失败（v0.19.2 即因此失败）**：发布 workflow 中 `tauri-action`（默认创建并上传 Release）与 `softprops/action-gh-release`（对同一 tag 再次上传）争抢同一 Release——softprops 找不到 Release 后尝试再创建，返回 `Resource not accessible by integration` 403；现移除冗余的 `softprops` 步骤，由 `tauri-action` 统一创建 Release 并上传 NSIS 安装包
+- **编译 / 打包警告清零**：Rust 链接器 `linker_messages` 信息性警告（Tauri lib 生成 cdylib 导入库，`#![allow(linker_messages)]`）；Vite chunk 超 500KB 误报（monaco 已懒加载、antd 独立 vendor，`chunkSizeWarningLimit` 调至 4000）；`main.tsx` 入口文件豁免 react-refresh 规则
+
+### 变更
+
+- **ci-check 不再云端自动触发**：与发布流程本地预检重复，改为仅 `workflow_dispatch` 手动在 GitHub 运行
+
+### 优化
+
+- **发布 workflow 提速**：新增 `Swatinem/rust-cache`（Rust 编译缓存，命中后 release 编译从十几分钟降到分钟级）；`concurrency` 防并发构建；`CARGO_INCREMENTAL=0`；Checkout 浅克隆 `fetch-depth: 20`（与 changelog 回退 `git log -20` 对齐）。未改动项目 `[profile.release]` 的 LTO/codegen-units 配置（体积与启动速度优先）
+
+## \[0.19.2] - 2026-09-04
 
 ### 修复
 

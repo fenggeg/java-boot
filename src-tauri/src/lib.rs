@@ -1,3 +1,8 @@
+// Tauri [lib] 含 cdylib，MSVC 链接器在生成 DLL 时会输出
+// 「正在创建库 .lib 和对象 .exp」的信息性提示，被 Cargo 当作 linker_messages
+// 警告；属正常现象，显式允许以保持构建输出干净。
+#![allow(linker_messages)]
+
 pub mod commands;
 pub mod db;
 pub mod error;
