@@ -1,8 +1,12 @@
 // DiffView：Git 差异对比面板（P0），与编辑器并排共存。
 // original = HEAD 版本内容（git cat-file 取回），modified = 当前缓冲区内容（实时跟随输入）。
+// 滚动同步：monaco 0.52 内置同步依赖 diff 计算与 view zone，在模型经 @monaco-editor/react
+// 反复 setModel 的集成下可能失效；这里在 onMount 里补一组双向手动同步（带位置守卫防回环），
+// 保证左右两侧滚动行为一致。
 
 import { useEffect, useState } from "react";
 import { DiffEditor } from "@monaco-editor/react";
+import type { editor } from "monaco-editor";
 import { gitFileAtHead } from "./api";
 import { getMonacoLang } from "../../languages";
 import { getMonacoTheme } from "../../monaco-setup";
@@ -58,6 +62,27 @@ export default function DiffView({
     };
   }, [repoRoot, filePath]);
 
+  /** 双向手动滚动同步（带位置守卫，防 setScrollPosition 触发对端回环） */
+  const handleDiffMount = (diffEditor: editor.IDiffEditor) => {
+    const originalEditor = diffEditor.getOriginalEditor();
+    const modifiedEditor = diffEditor.getModifiedEditor();
+    const sync = (
+      source: editor.ICodeEditor,
+      target: editor.ICodeEditor
+    ) => {
+      source.onDidScrollChange((e) => {
+        // 目标已在相近位置（native 同步生效时天然 no-op）→ 跳过，防回环
+        if (Math.abs(target.getScrollTop() - e.scrollTop) < 1) return;
+        target.setScrollPosition({
+          scrollTop: e.scrollTop,
+          scrollLeft: e.scrollLeft,
+        });
+      });
+    };
+    sync(originalEditor, modifiedEditor);
+    sync(modifiedEditor, originalEditor);
+  };
+
   return (
     <div className="git-diff-panel">
       <div className="git-diff-head">
@@ -80,6 +105,7 @@ export default function DiffView({
           theme={getMonacoTheme()}
           height="100%"
           loading={<div className="git-diff-hint">加载编辑器…</div>}
+          onMount={handleDiffMount}
           options={{
             readOnly: readonly,
             fontSize: 13,

@@ -1,5 +1,5 @@
-import {useCallback, useEffect, useMemo, useState} from "react";
-import {App as AntApp, Dropdown, Tabs, Alert, Button} from "antd";
+import {lazy, Suspense, useCallback, useEffect, useMemo, useState} from "react";
+import {App as AntApp, Dropdown, Tabs, Alert, Button, Spin} from "antd";
 import {listen, type UnlistenFn,} from "@tauri-apps/api/event";
 import {useShallow} from "zustand/react/shallow";
 import {useStore} from "./store";
@@ -8,7 +8,9 @@ import {STATUS_META} from "./types";
 import TopBar from "./components/TopBar";
 import ServiceList from "./components/ServiceList";
 import LogViewer from "./components/LogViewer";
-import FilePanel from "./components/FilePanel";
+// 文件面板懒加载：其依赖链包含 monaco-editor（3MB+），静态引入会在启动时
+// 解析全部 Monaco 导致首帧白屏久；改为首次打开文件视图时才加载
+const FilePanel = lazy(() => import("./components/FilePanel"));
 import AddProjectModal from "./components/AddProjectModal";
 import AddServiceModal from "./components/AddServiceModal";
 import ServiceConfigModal from "./components/ServiceConfigModal";
@@ -323,11 +325,19 @@ export default function App() {
             if (!fileProject) return null;
             return (
               <div className={`view-slot ${view === "files" ? "" : "hidden"}`}>
-                <FilePanel
-                  project={fileProject}
-                  visible={view === "files"}
-                  onClose={() => setView("logs")}
-                />
+                <Suspense
+                  fallback={
+                    <div style={{padding: 60, textAlign: "center"}}>
+                      <Spin />
+                    </div>
+                  }
+                >
+                  <FilePanel
+                    project={fileProject}
+                    visible={view === "files"}
+                    onClose={() => setView("logs")}
+                  />
+                </Suspense>
               </div>
             );
           })()}

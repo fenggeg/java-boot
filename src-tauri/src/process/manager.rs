@@ -198,6 +198,26 @@ impl ProcessManager {
         }
     }
 
+    /// 清理旧版本遗留的 `<working_dir>/.javaboot` 目录。
+    ///
+    /// v0.18.5 起 daemon 的日志镜像与 spec 快照已统一写入软件自身数据目录
+    /// （`<data>/javaboot-launcher/run/<哈希>/`），用户项目的 `.javaboot` 不再
+    /// 写入；此处为历史版本残留做一次性清理，避免继续污染用户源码树。
+    pub fn cleanup_legacy_javaboot_dirs(&self) {
+        let services = match crate::db::list_services() {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        for s in services {
+            let dir = std::path::Path::new(&s.working_dir).join(".javaboot");
+            if dir.is_dir() {
+                if std::fs::remove_dir_all(&dir).is_ok() {
+                    log::info!("已清理遗留的 .javaboot 目录: {}", dir.display());
+                }
+            }
+        }
+    }
+
     pub fn get_runtime(&self, service_id: &str) -> ServiceRuntime {
         self.runtimes
             .lock()

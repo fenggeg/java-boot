@@ -7,6 +7,15 @@
 
 ## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.13.0...HEAD)
 
+## [0.19.2] - 2026-09-04
+
+### 修复
+
+- **启动白屏久**：git watcher 的 `refresh_all` 此前在 setup 主线程同步为每个项目拉起 git 子进程（`rev-parse`），阻塞首帧渲染；现改为 `spawn_blocking` 后台执行。同时文件面板（依赖链含 monaco-editor 3MB+）改为 `React.lazy` 懒加载，monaco 包仅在首次打开文件视图时加载，不再进启动首帧
+- **Blame 悬浮显示「未知作者」**：`git blame --porcelain` 对每个 commit 只在输出中**首次出现**时附带 author 元数据，同一 commit 的行被未提交行（`0000…0`）隔断后再次出现时不再重复输出；解析器此前每次 sha 变化都重置元数据，导致复用 commit 的行 author 为空。现按 sha 缓存元数据复用（新增回归测试）
+- **Diff 对比面板左右无法同步滚动**：monaco 0.52 内置同步依赖 diff 计算与 view zone，在 @monaco-editor/react 反复 setModel 的集成下可能失效；在 DiffEditor `onMount` 增加双向手动滚动同步（带位置守卫防回环）
+- **用户项目残留 `.javaboot` 目录**：v0.18.5 起运行期文件已迁移至软件数据目录，`.javaboot` 为旧版本遗留；启动时后台自动清理所有服务 working_dir 下的遗留 `.javaboot` 目录
+
 ## \[0.19.1] - 2026-09-04
 
 ### 修复

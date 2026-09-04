@@ -11,6 +11,7 @@
 //! - diff 类命令追加 `--no-color --no-ext-diff --no-textconv`：用户配置了外部 diff
 //!   工具或 textconv 时，默认输出不可解析，必须显式关闭。
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -611,18 +612,19 @@ pub fn has_binary_line(output: &str) -> bool {
 }
 
 /// 解析 `git blame --porcelain`：按 final 行号归并出每条行的归属。
-/// 每组连续同 commit 的行仅首行带 author / author-time / summary 元数据。
+///
+/// 关键语义：git 对每个 commit **只在输出中首次出现时**附带 author / author-time /
+/// summary 元数据（实测同一 commit 的行被未提交行(0000…0)隔断后再次出现时不再重复
+/// 输出元数据）。因此解析器必须按 sha 缓存元数据，供后续同 sha 的行复用；
+/// 否则复用 commit 的行会拿到空 author → 前端显示「未知作者」。
 pub fn parse_blame_porcelain(output: &str) -> Vec<BlameLine> {
-    #[derive(Default)]
-    struct Meta {
-        sha: String,
-        author: String,
-        time: i64,
-        summary: String,
-    }
-
+    // sha → (author, time, summary)
+    let mut meta_by_sha: HashMap<String, (String, i64, String)> = HashMap::new();
     let mut result: Vec<BlameLine> = Vec::new();
-    let mut meta = Meta::default();
+    let mut current_sha = String::new();
+    let mut current_author = String::new();
+    let mut current_time = 0i64;
+    let mut current_summary = String::new();
     let mut pending_final: u32 = 0;
     let mut has_header = false;
 
@@ -632,17 +634,32 @@ pub fn parse_blame_porcelain(output: &str) -> Vec<BlameLine> {
             continue;
         }
         if let Some(content) = line.strip_prefix('\t') {
-            // 内容行：用当前组的元数据落一条 BlameLine
+            // 内容行：落一条 BlameLine。元数据优先取缓存（首次出现时由
+            // 后续元数据行填充后再入缓存），保证同 sha 复用行 author 不丢
             if has_header {
+                let (author, time, summary) = meta_by_sha
+                    .get(&current_sha)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        let meta = (
+                            current_author.clone(),
+                            current_time,
+                            current_summary.clone(),
+                        );
+                        meta_by_sha
+                            .entry(current_sha.clone())
+                            .or_insert(meta.clone());
+                        meta
+                    });
                 result.push(BlameLine {
-                    sha: meta.sha.clone(),
+                    sha: current_sha.clone(),
                     final_line: pending_final,
-                    author: meta.author.clone(),
-                    time: meta.time,
-                    summary: meta.summary.clone(),
+                    author,
+                    time,
+                    summary,
                 });
-                let _ = content;
             }
+            let _ = content;
             continue;
         }
         // 头部行
@@ -652,25 +669,24 @@ pub fn parse_blame_porcelain(output: &str) -> Vec<BlameLine> {
             let sha = it.next().unwrap_or("").to_string();
             let _orig: u32 = it.next().and_then(|s| s.parse().ok()).unwrap_or(1);
             let final_line: u32 = it.next().and_then(|s| s.parse().ok()).unwrap_or(1);
-            // 新组（sha 变化）才重置元数据；同组连续行复用
-            if meta.sha != sha {
-                meta = Meta {
-                    sha,
-                    author: String::new(),
-                    time: 0,
-                    summary: String::new(),
-                };
-            }
+            current_sha = sha;
             pending_final = final_line;
             has_header = true;
-        } else if has_header {
-            // 元数据行：仅首行出现
+            // 首次出现的 commit：元数据未知，等待后续 author/summary 行填充；
+            // 已缓存的 commit：直接复用，跳过元数据行
+            if !meta_by_sha.contains_key(&current_sha) {
+                current_author.clear();
+                current_time = 0;
+                current_summary.clear();
+            }
+        } else if has_header && !meta_by_sha.contains_key(&current_sha) {
+            // 元数据行：仅对首次出现的 commit 有
             if let Some(v) = line.strip_prefix("author ") {
-                meta.author = v.trim().to_string();
+                current_author = v.trim().to_string();
             } else if let Some(v) = line.strip_prefix("author-time ") {
-                meta.time = v.trim().parse().unwrap_or(0);
+                current_time = v.trim().parse().unwrap_or(0);
             } else if let Some(v) = line.strip_prefix("summary ") {
-                meta.summary = v.trim().to_string();
+                current_summary = v.trim().to_string();
             }
         }
     }
@@ -899,6 +915,54 @@ filename src/A.java
         assert_eq!(lines[2].final_line, 3);
         assert_eq!(lines[2].author, "Bob");
         assert_eq!(lines[2].summary, "Fix bug Y");
+    }
+
+    #[test]
+    fn blame_porcelain_interleaved_sha_reuses_meta() {
+        // 关键回归：同一 commit 的行被未提交行(0000…)隔断后再次出现时，
+        // git 不再重复输出 author 元数据，解析器须按 sha 缓存复用，
+        // 否则第 3 行 author 为空 → 前端显示「未知作者」
+        let out = "\
+f00d1234567890123456789012345678901234567 1 1 1
+author Alice
+author-mail <alice@example.com>
+author-time 1700000000
+author-tz +0800
+committer Alice
+committer-mail <alice@example.com>
+committer-time 1700000000
+committer-tz +0800
+summary Add feature X
+filename src/A.java
+\tline one
+0000000000000000000000000000000000000000 2 2 1
+author Not Committed Yet
+author-mail <not.committed.yet>
+author-time 1710000000
+author-tz +0800
+committer Not Committed Yet
+committer-mail <not.committed.yet>
+committer-time 1710000000
+committer-tz +0800
+summary Version of src/A.java from src/A.java
+previous f00d1234567890123456789012345678901234567 src/A.java
+filename src/A.java
+\tline two (edited)
+f00d1234567890123456789012345678901234567 3 3 1
+\tline three
+";
+        let lines = parse_blame_porcelain(out);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].author, "Alice");
+        assert_eq!(lines[0].summary, "Add feature X");
+        // 未提交行
+        assert_eq!(lines[1].author, "Not Committed Yet");
+        assert_eq!(lines[1].summary, "Version of src/A.java from src/A.java");
+        // 复用 commit：author 来自缓存，不能为空
+        assert_eq!(lines[2].final_line, 3);
+        assert_eq!(lines[2].sha, "f00d1234567890123456789012345678901234567");
+        assert_eq!(lines[2].author, "Alice");
+        assert_eq!(lines[2].summary, "Add feature X");
     }
 
     // ---------- 路径换算 ----------

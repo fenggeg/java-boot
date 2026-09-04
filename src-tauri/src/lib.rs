@@ -200,9 +200,21 @@ pub fn run() {
             // 初始化文件监听
             let handle = app.handle().clone();
             watcher::get_watch_manager().refresh_all(&handle);
-            // 初始化 git 监听（防死循环；非 git 仓库静默跳过）
-            git_watcher::get_git_watch_manager().init(&handle);
-            git_watcher::get_git_watch_manager().refresh_all();
+            // 初始化 git 监听（防死循环；非 git 仓库静默跳过）。
+            // 注意：在 spawn_blocking 中异步执行——refresh_all 会对每个项目
+            // 同步拉起 git 子进程（rev-parse），若在 setup 主线程同步执行会
+            // 阻塞首帧渲染（项目多 / 路径慢时表现为启动白屏久）。
+            {
+                let handle2 = app.handle().clone();
+                git_watcher::get_git_watch_manager().init(&handle2);
+                tauri::async_runtime::spawn_blocking(|| {
+                    git_watcher::get_git_watch_manager().refresh_all();
+                });
+            }
+            // 清理旧版本遗留的 <working_dir>/.javaboot 目录（后台执行，不阻塞启动）
+            tauri::async_runtime::spawn_blocking(|| {
+                process::get_manager().cleanup_legacy_javaboot_dirs();
+            });
 
             // 后台预热：为历史服务回填 main_class（旧版本添加的服务可能为空，避免启动阶段现扫）
             // 把 7 秒消耗移到 app 启动后的后台，用户手动启动服务时已 DB 命中。
