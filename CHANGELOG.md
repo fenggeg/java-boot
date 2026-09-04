@@ -7,7 +7,7 @@
 
 ## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.13.0...HEAD)
 
-## [0.19.4] - 2026-09-05
+## [0.19.5] - 2026-09-05
 
 ### 修复
 
