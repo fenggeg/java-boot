@@ -7,6 +7,12 @@
 
 ## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.13.0...HEAD)
 
+## \[0.18.6] - 2026-09-04
+
+### 修复
+
+- **daemon 托管服务启动后偶发一直停在「启动中」**：`spawn_service` 收到 daemon SPAWN 响应后才注册 `service_id ↔ run_id` 映射，而 daemon 在进程拉起后可能更早发出 `proc.status running` / `proc.metrics`/日志通知，这些事件在 `normalize_event` 中因映射尚未建立而被丢弃——若恰好丢掉 "running" 状态且进程此后不再有状态变换，UI 会一直停在「启动中」、且漏掉开头日志，直到重启软件走 `rebind` 才恢复。现于启动委托注册完成后立即向 daemon 补一次该 run 的对账（`reconcile_after_spawn`），把错过的 Running 状态推进补回来（幂等，仍为 Starting 时无副作用）
+
 ## \[0.18.5] - 2026-09-03
 
 ### 变更

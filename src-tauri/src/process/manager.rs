@@ -847,10 +847,14 @@ impl ProcessManager {
                     self.set_status(app, &service.id, ServiceStatus::Stopped);
                     AppError::Process(format!("daemon 启动失败: {}", e))
                 })?;
-                let _ = run_id;
                 if pid > 0 {
                     self.set_pid(app, &service.id, pid);
                 }
+                // 启动后补对账：注册瞬间被丢弃的 `proc.status running` / metrics
+                // 事件（事件先于 bridge 映射到达时被 normalize_event 丢弃）会导致
+                // 服务一直停在 "starting"。这里注册完成后立即向 daemon 拉一次该 run
+                // 的当前状态，把错过的 Running 推进补回来（幂等，仍在 Starting 则无副作用）。
+                super::delegate::reconcile_after_spawn(app, &service.id, run_id).await;
                 // 状态转 Running/Error 由 daemon proc.status 事件归一驱动
                 return Ok(());
             }

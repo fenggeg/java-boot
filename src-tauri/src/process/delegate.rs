@@ -14,7 +14,7 @@ use std::sync::Arc;
 use parking_lot::Mutex as PMutex;
 use tauri::{AppHandle, Manager};
 
-use jb_core::model::SpawnRequest;
+use jb_core::model::{ProcStatus, SpawnRequest};
 use jb_core::protocol as P;
 
 use crate::error::AppError;
@@ -117,6 +117,46 @@ pub async fn spawn_service(
     let pid = v.get("pid").and_then(|x| x.as_u64()).map(|p| p as u32).unwrap_or(0);
     bridge().register(service_id, run_id);
     Ok((run_id, pid))
+}
+
+/// 启动委托后的补对账：落回注册瞬间可能被丢弃的状态推进。
+///
+/// 背景（http 竞态）：`spawn_service` 收到 daemon SPAWN 响应后才注册
+/// `service_id ↔ run_id` 映射；而 daemon 在进程拉起后可能更早发出
+/// `proc.status running` / `proc.metrics` 通知，这些事件在 `normalize_event`
+/// 中因映射尚未建立而被丢弃。若恰好丢的是 "running" 且进程此后不再有状态变换，
+/// 服务就会一直停在 "starting"（日志也可能缺开头几行），直到重启软件走
+/// `rebind` 才恢复——正是用户反馈的「启动完成仍显示启动中、重启才正常」。
+///
+/// 这里在注册完成后立即对账一次，拉取 daemon 对该 run 的当前事实，把被丢弃的
+/// 状态推进补回来。幂等：若 daemon 仍判 Starting，则本次不做改动，后续实时
+/// `proc.status` 事件（此时映射已建立）会照常推进。
+pub async fn reconcile_after_spawn(app: &AppHandle, service_id: &str, run_id: i64) {
+    if !daemon_online(app) || run_id <= 0 {
+        return;
+    }
+    let state = app.state::<Arc<IpcState>>().inner().clone();
+    let procs = match state.reconcile().await {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!("daemon 启动后对账失败(service={service_id}): {e}");
+            return;
+        }
+    };
+    let Some(info) = procs.into_iter().find(|p| p.run_id == run_id) else {
+        // daemon 尚未在 list 中登记该 run（一般不会），交由后续事件推进
+        return;
+    };
+    if info.status == ProcStatus::Running {
+        crate::process::get_manager().set_status(
+            app,
+            service_id,
+            crate::db::models::ServiceStatus::Running,
+        );
+        log::info!(
+            "daemon 启动后对账：service={service_id} run_id={run_id} 校正为 Running"
+        );
+    }
 }
 
 /// 停止一个由 daemon 托管的服务。返回是否确实委托给了 daemon。
