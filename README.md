@@ -66,6 +66,14 @@
 - **右键菜单**：重命名、复制、粘贴、剪切、在文件管理器中显示（explorer 定位高亮）；支持目录间拖拽移动；同名粘贴自动生成 `(2)` 序号；标签栏右键支持关闭 / 关闭其他 / 关闭右侧 / 全部关闭、复制路径、重命名
 - **快捷键**：文件树 Ctrl+C / Ctrl+V 复制粘贴选中条目；编辑器内 Ctrl+F 搜索（上限 2MB，与可编辑范围对齐）
 
+### Git 集成（文件编辑器，只读）
+- **Gutter 变更标记**：行号旁绿（新增）/ 黄（修改）/ 红（删除）标记，含 minimap 与 overview ruler 着色；`git diff HEAD -U0` 解析 hunk（纯删除画在 `newStart+1` 行）；打字不重算 diff（decoration 锚点 stickiness 自动跟随），仅文件加载与 `git://changed` 事件时刷新
+- **Diff 对比面板**：工具栏 Diff 按钮打开并排独立面板，Monaco DiffEditor 对比 HEAD 版本（`git cat-file`）与当前缓冲区（实时跟随输入）
+- **文件树状态标记**：`git status --porcelain=v1 -z` 解析，未跟踪 / 新增 / 修改 / 删除 / 重命名以彩色圆点标注
+- **Blame 悬浮**：hover 行号显示提交摘要、作者、时间（`git blame --porcelain` 懒加载）
+- **删除代码内联查看**：点击删除标记，view zone 内联展示被删除的原始代码
+- **只读 & 安全**：全部 git 调用在 Rust 后端完成（`git_cli` 执行层 + `git_watcher` 监听），前端不直接执行 shell 命令；repoRoot canonicalize + filePath strip_prefix 校验 + 路径参数一律置于 `--` 分隔符之后，杜绝注入；`--no-optional-locks` 防止 status 写入 index 触发监听死循环；git 子进程并发上限 2；git 未安装显示轻量提示条、非 git 目录静默隐藏
+
 ### 环境与依赖探测
 - **JDK 自动探测**：覆盖系统 `JAVA_HOME` / PATH / scoop shims（记录 `current` 稳定路径，升级后自动跟随）/ IDEA「Download JDK」落点 `~/.jdks` / JetBrains SDK 注册表 `jdk.table.xml`（支持 `$USER_HOME$` 宏）/ IDE 自带 JBR；探测结果进程内缓存（RwLock，读锁快速路径 + 写锁双重检查）
 - **Maven 自动探测**：系统 `MAVEN_HOME` / PATH / scoop / IDEA 捆绑 maven3 / `~/.m2/wrapper/dists` 分发包
@@ -146,14 +154,18 @@ npm run tauri:build
 │   │   └── envVars.ts         # 环境变量 / 覆盖属性公共解析与序列化
 │   ├── api.ts                 # Tauri invoke 封装 + toErrMsg 错误归一化
 │   ├── update.ts              # 更新检查 + isGithubRelease 类型守卫
-│   ├── monaco-setup.ts        # Monaco Worker 入口 + jb-light/jb-dark 主题
+│   ├── monaco-setup.ts        # Monaco Worker 入口（editor/json/css/html/ts）+ jb-light/jb-dark 主题
 │   ├── languages.ts           # 扩展名 → Monaco 语言 ID 映射
+│   ├── features/
+│   │   └── git/               # Git 集成（api 封装 / useGitGutter / DiffView 面板）
 │   ├── store.ts               # zustand（含 HMR 清理）
 │   ├── theme.ts               # 亮 / 暗主题
 │   └── types.ts
 ├── src-tauri/
 │   ├── src/
-│   │   ├── commands.rs        # Tauri 命令入口（project / service / process / files / config / util）
+│   │   ├── commands.rs        # Tauri 命令入口（project / service / process / files / config / git / util）
+│   │   ├── git_cli.rs         # Git CLI 执行层（GitRunner + 固定前缀 + `--` 分隔）+ 纯函数解析器（hunk / status-z / blame / 路径校验）+ 单元测试
+│   │   ├── git_watcher.rs     # git 目录监听（notify-debouncer-full + hash 去重防死循环 + git://changed 推送）
 │   │   ├── db/                # SQLite (rusqlite + r2d2 连接池) - schema/models/mod，PRAGMA user_version 幂等迁移
 │   │   ├── pom/               # Maven pom 解析 + SpringBoot 识别（module 路径越界校验）
 │   │   ├── process/
@@ -202,7 +214,8 @@ A：当前只测过 Windows。macOS / Linux 上 Job Object、`taskkill` 路径�
 |---|---|
 | 前端 | React 18 + antd 5 + zustand + Vite 5 + TypeScript + Monaco Editor（语法高亮 / 搜索 / 折叠 / minimap）+ react-markdown |
 | 桥接 | Tauri 2 (IPC / 事件) |
-| 后端 | Rust (tokio, rusqlite + r2d2, sysinfo, notify, parking_lot, once_cell, quick-xml, reqwest, encoding_rs, windows crate) |
+| 后端 | Rust (tokio, rusqlite + r2d2, sysinfo, notify + notify-debouncer-full, parking_lot, once_cell, quick-xml, reqwest, encoding_rs, windows crate) |
+| Git 集成 | git CLI（只读：status / diff / cat-file / blame），Rust 端统一执行 + 路径校验 + `--` 分隔防注入 |
 | 存储 | SQLite（用户配置目录），`PRAGMA user_version` 幂等迁移 |
 | 平台 | Windows（Job Object + CREATE_NEW_PROCESS_GROUP） |
 

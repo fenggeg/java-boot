@@ -135,7 +135,9 @@ export default function FilePanel({
       .then((a) => {
         if (cancelled) return;
         setGitInfo(a);
-        if (a.isRepo && a.repoRoot) void loadGitStatuses(a.repoRoot);
+        // 注意：git 命令基准始终用 project.root_path（filePath 是项目相对路径）；
+        // 真实仓库根由后端 rev-parse 解析，子目录仓库场景下路径换算在 git_cli 完成
+        if (a.isRepo) void loadGitStatuses(project.root_path);
       })
       .catch(() => {
         if (!cancelled)
@@ -151,13 +153,13 @@ export default function FilePanel({
 
   // 后端 git://changed → 刷新文件树状态
   useEffect(() => {
-    if (!gitEnabled || !gitInfo.repoRoot) return;
+    if (!gitEnabled) return;
     let unlisten: (() => void) | undefined;
     listen<null>(GIT_CHANGED_EVENT, () => {
-      if (gitInfo.repoRoot) void loadGitStatuses(gitInfo.repoRoot);
+      void loadGitStatuses(project.root_path);
     }).then((f) => (unlisten = f));
     return () => unlisten?.();
-  }, [gitEnabled, gitInfo.repoRoot, loadGitStatuses]);
+  }, [gitEnabled, project.root_path, loadGitStatuses]);
 
   // 右键菜单 / 剪贴板 / 重命名弹窗 / 拖拽
   const [ctxMenu, setCtxMenu] = useState<{
@@ -195,7 +197,7 @@ export default function FilePanel({
   const {diff: gitDiff} = useGitGutter(
     editorInstance,
     monaco,
-    gitInfo.repoRoot,
+    project.root_path,
     activeTab && activeTab.fileType === "text" ? activeTab.path : "",
     gitEnabled
   );
@@ -998,9 +1000,9 @@ export default function FilePanel({
                     </div>
                   )}
                 </div>
-                {diffOpen && gitEnabled && gitInfo.repoRoot && (
+                {diffOpen && gitEnabled && (
                   <DiffView
-                    repoRoot={gitInfo.repoRoot}
+                    repoRoot={project.root_path}
                     filePath={activeTab.path}
                     modified={activeTab.content}
                     readonly={activeTab.meta.readonly}

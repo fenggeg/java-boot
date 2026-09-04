@@ -7,6 +7,12 @@
 
 ## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.13.0...HEAD)
 
+## [0.19.1] - 2026-09-04
+
+### 修复
+
+- **子目录仓库（monorepo / submodule）Git 集成错位**：当项目根是 git 仓库的子目录时，前端此前把 `rev-parse --show-toplevel` 解析出的**真实仓库根**当命令基准传参，而 filePath 是**项目根相对**路径——且 git 的 pathspec 以 cwd 为基准、status 输出以仓库根为基准，导致 gutter 变更标记 / 文件树状态 / Diff 对比全部错位或失效。现将 git 命令工作目录统一设为真实仓库根（内部一律用仓库根相对路径做 pathspec），`status_all` 返回路径转回项目根相对（与前端文件树口径一致），前端统一以 `project.root_path` 为命令基准；新增真实 git 集成测试（`integration_subdir_project_relative_paths`）覆盖该场景
+
 ## [0.19.0] - 2026-09-04
 
 ### 新增

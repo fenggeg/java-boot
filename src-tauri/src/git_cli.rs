@@ -175,14 +175,21 @@ impl GitRunner {
         Ok(out.stdout)
     }
 
-    /// 构造基础 command：git + 固定前缀 + 工作目录 + 环境变量
+    /// 构造基础 command：git + 固定前缀 + 工作目录 + 环境变量。
+    ///
+    /// 工作目录用**真实仓库根**（解析后）：git 的 pathspec 以 cwd 为基准、
+    /// status 输出以仓库根为基准，统一 cwd 为仓库根后，内部一律用仓库根相对
+    /// 路径（`rel_of` 的结果）做 pathspec，避免子目录项目（monorepo/submodule）
+    /// 时 pathspec 与 cwd 基准错位。首次 `rev-parse` 时 repo_root 未解析，
+    /// 回退到 project_root（仓库内任意目录都可解析）。
     fn base(&self) -> Command {
         let mut c = Command::new("git");
         // 固定前缀（必须在子命令之前）
         c.arg("--no-optional-locks")
             .arg("-c")
             .arg("core.quotepath=false");
-        c.current_dir(&self.project_root);
+        let cwd = self.repo_root.as_ref().unwrap_or(&self.project_root);
+        c.current_dir(cwd);
         c.env("GIT_TERMINAL_PROMPT", "0");
         c.stdin(Stdio::null());
         c.creation_flags_no_window();
@@ -243,17 +250,41 @@ pub fn git_dir(project_root: &Path) -> Option<PathBuf> {
     Some(PathBuf::from(p))
 }
 
-/// 全仓库 status（-z 输出，NUL 分隔，rename 双字段）
+/// 全仓库 status（-z 输出，NUL 分隔，rename 双字段）。
+///
+/// 返回的路径统一为**项目根相对**（与前端文件树口径一致）：
+/// 项目根是仓库子目录（monorepo / submodule 检出于子目录）时，git 输出以仓库根
+/// 为基准（如 `sub/a.java`），这里剥掉项目前缀转回 `a.java`。
 pub fn status_all(project_root: &Path) -> GitResult<Vec<FileStatusEntry>> {
     let mut r = GitRunner::new(project_root.to_path_buf());
-    r.toplevel()?; // 先校验是仓库
+    let repo_root = r.toplevel()?.clone(); // 先校验是仓库
     let out = r.run_bytes(&[
         "status",
         "--porcelain=v1",
         "-z",
         "--untracked-files=all",
     ])?;
-    Ok(parse_status_z(&out))
+    let mut entries = parse_status_z(&out);
+    if repo_root != project_root {
+        let prefix = project_root
+            .strip_prefix(&repo_root)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        if !prefix.is_empty() {
+            let strip = format!("{}/", prefix);
+            for e in &mut entries {
+                if let Some(rest) = e.path.strip_prefix(&strip) {
+                    e.path = rest.to_string();
+                }
+                if let Some(op) = e.old_path.as_mut() {
+                    if let Some(rest) = op.strip_prefix(&strip) {
+                        *op = rest.to_string();
+                    }
+                }
+            }
+        }
+    }
+    Ok(entries)
 }
 
 /// 单文件 diff（gutter 数据源），按文件状态决定策略
@@ -1013,5 +1044,41 @@ filename src/A.java
         assert_eq!(de.hunks[0].new_lines, 2);
         let _ = std::fs::remove_dir_all(&empty);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn integration_subdir_project_relative_paths() {
+        // 项目根是仓库子目录（monorepo 场景）：git 输出以仓库根为基准，
+        // status_all 需转回项目根相对、file_diff 需能解析子目录内文件
+        let Some(repo) = init_repo() else { return };
+        std::fs::create_dir_all(repo.join("projA")).unwrap();
+        std::fs::write(repo.join("projA/a.java"), "x\n").unwrap();
+        std::fs::write(repo.join("projA/b.java"), "y\n").unwrap();
+        assert!(git_run(&repo, &["add", "projA/a.java", "projA/b.java"]));
+        assert!(git_run(&repo, &["commit", "-q", "-m", "init"]));
+        // 修改子目录内文件
+        std::fs::write(repo.join("projA/a.java"), "x changed\n").unwrap();
+        // 以子目录作为 project_root 调用
+        let proj = repo.join("projA");
+        // status_all：路径应为项目根相对（a.java / b.java），而非仓库根相对（projA/...）
+        let st = status_all(&proj).unwrap();
+        assert!(
+            st.iter().any(|e| e.path == "a.java" && e.status == "modified"),
+            "status_all 应返回项目根相对路径，实际: {:?}",
+            st.iter().map(|e| e.path.as_str()).collect::<Vec<_>>()
+        );
+        assert!(
+            st.iter().any(|e| e.path == "b.java" && e.status == "unmodified")
+        );
+        // file_diff：项目根相对路径应命中子目录内文件
+        let d = file_diff(&proj, "a.java").unwrap();
+        assert_eq!(d.status, "modified");
+        assert_eq!(d.hunks[0].old_lines, 1);
+        // file_at_head / blame 同样以项目根相对路径工作
+        let head = file_at_head(&proj, "a.java").unwrap();
+        assert_eq!(head.as_deref().unwrap(), "x\n");
+        let bl = blame(&proj, "a.java").unwrap();
+        assert_eq!(bl.len(), 1);
+        let _ = std::fs::remove_dir_all(&repo);
     }
 }
