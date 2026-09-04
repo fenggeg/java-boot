@@ -1,0 +1,314 @@
+{
+  "batch": "E_rust_shared_config",
+  "filesReviewed": [
+    "src-tauri/shared/src/lib.rs",
+    "src-tauri/shared/src/consts.rs",
+    "src-tauri/shared/src/model.rs",
+    "src-tauri/shared/src/protocol.rs",
+    "src-tauri/shared/src/redact.rs",
+    "src-tauri/shared/Cargo.toml",
+    "src-tauri/Cargo.toml",
+    "src-tauri/tauri.conf.json",
+    "src-tauri/build.rs",
+    "src-tauri/capabilities/default.json",
+    "src-tauri/daemon/Cargo.toml"
+  ],
+  "issues": [
+    {
+      "type": "security",
+      "level": "high",
+      "file": "src-tauri/shared/src/redact.rs",
+      "line": 8,
+      "message": "敏感键名匹配词列表不完整，缺少 PRIVATE、CERT、PASSPHRASE、AUTH、BEARER、ACCESS、SECRET_ID、APPSECRET 等常见敏感字段模式。例如 PRIVATE_KEY、CLIENT_SECRET、AUTH_TOKEN、BEARER_TOKEN、ACCESS_KEY 等虽能被部分命中，但 PRIVATE、AUTH、BEARER、ACCESS 等独立词未列入，存在敏感环境变量未被脱敏而泄漏到持久化库与日志的风险。",
+      "suggestion": "扩展 SENSITIVE_SUBSTRINGS 列表，至少补充 PRIVATE、CERT、PASSPHRASE、AUTH、BEARER、ACCESS、APPSECRET、APIKEY 等模式；并考虑维护一份白名单以避免误伤（如 KEYSTORE_PATH 这类非敏感路径）。"
+    },
+    {
+      "type": "security",
+      "level": "high",
+      "file": "src-tauri/shared/src/redact.rs",
+      "line": 20,
+      "message": "is_sensitive_key 仅基于键名子串匹配，未覆盖值内容脱敏。当敏感值出现在非敏感键（如自定义业务变量 SPRING_DATASOURCE_URL=jdbc:mysql://user:pwd@host/db，URL 内嵌明文密码）时不会被脱敏，明文凭证会随 env_vars 持久化到 SQLite。",
+      "suggestion": "对 JDBC URL、连接串等已知含密格式做值模式脱敏（如正则匹配 ://user:password@）；或在文档中明确约束 env_vars 仅承载启动所需变量，敏感凭证必须走专用字段并强制脱敏。"
+    },
+    {
+      "type": "security",
+      "level": "medium",
+      "file": "src-tauri/shared/src/redact.rs",
+      "line": 17,
+      "message": "脱敏替换值 REDACTED 为固定字符串 «redacted»，所有敏感键替换后值相同，丢失了值的可区分性。当多个同类型敏感字段（如多个 DB_PASSWORD）被脱敏后无法区分，且固定值易被攻击者识别并绕过展示层校验。",
+      "suggestion": "考虑保留键名哈希前缀或类型标识（如 «redacted:sha256(前4位)»），便于排查与对账，同时不泄漏明文。"
+    },
+    {
+      "type": "security",
+      "level": "medium",
+      "file": "src-tauri/shared/src/model.rs",
+      "line": 39,
+      "message": "ProcessSpec.jvm_args 以 JSON 字符串保存完整 argv，其中可能包含 -Dspring.datasource.password=xxx、-Djavax.net.ssl.keyStorePassword=xxx 等命令行内嵌的明文敏感参数。redact 流程只处理 env_vars，未对 jvm_args 做脱敏，导致明文凭证持久化到 process_spec 表。",
+      "suggestion": "在 from_request 中对 jvm_args 同样执行脱敏扫描：对 -D*=* 形式的系统属性按键名走 is_sensitive_key 判定并替换值；或单独提供 redact_argv 函数处理命令行参数。"
+    },
+    {
+      "type": "security",
+      "level": "medium",
+      "file": "src-tauri/shared/src/model.rs",
+      "line": 42,
+      "message": "ProcessSpec.working_dir、log_file、main_class、classpath_key 等路径/类路径字段未脱敏。虽然注释声称只对 env_vars 脱敏，但 working_dir 可能包含用户名（C:\\Users\\<name>\\...）等隐私信息，log_file 同理。这些字段会随 proc.list / spec.get 下发给 UI 并可能写入日志。",
+      "suggestion": "评估是否需要对路径中的用户名做部分脱敏；至少在跨进程上报与日志输出场景统一处理路径隐私。"
+    },
+    {
+      "type": "security",
+      "level": "high",
+      "file": "src-tauri/shared/src/protocol.rs",
+      "line": 143,
+      "message": "协议缺少认证机制。daemon 监听命名管道 \\\\.\\pipe\\javaboot-daemon，任何同机器同权限进程均可连接并调用 proc.spawn / proc.stop / recovery.takeover 等方法，可被恶意进程利用启动任意命令、停止服务或接管进程。HelloParams 仅携带 client_version 做版本协商，无任何身份凭证校验。",
+      "suggestion": "在握手阶段增加认证：daemon 启动时生成随机 token 写入仅当前用户可读的文件，UI 连接时读取并随 hello 请求提交；daemon 校验 token 后才允许后续方法。或使用命名管道 DACL 限制为当前用户 SID。"
+    },
+    {
+      "type": "security",
+      "level": "medium",
+      "file": "src-tauri/shared/src/protocol.rs",
+      "line": 143,
+      "message": "消息缺少完整性校验。NDJSON 线协议无 MAC/签名，中间进程若能写入管道流可篡改请求/响应（如篡改 proc.spawn 的 argv 注入恶意参数）。依赖命名管道的 OS 级隔离不足以防御同权限进程的注入。",
+      "suggestion": "在握手后协商对称密钥，对每条消息附加 HMAC；或至少对 spawn/stop/recovery 等高危方法签名校验。"
+    },
+    {
+      "type": "security",
+      "level": "medium",
+      "file": "src-tauri/shared/src/protocol.rs",
+      "line": 144,
+      "message": "from_line 直接对任意长度 JSON 调用 serde_json::from_str，未限制单行最大长度。恶意客户端可发送超大单行 JSON 触发内存爆炸（DoS）。虽然 NDJSON 分行，但单行无上限。",
+      "suggestion": "在读取层对单行字节数设上限（如 1MB），超限直接拒绝并断开连接；protocol 层可暴露 MAX_LINE_LEN 常量供 IO 层使用。"
+    },
+    {
+      "type": "security",
+      "level": "medium",
+      "file": "src-tauri/shared/src/protocol.rs",
+      "line": 148,
+      "message": "from_value 解析过于宽松：未校验 jsonrpc 字段是否为 \"2.0\"，未校验 method 是否在白名单内，未限制 params 的深度/大小。任意 JSON 对象只要带 method 或 id 即被接受，便于伪造请求。测试用例 rejects_empty_or_bad_objects 反而把 {\"id\":1} 和 {\"id\":\"str\",\"method\":\"x\"} 当作合法，固化了宽松行为。",
+      "suggestion": "严格校验 jsonrpc == \"2.0\"；method 在已知方法集合内才接受；对 params 递归深度设限。宽松解析仅用于测试不应固化到生产行为。"
+    },
+    {
+      "type": "security",
+      "level": "medium",
+      "file": "src-tauri/shared/src/protocol.rs",
+      "line": 159,
+      "message": "params 字段使用 obj.get(\"params\").cloned() 整体克隆 Value，未限制嵌套深度。深嵌套 JSON（如百万层对象）可触发 serde_json 递归解析栈溢出或性能退化。",
+      "suggestion": "对入站 JSON 设置递归深度限制（serde_json 未内置，需在反序列化前预校验或使用 serde_json::Deserializer 配合 depth 限制）。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src-tauri/shared/src/protocol.rs",
+      "line": 136,
+      "message": "to_line 在序列化失败时回退为 \"{}\"，吞掉了错误。\"{}\" 既非合法 JSON-RPC 请求也非响应，对端 from_line 会将其解析为缺少 method/id 的对象并返回 Err，但调用方无法区分是序列化失败还是网络问题，且响应丢失 id 导致对端无法匹配请求，可能造成客户端永久挂起。",
+      "suggestion": "to_line 应返回 Result<String, Error>，由调用方决定错误处理（如断开连接并记录日志），避免静默产出非法消息。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src-tauri/shared/src/model.rs",
+      "line": 61,
+      "message": "serde_json::to_string(&req.argv).unwrap_or_else(|_| \"[]\".to_string()) 在序列化失败时回退为空数组 \"[]\"，丢失了完整启动参数。后续 argv() 反解析得到空 Vec，导致崩溃恢复模糊匹配与重放失败，且无任何日志提示。",
+      "suggestion": "序列化失败应传播错误或记录日志，不应静默回退为空数组；argv 序列化失败属于不可恢复的编程错误，应 panic 或向上返回 Result。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/shared/src/model.rs",
+      "line": 75,
+      "message": "argv() 使用 unwrap_or_default() 静默吞掉反序列化错误，返回空 Vec。当 jvm_args 字段损坏时调用方无法感知，可能导致重放启动失败而原因不明。",
+      "suggestion": "返回 Result<Vec<String>, Error> 或记录日志提示字段损坏，便于排查。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/shared/src/model.rs",
+      "line": 191,
+      "message": "chrono_now_ms 在 SystemTime::now() 早于 UNIX_EPOCH（系统时钟异常）时返回 0，吞掉错误。时间戳 0 会被持久化为 created_at/started_at，导致日志排序与保留策略失效，且无告警。",
+      "suggestion": "时钟异常应记录日志或返回 Result；至少在返回 0 时上层应有兜底逻辑（如使用上次已知时间）。"
+    },
+    {
+      "type": "security",
+      "level": "high",
+      "file": "src-tauri/tauri.conf.json",
+      "line": 26,
+      "message": "CSP connect-src 包含硬编码外部域名 https://node-red.gyfwork.cc.cd，允许前端直接向该外部服务发起请求。该域名看起来是个人/内网 Node-RED 实例，存在数据外泄风险；且域名后缀 .cc.cd 可疑。同时该域名在 capabilities/default.json 的 http:default allow 列表中再次出现，双重放行。",
+      "suggestion": "确认该外部域名的必要性与安全性；若仅用于开发调试，应移到 dev 专用配置；生产构建应移除该 connect-src 条目与 http allow 规则，或改为可配置项。"
+    },
+    {
+      "type": "security",
+      "level": "medium",
+      "file": "src-tauri/tauri.conf.json",
+      "line": 26,
+      "message": "CSP script-src 包含 'wasm-unsafe-eval'，允许 WebAssembly 内的 eval 行为。虽然 WASM 沙箱相对安全，但结合 style-src 'unsafe-inline'，整体 CSP 偏宽松，削弱了 XSS 防护。",
+      "suggestion": "确认 wasm-unsafe-eval 是否必需；若仅用于框架运行时，可保留但应在代码评审中持续监控；style-src 'unsafe-inline' 若非必要应收紧为 nonce-based。"
+    },
+    {
+      "type": "security",
+      "level": "medium",
+      "file": "src-tauri/tauri.conf.json",
+      "line": 27,
+      "message": "freezePrototype 设为 false，未冻结 Object.prototype。在加载第三方内容或存在 XSS 注入点时，原型污染攻击更易成功。",
+      "suggestion": "设为 true 以冻结原型链，增强前端运行时安全（需确认前端框架兼容）。"
+    },
+    {
+      "type": "security",
+      "level": "medium",
+      "file": "src-tauri/capabilities/default.json",
+      "line": 19,
+      "message": "permissions 包含 opener:default，tauri-plugin-opener 默认允许通过系统默认程序打开任意 URL/文件。结合前端可能的用户输入，可被诱导打开恶意文件或 URL（如 file:// 路径、可执行文件）。",
+      "suggestion": "将 opener 权限收紧为具体 allow 列表，仅允许预期的 URL scheme（如 https://）或特定文件类型；避免使用 :default 全量放行。"
+    },
+    {
+      "type": "security",
+      "level": "medium",
+      "file": "src-tauri/capabilities/default.json",
+      "line": 18,
+      "message": "dialog:default 全量放行对话框插件默认权限，未限定具体命令。tauri-plugin-dialog 默认允许 open/save 等文件对话框，配合前端逻辑可访问任意文件系统路径。",
+      "suggestion": "评估是否需要限定 dialog 的具体权限范围（如仅允许特定目录或文件类型），遵循最小权限原则。"
+    },
+    {
+      "type": "security",
+      "level": "low",
+      "file": "src-tauri/capabilities/default.json",
+      "line": 6,
+      "message": "capabilities 仅有一个 default.json，所有权限集中授予 main 窗口。未按窗口/功能拆分 capability，导致 main 窗口持有全部权限，违反最小权限原则。若未来新增窗口（如 about、settings），将无法差异化授权。",
+      "suggestion": "按功能域拆分 capability 文件（如 main.json、scan.json、recovery.json），每个窗口仅授予所需权限。"
+    },
+    {
+      "type": "security",
+      "level": "medium",
+      "file": "src-tauri/Cargo.toml",
+      "line": 21,
+      "message": "tauri 依赖 features = [] 显式空，但未禁用危险 feature。同时未在 Cargo.toml 中配置 [alias] 或 deny.toml / cargo-audit 配置文件，缺少依赖漏洞扫描机制。reqwest、rusqlite、windows 等依赖版本范围宽松（如 1.0、0.32），可能引入已知漏洞版本。",
+      "suggestion": "引入 cargo-audit 或 cargo-deny 配置文件，在 CI 中执行依赖漏洞扫描；考虑锁定依赖具体版本或使用 Cargo.lock 提交策略。"
+    },
+    {
+      "type": "security",
+      "level": "low",
+      "file": "src-tauri/Cargo.toml",
+      "line": 47,
+      "message": "reqwest 使用 rustls-tls feature，未指定 rustls 的具体版本，依赖 reqwest 传递引入。rustls 版本若过旧可能存在已知 TLS 漏洞。同时 default-features = false 后仅启用 stream + rustls-tls，未启用 native-tls，需确认 TLS 根证书来源。",
+      "suggestion": "在 cargo-deny 中监控 rustls 版本；确认 rustls-tls 使用的根证书集（webpki-roots）是否满足目标环境的 TLS 验证需求。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/Cargo.toml",
+      "line": 5,
+      "message": "authors = [\"you\"] 为占位符，未填写真实作者信息。虽不影响功能，但影响制品元数据质量与可维护性。",
+      "suggestion": "填写真实作者或团队信息，或移除该字段。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/Cargo.toml",
+      "line": 10,
+      "message": "crate-type 同时包含 staticlib、cdylib、rlib 三种类型。对于 Tauri 应用，通常只需 cdylib（移动端/桌面端）和 rlib（内部测试）。staticlib 会增加编译产物体积与编译时间，若无 C FFI 需求属于冗余。",
+      "suggestion": "确认是否需要 staticlib；若仅用于 Tauri 桌面应用，移除 staticlib 以加快构建。"
+    },
+    {
+      "type": "performance",
+      "level": "low",
+      "file": "src-tauri/shared/src/protocol.rs",
+      "line": 159,
+      "message": "from_value 中 obj.get(\"params\").cloned() 对 params Value 做整体深拷贝。对于大体积 params（如 scan.done 事件的 tree 数组、log.tail 的 entries）会产生不必要的 clone 开销，且在消息高频时累积。",
+      "suggestion": "考虑使用 serde_json::Value::take 或借用引用避免深拷贝；或重构 from_value 接受 owned Value 并 take 字段。"
+    },
+    {
+      "type": "performance",
+      "level": "low",
+      "file": "src-tauri/shared/src/model.rs",
+      "line": 54,
+      "message": "from_request 中对 env_vars 先 redact_map 构造 serde_json::Map，再 serde_json::to_string 序列化为字符串存储。SpawnRequest.env_vars 本身是 BTreeMap<String,String>，redact_map 又重建一个 Map，存在一次中间数据结构转换开销。对于环境变量数量通常较小影响有限，但流程可简化。",
+      "suggestion": "可直接对 BTreeMap 迭代脱敏后 to_string，省去中间 Map 构造；或提供 redact_map_to_string 直接产出 JSON 字符串。"
+    },
+    {
+      "type": "architecture",
+      "level": "low",
+      "file": "src-tauri/shared/src/protocol.rs",
+      "line": 125,
+      "message": "Message enum 持有 owned Request/Response/Notification，每次 to_line/from_line 都涉及克隆。协议层未提供借用版本（如 MessageRef），在高频日志推送场景（log.append 每条一次 Notification）会产生额外分配。",
+      "suggestion": "评估是否为高频通知路径提供零拷贝或借用 API；当前规模下可接受，但应在性能基线中监控。"
+    },
+    {
+      "type": "architecture",
+      "level": "low",
+      "file": "src-tauri/shared/src/protocol.rs",
+      "line": 56,
+      "message": "错误码 ERR_HANDSHAKE_REQUIRED 与 ERR_VERSION_INCOMPATIBLE 取正数避免与 JSON-RPC 标准段冲突，但未在 protocol 层提供从错误码到错误消息的映射或构造辅助函数。调用方需手动拼接 RpcError，易出现消息不一致。",
+      "suggestion": "为每个错误码提供 const fn 或关联函数构造 RpcError（如 RpcError::handshake_required()），统一消息文案。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/shared/src/protocol.rs",
+      "line": 377,
+      "message": "测试用例 rejects_empty_or_bad_objects 断言 {\"id\":\"str\",\"method\":\"x\"} 被接受为 Notification，固化了字符串 id 被静默降级为通知的宽松行为。这掩盖了协议严格性问题，未来收紧校验时该测试会阻碍重构。",
+      "suggestion": "若决定收紧校验，同步更新测试；当前应在测试注释中标注此为已知宽松行为而非期望行为。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/shared/src/consts.rs",
+      "line": 10,
+      "message": "MIN_CLIENT_VERSION 硬编码为 \"0.16.0\"，与 Cargo.toml 中 javaboot-launcher version \"0.19.2\" 和 jb-core version \"0.1.0\" 不一致。版本号分散在多处常量与 Cargo.toml，易出现版本漂移与不一致。",
+      "suggestion": "考虑统一版本来源（如通过 build.rs 从 Cargo.toml 注入 MIN_CLIENT_VERSION），避免手动维护多处版本号。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/shared/src/consts.rs",
+      "line": 4,
+      "message": "PIPE_NAME 硬编码为 \\\\.\\pipe\\javaboot-daemon，未包含用户名或实例标识。多用户共用同一台机器时，不同用户的 daemon 会争抢同一管道名，导致冲突或跨用户连接。",
+      "suggestion": "管道名拼接当前用户 SID 或用户名（如 \\\\.\\pipe\\javaboot-daemon-<sid>），实现用户级隔离。"
+    },
+    {
+      "type": "architecture",
+      "level": "low",
+      "file": "src-tauri/shared/src/lib.rs",
+      "line": 11,
+      "message": "lib.rs 声称「零 IO、零 runtime 依赖」，但 model.rs 中 chrono_now_ms 使用 std::time::SystemTime 获取系统时间，属于隐式 IO 依赖（系统时钟）。虽不违反字面声明，但时间获取逻辑放在纯模型 crate 中模糊了边界。",
+      "suggestion": "将 now_ms / chrono_now_ms 移至调用方（daemon/launcher），model crate 仅承载时间戳字段，由外部注入时间，便于测试与边界清晰。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/shared/src/model.rs",
+      "line": 186,
+      "message": "chrono_now_ms 函数名暗示使用 chrono crate，但实际使用 std::time::SystemTime，未使用 chrono。函数名具有误导性，且 chrono 已在主 Cargo.toml 中作为依赖，shared crate 却未使用，命名易混淆。",
+      "suggestion": "重命名为 system_now_ms 或 now_ms_from_system_time，消除与 chrono 的关联暗示。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/shared/src/protocol.rs",
+      "line": 174,
+      "message": "Response 解析时 error 字段使用 serde_json::from_value(e).ok() 静默吞掉反序列化错误。若对端发送格式错误的 error 对象，本端会得到 error=None 的 Response，调用方误以为成功，可能引发逻辑错误。",
+      "suggestion": "error 反序列化失败应记录日志或返回 Err，不应静默丢弃；至少在 error 字段存在但解析失败时标记为通用错误。"
+    },
+    {
+      "type": "security",
+      "level": "low",
+      "file": "src-tauri/tauri.conf.json",
+      "line": 21,
+      "message": "windows.webviewInstallMode 使用 downloadBootstrapper，安装时从网络下载 WebView2 运行时。若构建环境或用户网络被劫持，可能下载到被篡改的 WebView2。虽微软提供签名校验，但增加了供应链攻击面。",
+      "suggestion": "评估是否可改为 embedBootstrapper 或 offlineInstall 模式，将 WebView2 安装包打包进应用，减少运行时网络依赖。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/tauri.conf.json",
+      "line": 45,
+      "message": "nsis.installMode 为 currentUser，仅安装到当前用户目录。虽对用户友好（无需管理员权限），但意味着 daemon（javaboot-daemon.exe）也安装到用户目录，同权限恶意进程可替换 daemon 二进制实现持久化攻击。",
+      "suggestion": "评估 daemon 二进制是否需要文件完整性校验（如签名验证、哈希校验）以防止被替换；或考虑将 daemon 安装到需管理员权限的 Program Files 目录。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/build.rs",
+      "line": 1,
+      "message": "build.rs 仅调用 tauri_build::build()，未对生成的 capabilities schema 或前端 dist 做任何校验。构建时缺少对 tauri.conf.json 与 capabilities 配置一致性的检查，配置错误可能到运行时才暴露。",
+      "suggestion": "可在 build.rs 中增加配置文件存在性校验或 schema 校验，提前发现配置问题。"
+    }
+  ]
+}

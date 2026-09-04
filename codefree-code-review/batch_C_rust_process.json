@@ -1,0 +1,406 @@
+{
+  "batch": "C_rust_process",
+  "filesReviewed": [
+    "src-tauri/src/process/mod.rs",
+    "src-tauri/src/process/manager.rs",
+    "src-tauri/src/process/build.rs",
+    "src-tauri/src/process/env.rs",
+    "src-tauri/src/process/delegate.rs",
+    "src-tauri/src/process/job.rs",
+    "src-tauri/src/process/log_pipe.rs"
+  ],
+  "issues": [
+    {
+      "type": "architecture",
+      "level": "high",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 188,
+      "message": "ProcessManager 承担了进程生命周期管理、Maven 构建编排、classpath 解析、端口冲突检测、资源指标采集、依赖拓扑编排、打包、批量启停等十余种职责，达 3045 行，是典型的 God Object。单一职责被严重违反，难以独立测试和维护。",
+      "suggestion": "按职责拆分为独立模块：ProcessLauncher（spawn/Job 绑定）、BuildOrchestrator（mvn 编译/classpath/打包）、RuntimeStore（runtimes 状态/指标/端口）、DependencyScheduler（拓扑排序与批量编排）。ProcessManager 仅作为门面聚合调用。"
+    },
+    {
+      "type": "architecture",
+      "level": "high",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 1027,
+      "message": "start() 方法单函数约 390 行（1027-1414），承担 placeholder 准备、env 解析、构建策略决策、classpath 解析、主类探测、java 参数构造、命令行超长处理（argfile/CLASSPATH）、daemon 载荷构造、spawn 委托等全部流程，嵌套深、分支多，可读性与可测试性差。",
+      "suggestion": "将 start() 拆分为 prepare_launch_env()、resolve_classpath()、build_java_command()、maybe_delegate_to_daemon() 等子函数，start() 仅做编排。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "medium",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 656,
+      "message": "prepare_start_placeholder() 内嵌套深度达 6 层以上（handles 锁→existing→pid>0→drop 锁→SYS 锁→重新 handles 锁→runtimes 锁），逻辑复杂且锁获取/释放交错，极易在后续维护中引入锁顺序错误。",
+      "suggestion": "抽取 check_existing_running_pid()、cleanup_stale_placeholder() 等小函数，每个函数只持有一把锁并快速返回布尔结果，由调用方据此决策。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 309,
+      "message": "restore_running_services() 在持有 handles 锁的循环内反复获取 runtimes 锁（self.runtimes.lock()），每次循环都加锁/解锁，且与文档约定的锁顺序（handles 在 runtimes 之前）一致但持锁跨度长，存在与 set_status 等并发路径争用的风险。",
+      "suggestion": "在进入 handles 锁前一次性构建 service_id→pid 的判定集合，或先在 runtimes 锁内快照所需状态再释放，避免在 handles 锁内嵌套获取 runtimes 锁。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 901,
+      "message": "spawn_and_monitor() 中 child.id().unwrap_or(0) 后，若 pid==0（理论上 spawn 成功但取不到 pid），后续仍继续创建 Job Object 并进入日志读取流程，pid=0 的 handle 会导致 stop/kill 逻辑失效（kill_process_tree_by_pid(0) 无意义）。",
+      "suggestion": "pid==0 时应判定为异常并清理 handle、返回错误，而非继续走监控流程。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 1614,
+      "message": "resolve_classpath_via_mvn() 与 build_and_resolve_classpath() 在 mvn 执行成功后用 std::fs::read_to_string(&cp_file).unwrap_or_default() 读取 classpath 文件，文件不存在或读取失败时静默返回空串，随后才报 'classpath 输出为空'，丢失了真实 IO 错误原因。",
+      "suggestion": "用 match 处理 read_to_string 结果，将 IO 错误信息包含在返回的 AppError 中，便于排查权限/路径问题。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 2772,
+      "message": "resolve_cwd_and_module() 中 working_dir.canonicalize().unwrap_or_default() 在 canonicalize 失败时返回空 PathBuf，后续 strip_prefix 会失败并 fallback 到空字符串 module_rel，可能导致 mvn 在错误目录执行而无 -pl 参数。",
+      "suggestion": "canonicalize 失败时记录 warn 日志并显式返回 working_dir 本身作为 cwd，而非空 PathBuf。"
+    },
+    {
+      "type": "performance",
+      "level": "medium",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 428,
+      "message": "refresh_resource_usage() 在 changed 为 true 时，重新获取 runtimes 锁并克隆所有含 cpu_usage/memory_mb 的 ServiceRuntime（可能包含非本次变化的服务），随后逐个 emit。注释声称'只 emit 发生变化的服务'，但 filter 条件是'有 CPU/内存数据'而非'本次变化'，与注释不符，服务多时仍会推送冗余事件。",
+      "suggestion": "在阶段 2 写回时记录本次真正变化的 service_id 列表，emit 时只取这些 id 对应的快照。"
+    },
+    {
+      "type": "performance",
+      "level": "low",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 233,
+      "message": "all_runtimes() 每次调用都克隆整个 runtimes HashMap 的全部 ServiceRuntime 值，被 restore_running_services 等处用于遍历 emit，服务数量多时分配开销大。",
+      "suggestion": "提供 all_runtimes_with_filter(predicate) 或在锁内直接执行 emit 回调，避免全量克隆。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "medium",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 2506,
+      "message": "start_with_dependencies() 中等待依赖就绪的循环代码缩进混乱（deadline 行缩进异常、loop 块缩进与外层 for 不一致），表明可能经过多次手动修补，可读性差且易隐藏逻辑错误。",
+      "suggestion": "统一缩进风格，或将'等待服务就绪'逻辑抽取为 wait_until_running(sid, timeout) 公共函数，供 start_with_dependencies 和 start_services_batch 复用。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "medium",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 2603,
+      "message": "start_services_batch() 中等待 Running 的轮询循环（2603-2635）与 start_with_dependencies() 的等待逻辑（2506-2525）几乎完全重复，且缩进同样混乱，属于明显的代码重复。",
+      "suggestion": "抽取 wait_for_status(sid, deadline) -> Result<(), AppError> 公共函数消除重复。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "medium",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 2177,
+      "message": "clean_service、package_service、recompile_and_start、compile_and_start 四个方法中'清理 pid==0 的 placeholder handle'的代码块（获取 handles 锁、检查 pid==0、store kill_token、remove）完全重复出现 5 次以上。",
+      "suggestion": "抽取 cleanup_placeholder_handle(service_id) 方法统一调用。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 2135,
+      "message": "clean_service() 中 action_desc 的两个分支（module_rel 为空与否）返回相同的字符串 '清理当前模块'，三元/分支判断无意义，属死代码。",
+      "suggestion": "删除无效分支，直接使用固定字符串。package_service() 第 2264 行存在同样问题。"
+    },
+    {
+      "type": "security",
+      "level": "medium",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 995,
+      "message": "进程退出 reaper 中读取 argfile 内容并推送到前端日志时，对每行做 &l[..200] 切片预览，若该行包含多字节 UTF-8 字符且恰好在 200 字节边界处截断，会触发 panic（字节索引落在字符中间）。",
+      "suggestion": "用 l.chars().take(200).collect::<String>() 或 floor_char_boundary 做字符边界安全的截断。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 969,
+      "message": "spawn_and_monitor() 中 tokio::spawn 的 reaper 任务在进程退出后调用 get_manager().handles.lock().remove(&sid3)，但若此时 ProcessManager 单例已析构（应用关闭竞态），Lazy 静态不会析构所以实际安全；然而 reaper 内对 child.wait() 的错误仅 emit 日志后 set_status(Error)，未清理 compile_pid 对应的编译子进程，可能残留 mvn 子进程。",
+      "suggestion": "reaper 中也应检查并 kill compile_pid 槽位中的子进程。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 1032,
+      "message": "start() 内定义了 check_cancel! 和 try_cleanup! 两个宏用于错误清理，宏在函数内部定义降低了可读性且无法复用，且宏展开后的清理逻辑（handles.lock().remove + set_status(Stopped)）与多处手写清理重复。",
+      "suggestion": "改为普通闭包或私有方法 fail_start(service_id, app, err) 统一清理，避免宏。"
+    },
+    {
+      "type": "performance",
+      "level": "low",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 2946,
+      "message": "get_cached_module_classes_map() 缓存命中时返回 map.clone()，对大项目（数十模块）每次都克隆整个 HashMap，批量启动时 TTL 窗口内多次克隆产生不必要的分配。",
+      "suggestion": "返回 Arc<HashMap> 或在锁内直接执行 classpath 组装回调，避免克隆。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 2839,
+      "message": "topo_sort_multi() 的文档注释（2835-2838 行）被合并到了 topo_sort 的注释块（2828-2834）之后，两个函数的 doc 注释粘连，topo_sort_multi 实际缺少独立的文档注释开头标识。",
+      "suggestion": "为 topo_sort_multi 添加独立的 /// 文档注释块。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 2433,
+      "message": "stop_all() 在获取 handles 锁收集 ids 后释放锁，再逐个 spawn stop 任务。但在收集与 spawn 之间，其他路径可能新增 handle 或移除 handle，stop 的 ids 快照可能与实际不一致。虽不致命（stop 不存在的 id 会走 set_status(Stopped) 兜底），但可能遗漏新增的服务。",
+      "suggestion": "若需严格'停止全部'，可在锁内标记所有 id 后再 spawn，或接受当前尽力而为语义并在文档中注明。"
+    },
+    {
+      "type": "security",
+      "level": "low",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 82,
+      "message": "encode_argfile() 使用 extern \"system\" { fn GetACP() } 直接声明 Windows API 而非通过 windows crate，缺少 SAFETY 注释说明为何该 FFI 声明是安全的（虽 GetACP 无参数无副作用，但不符合 unsafe 代码注释规范）。",
+      "suggestion": "添加 SAFETY 注释说明 GetACP 是无参数、无副作用的纯查询函数；或改用 windows::Win32::System::WindowsProgramming::GetACP 统一来源。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src-tauri/src/process/build.rs",
+      "line": 206,
+      "message": "wait_with_timeout() 用 100ms 间隔的 try_wait 轮询实现超时，在 spawn_blocking 线程上忙轮询 sleep，600 秒超时下最多 6000 次轮询。虽不阻塞 async runtime，但占用 spawn_blocking 线程池槽位长达 10 分钟，若多个服务同时编译可耗尽线程池。",
+      "suggestion": "考虑用 Child::wait 配合独立 watchdog 线程 + channel，或限制并发编译数量，避免长时间占用 blocking 线程。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src-tauri/src/process/build.rs",
+      "line": 98,
+      "message": "run_mvn_once() 起两个 std::thread 读取 stdout/stderr，主线程在 wait_with_timeout 后 join 这两个线程。若 wait_with_timeout 超时强杀进程，管道关闭后读线程会正常退出；但若读线程因 BufReader 阻塞且进程子进程（mvn -T 1C 衍生的子进程）仍持有管道写端，读线程可能不退出，join 无超时会永久阻塞 spawn_blocking 线程。",
+      "suggestion": "为 join 添加超时（如 join_timeout 或用 channel 通知），超时后 detach 读线程避免阻塞 blocking 池。"
+    },
+    {
+      "type": "performance",
+      "level": "medium",
+      "file": "src-tauri/src/process/build.rs",
+      "line": 92,
+      "message": "run_mvn_once() 用 Arc<PMutex<String>> 累积 mvn 全量输出（collected），大项目编译输出可达数 MB 至数十 MB，每行都 lock+push_str+lock+push_str（两次加锁），高并发编译时锁争用严重且内存随输出线性增长。",
+      "suggestion": "仅在需要离线失败检测时累积输出；可用 thread-local 缓冲后批量追加，或限制累积上限（如超过 1MB 只保留尾部）。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/process/build.rs",
+      "line": 101,
+      "message": "stdout 读线程中 sink_out.lock().push_str(&line); sink_out.lock().push('\\n'); 连续两次获取同一把锁，应合并为一次 lock 调用内完成两次写入，减少锁开销。stderr 读线程（115-116 行）同样。",
+      "suggestion": "let mut buf = sink_out.lock(); buf.push_str(&line); buf.push('\\n');"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/src/process/build.rs",
+      "line": 381,
+      "message": "resolve_pom_placeholders() 中 input[i..].chars().next().unwrap() 在 input 非空时安全，但依赖调用方保证 i < input.len()；若 ${...} 占位符未闭合（无 '}'）分支已 continue，但整体用字节索引 i 配合 chars().next() 混合字节/字符推进，逻辑脆弱。",
+      "suggestion": "改为纯字符迭代（chars().enumerate() + 重组），避免字节索引与字符边界混用。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/src/process/build.rs",
+      "line": 596,
+      "message": "siblings_all_built() 中 current.canonicalize().unwrap_or_else(|_| current.to_path_buf()) 在 canonicalize 失败时用原路径比较，与子目录的 canonicalize 结果比较可能不等（大小写/符号链接差异），导致误判兄弟模块未构建而触发不必要的 CompileAll。",
+      "suggestion": "统一对比较双方做 canonicalize 或都不做，保持一致的比较基准。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/process/build.rs",
+      "line": 67,
+      "message": "run_mvn_once() 有 7 个参数被 #[allow(clippy::too_many_arguments)] 抑制，参数过多表明该函数职责可进一步拆分或用参数结构体封装。",
+      "suggestion": "定义 MvnRunParams { program, args, cwd, env_cfg, compile_pid, app, service_id } 结构体传参。"
+    },
+    {
+      "type": "security",
+      "level": "low",
+      "file": "src-tauri/src/process/build.rs",
+      "line": 36,
+      "message": "strip_verbatim_prefix() 用 to_string_lossy() 将路径转为字符串再 strip_prefix，对含非 Unicode 字符的路径会丢失信息（替换为 U+FFFD），可能导致剥前缀后路径无效。",
+      "suggestion": "用 OsStr 操作或 Path 组件操作处理前缀剥离，保留原始字节。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src-tauri/src/process/env.rs",
+      "line": 69,
+      "message": "parse_env_vars() 在 serde_json::from_str 失败时静默返回空 Vec，不记录日志也不向上传递错误。用户配置了格式错误的 env_vars JSON 时完全无感知，服务启动后环境变量缺失却难以排查。",
+      "suggestion": "解析失败时 log::warn! 记录原始 JSON 与错误信息，或返回 Result 让调用方决定是否报错。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src-tauri/src/process/env.rs",
+      "line": 161,
+      "message": "detect_java_home_from_java_exe() 的缓存清理策略为'超过 64 条直接 cache.clear()'，全量清空会导致后续请求缓存全 miss，批量启动时可能反复执行 java -XshowSettings 探测（每次约 200-500ms），造成性能抖动。",
+      "suggestion": "改用 LRU 淘汰最旧条目而非全量清空，或用容量更大的 HashMap 不做主动清理（key 种类有限）。JAVA_VERSION_CACHE（283 行）同样问题。"
+    },
+    {
+      "type": "security",
+      "level": "medium",
+      "file": "src-tauri/src/process/env.rs",
+      "line": 441,
+      "message": "inject_env() 将 resolve_java_home(cfg) 的结果注入 JAVA_HOME 并拼接到 PATH 前缀，但 resolve_java_home 内部会执行 java -XshowSettings 子进程做反推。inject_env 在每次构造 Command 时调用，若 cfg.java_home 为空且 PATH 中有 java，批量启动多个服务时会重复 spawn java 进程做反推（虽有缓存但首次仍阻塞）。",
+      "suggestion": "在 start() 入口处一次性解析 EnvConfig 时预计算 java_home 并存入 EnvConfig 字段，inject_env 直接读取而非每次调用 resolve_java_home。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/process/env.rs",
+      "line": 458,
+      "message": "inject_env() 无条件设置 MAVEN_OPTS='-Xmx1g -Dfile.encoding=UTF-8'（与用户已有值合并），即使用户显式配置了 -Xmx2g 也会变成 '-Xmx2g -Xmx1g -Dfile.encoding=UTF-8'，JVM 取最后一个 -Xmx 生效，实际堆被降为 1g，与用户意图相反。",
+      "suggestion": "检测用户 MAVEN_OPTS 中是否已含 -Xmx，若已含则不追加 MAVEN_OPTS_BASE 中的 -Xmx，仅补 file.encoding。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/src/process/env.rs",
+      "line": 577,
+      "message": "merge_registry_path() 中 std::env::join_paths(all_dirs).unwrap_or_else(|_| cur_path.clone().into()) 在 join_paths 失败（路径含非法字符）时回退到原始 PATH，但未记录任何日志，用户无法感知合并失败。",
+      "suggestion": "join_paths 失败时 log::warn! 记录原因。"
+    },
+    {
+      "type": "security",
+      "level": "low",
+      "file": "src-tauri/src/process/env.rs",
+      "line": 582,
+      "message": "merge_registry_path() 调用 std::env::set_var(\"PATH\", ...) 修改全局进程环境变量，在多线程环境下 set_var 不是线程安全的（Rust 1.66+ 标记为 unsafe）。若其他线程正在读 PATH（如 which_java），可能读到不一致状态。",
+      "suggestion": "确保 merge_registry_path 仅在应用启动单线程阶段调用（文档已注明'最早期执行'，建议加 assert 或运行时检查），或用 Mutex 保护环境变量访问。set_var JAVA_HOME/MAVEN_HOME（594/608/618 行）同样问题。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/process/env.rs",
+      "line": 273,
+      "message": "detect_java_major_version() 用 format!(\"{}\\\\bin\\\\java.exe\", java_home) 硬编码 Windows 路径分隔符，在非 Windows 平台会构造错误路径。虽该模块整体偏 Windows，但 CP_SEP 等常量已做平台区分，此处不一致。",
+      "suggestion": "用 PathBuf::from(java_home).join(\"bin\").join(\"java\") 构造跨平台路径，或加 #[cfg(windows)] 明确限定。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src-tauri/src/process/delegate.rs",
+      "line": 39,
+      "message": "DaemonBridge::register() 中先 lock fwd 再 lock rev，但 register 在持有 fwd 锁时获取 rev 锁（两次分别 lock），而 normalize_event 的 Disconnected 分支同时 lock fwd 和 lock rev（289-290 行连续两次 lock）。虽 parking_lot 不会自死锁（不同 Mutex 实例），但 register 与 Disconnected 并发时，register 持 fwd 锁期间 Disconnected 拿不到 fwd 先拿 rev，可能交叉等待。实际 parking_lot 无重入问题，但双锁操作非原子，register 过程中 Disconnected 清空 fwd 后 register 仍写入 rev，导致 rev 有条目而 fwd 无对应条目（孤儿反向映射）。",
+      "suggestion": "用单一结构体 (service_id, run_id) 或将 fwd/rev 合并为一个 Mutex<HashMap> 保证原子性；或在 Disconnected 时也按 register 的锁顺序操作。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src-tauri/src/process/delegate.rs",
+      "line": 117,
+      "message": "spawn_service() 中 pid = v.get(\"pid\").as_u64().map(|p| p as u32).unwrap_or(0)，daemon 未返回 pid 时默认 0 并继续注册 bridge 映射。pid=0 会被 set_pid 写入 runtime 和 DB，后续 stop/kill 用 pid=0 调 kill_process_tree_by_pid(0) 无效，且 restore_running_services 会因 pid=0 的进程名校验失败而清理，导致服务状态不一致。",
+      "suggestion": "pid==0 时应视为 daemon 异常，返回错误或至少 log::warn 并不写 set_pid。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/src/process/delegate.rs",
+      "line": 276,
+      "message": "adopt_local_processes() 中 entry.run_id.unwrap_or(0) 在 daemon 返回的 run_id 为 None 时用 0 注册 bridge，run_id=0 会导致后续 stop_service 查 run_of 返回 Some(0)，向 daemon 发 STOP {run_id:0} 可能误操作或失败。",
+      "suggestion": "run_id 为 None 时跳过该服务的纳管并 log::warn。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/src/process/delegate.rs",
+      "line": 250,
+      "message": "adopt_local_processes() 中 serde_json::from_value(pending).unwrap_or_default() 在反序列化失败时静默返回空 Vec，导致 rescan 结果被丢弃但流程继续，用户无感知。",
+      "suggestion": "反序列化失败时 log::warn! 记录错误。rebind() 中 load_all_run_pids 失败时 Err(_) => return Ok(())（214 行）同样静默，建议至少 log。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/process/delegate.rs",
+      "line": 285,
+      "message": "normalize_event() 是 pub fn 但直接访问 bridge().fwd.lock() 和 bridge().rev.lock()（289-290 行）绕过了 DaemonBridge 封装的方法（clear 应提供 clear_all 方法），破坏了封装性。",
+      "suggestion": "在 DaemonBridge 上提供 clear_all() 方法，normalize_event 调用该方法。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/src/process/delegate.rs",
+      "line": 339,
+      "message": "tests 中 override_and_cleanup 测试的注释 '覆盖，旧 run 2? 不对，覆盖 a 与 b 无关' 表明测试用例本身存在困惑，注释在质疑自己的断言。register(\"a\",3) 覆盖 a 的旧 run_id 1，应清理 rev 中的 1，测试断言 service_of(1)==None 正确，但注释让人困惑。",
+      "suggestion": "修正注释为清晰描述：'register a=3 覆盖 a=1，旧 run_id 1 的反向映射应被清理'。"
+    },
+    {
+      "type": "security",
+      "level": "low",
+      "file": "src-tauri/src/process/job.rs",
+      "line": 22,
+      "message": "unsafe impl Send for JobObject {} 和 unsafe impl Sync for JobObject {} 缺少 SAFETY 注释说明为何 HANDLE 可以安全跨线程发送/共享。注释仅提到'仅通过 Mutex 串行访问'，但 Sync 的安全性依赖外部 Mutex 约束，若未来有代码绕过 Mutex 直接访问 handle，Soundness 会被破坏。",
+      "suggestion": "添加详细 SAFETY 注释：说明 Sync 安全性依赖 handle 仅在持有外部 Mutex 时访问的约定，且该约定需在所有使用处维护。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/src/process/job.rs",
+      "line": 71,
+      "message": "kill() 中 TerminateJobObject 和 CloseHandle 的返回值都被 let _ 忽略，若 TerminateJobObject 失败（权限不足等），调用方无感知，进程树可能未被杀掉，后续 stop 流程会误以为已终止。",
+      "suggestion": "至少 log::warn! 记录 TerminateJobObject 失败，或返回 Result 让调用方决定回退策略。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/src/process/job.rs",
+      "line": 57,
+      "message": "assign() 在 self.handle 为 None 时返回 io::Error，但 handle 为 None 通常意味着 Job 已被 kill 或 drop，属预期生命周期事件而非 IO 错误，用 ErrorKind::Other 语义不准确。",
+      "suggestion": "用 ErrorKind::InvalidData 或自定义错误类型更准确表达'句柄已关闭'。"
+    },
+    {
+      "type": "performance",
+      "level": "low",
+      "file": "src-tauri/src/process/log_pipe.rs",
+      "line": 50,
+      "message": "strip_ansi_codes() 对每行日志都分配新的 String（with_capacity(s.len())），Java 服务高吞吐日志时（如数百行/秒）产生大量短生命周期分配。",
+      "suggestion": "可接受（行级日志频率有限），但若极端吞吐场景可考虑复用线程局部缓冲或就地修改。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/src/process/log_pipe.rs",
+      "line": 46,
+      "message": "emit_log_raw() 中 app.emit(\"service://log\", payload) 的返回值被 let _ 忽略，emit 失败（如前端通道关闭）时无日志记录，可能导致日志丢失且无排查线索。",
+      "suggestion": "emit 失败时 log::trace! 记录（避免高频日志导致 warn 刷屏）。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/process/log_pipe.rs",
+      "line": 141,
+      "message": "check_failed() 中运算符优先级：line.contains(\"Error creating bean\") && line.contains(\"Failed to instantiate\") 与前面的 || 组合时，&& 优先级高于 ||，逻辑为 A||B||(C&&D)，虽语义正确但缺乏括号显式化，易被误读为 (A||B||C)&&D。",
+      "suggestion": "为最后一组 && 条件加括号：(line.contains(\"Error creating bean\") && line.contains(\"Failed to instantiate\"))。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/process/log_pipe.rs",
+      "line": 86,
+      "message": "check_started() 用 line.len() <= 200 作为'行首附近'的近似判断，但 len() 返回字节长度而非字符数，含中文的 Spring Boot 启动日志行可能因多字节字符导致字节长度 >200 但实际字符数 <100，从而漏判。",
+      "suggestion": "用 line.chars().count() <= 200 或直接用 line.find(\"Started \").map(|i| i < 50) 判断位置。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/src/process/mod.rs",
+      "line": 8,
+      "message": "mod.rs 仅 re-export manager 的部分类型，但 build/env/delegate/job/log_pipe 子模块也 pub 暴露了大量类型（如 build::ClasspathCache、env::EnvConfig），mod.rs 未统一管理导出边界，外部模块可深入子模块路径引用，模块封装性弱。",
+      "suggestion": "在 mod.rs 中显式 pub use 关键公共类型，子模块内部类型改为 pub(crate) 或通过 mod.rs 统一导出。"
+    }
+  ]
+}

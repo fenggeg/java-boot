@@ -1,0 +1,530 @@
+{
+  "batch": "D_rust_daemon",
+  "filesReviewed": [
+    "src-tauri/daemon/src/main.rs",
+    "src-tauri/daemon/src/app.rs",
+    "src-tauri/daemon/src/error.rs",
+    "src-tauri/daemon/src/job.rs",
+    "src-tauri/daemon/src/log_pipe.rs",
+    "src-tauri/daemon/src/monitor.rs",
+    "src-tauri/daemon/src/proc.rs",
+    "src-tauri/daemon/src/run_logs.rs",
+    "src-tauri/daemon/src/scan.rs",
+    "src-tauri/daemon/src/server.rs",
+    "src-tauri/daemon/src/store.rs"
+  ],
+  "issues": [
+    {
+      "type": "security",
+      "level": "high",
+      "file": "src-tauri/daemon/src/server.rs",
+      "line": 147,
+      "message": "握手门禁仅校验「是否调用过 hello」，HelloParams 未做任何身份认证（无 token / 无来源校验）。任何能连接到命名管道的本地进程（含恶意脚本）均可完成 hello 并调用 spawn/stop/recovery_takeover 等敏感方法，存在未授权控制 daemon、拉起任意进程、终止他人 Java 进程的风险。命名管道默认安全描述符允许同会话任意进程连接。",
+      "suggestion": "在 HelloParams 中加入一次性 token（由 launcher 启动 daemon 时通过命令行/环境变量传入并校验），或对管道 DACL 收紧为仅当前用户 SID 可访问；至少对 SPAWN/STOP/RECOVERY_* 等破坏性方法做二次授权校验。"
+    },
+    {
+      "type": "security",
+      "level": "high",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 140,
+      "message": "SpawnRequest.argv / working_dir / env_vars 来自客户端且未做任何校验即直接传入 tokio::process::Command::new(argv[0])。攻击者（或被劫持的 launcher）可执行任意程序（如 cmd.exe / powershell）、设置任意工作目录与环境变量，等同于任意代码执行。argv[0] 仅校验非空，未限制可执行文件范围。",
+      "suggestion": "对 argv[0] 做白名单或路径规范化校验（如限定 java/javaw 或项目 JDK 路径），对 working_dir 做存在性与路径范围校验，对 env_vars 体积与键名做上限校验，避免命令注入与资源滥用。"
+    },
+    {
+      "type": "security",
+      "level": "medium",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 680,
+      "message": "spec_to_request 从持久化的 spec.env_vars（JSON 字符串）反序列化为 SpawnRequest.env_vars 并再次 spawn。spec 由客户端写入且 env_vars 仅过滤 REDACTED 占位，未对键名/值长度做限制，恶意 spec 可注入超大环境变量或带特殊字符的键名导致子进程行为异常。",
+      "suggestion": "在 spec_to_request 中对 env_vars 键名做合法标识符校验、对值长度设上限，并对整体数量做限制。"
+    },
+    {
+      "type": "security",
+      "level": "medium",
+      "file": "src-tauri/daemon/src/scan.rs",
+      "line": 57,
+      "message": "scan.start 接收 project_path 客户端参数后直接作为 ignore::WalkBuilder 遍历根目录，未校验路径范围。客户端可传入任意系统目录（如 C:\\Windows / 用户家目录）触发全盘遍历，造成高 IO/CPU 占用与目录结构信息泄漏（pom_path / relative_path 全量回传）。",
+      "suggestion": "校验 project_path 必须存在 pom.xml 且限制在用户项目目录范围内（如限定在 %USERPROFILE% / 文档目录下），或要求路径经 launcher 端预校验后再传入；对遍历深度与文件数量设上限。"
+    },
+    {
+      "type": "security",
+      "level": "medium",
+      "file": "src-tauri/daemon/src/scan.rs",
+      "line": 405,
+      "message": "detect_main_class / find_app_class 用 std::fs::read_to_string 读取源码文件并匹配 @SpringBootApplication，将源文件内容读入内存。若项目含超大 .java 文件或恶意构造文件，可能造成内存峰值；且仅靠字符串 contains 匹配注解易误判（注释/字符串字面量中含 @SpringBootApplication 也会命中）。",
+      "suggestion": "对读取文件设大小上限（如 1MB），超过则跳过；匹配前做最小词法过滤（排除注释块）或改用更精确的注解检测。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 178,
+      "message": "AssignProcessToJobObject 失败时仅 log::warn 后继续流程，进程已 spawn 但未挂入 Job Object。该进程将脱离 daemon 的 Job 托管，stop 时 terminate_pid 仍可杀，但 Job 整树终止（如 daemon 升级场景）会漏杀，形成孤儿进程；与 job.rs 文档「不设 KILL_ON_JOB_CLOSE，靠显式 terminate」的语义出现裂缝。",
+      "suggestion": "Job 分配失败应视为致命错误：终止刚 spawn 的子进程并回滚 run 记录，或至少将 ProcHandle 标记为「未托管」并在 stop 路径强制 terminate_pid 兜底；同时向客户端返回错误而非继续。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 414,
+      "message": "stop 路径中 terminate_pid 失败仅 warn，随后仍进入「等待 lifecycle 收尾」循环。若进程实际未被终止（如权限不足、PID 复用为他人进程），pid_slot 永不清空，stop 会一直阻塞到 STOP_WAIT_PID_SECS 超时，期间客户端无错误反馈。",
+      "suggestion": "terminate_pid 失败时应立即向调用方返回错误（或区分「进程已不存在」与「终止失败」），避免静默长阻塞；对 OpenProcess 返回 ERROR_INVALID_PARAMETER 视为进程已退出。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 682,
+      "message": "spec_to_request 中 serde_json::from_str(&spec.env_vars).unwrap_or_default() 在 env_vars JSON 损坏时静默退化为空 env，导致干净重启的进程丢失全部环境变量（含 DB_PASSWORD 等关键配置），进程可能以错误行为启动且无任何告警。",
+      "suggestion": "JSON 解析失败应返回 Error::Other 而非 unwrap_or_default，让 recovery_restart 显式失败并提示用户 spec 损坏。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src-tauri/daemon/src/log_pipe.rs",
+      "line": 115,
+      "message": "flush_batch 中 store.write_logs 失败仅 log::warn，该批日志永久丢失（buf 已 take，无重试队列）。在高频日志或 SQLite 繁忙场景下会静默丢日志，且日志 seq 已递增，导致 tail 出现 seq 空洞，客户端误以为日志被截断。",
+      "suggestion": "落库失败时将 lines 写入内存重试队列或回退到镜像文件兜底；至少在响应中标记 seq 空洞，避免客户端对齐错乱。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src-tauri/daemon/src/log_pipe.rs",
+      "line": 152,
+      "message": "write_mirror 中 write_line 失败（磁盘满 / 权限）用 let _ = 吞掉，镜像文件与数据库长期不一致且无任何日志。镜像文件作为「展示用」兜底，静默失败会让用户误以为日志完整。",
+      "suggestion": "对 write_line 错误至少 log::warn 一次（带 run_id 与文件路径），并在连续失败时移除该 run 的文件句柄缓存避免持续重试。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/daemon/src/log_pipe.rs",
+      "line": 137,
+      "message": "write_mirror 每条日志都调用 std::fs::create_dir_all(&info.dir)，目录早已存在时仍产生系统调用，高频日志下为无谓 IO。且 create_dir_all 失败被忽略，后续 OpenOptions 仍会尝试打开，错误信息丢失。",
+      "suggestion": "目录创建只在首次 attach 时做一次（attach 已知 dir），write_mirror 内跳过；或用 AtomicBool 标记已创建。"
+    },
+    {
+      "type": "performance",
+      "level": "medium",
+      "file": "src-tauri/daemon/src/log_pipe.rs",
+      "line": 132,
+      "message": "write_mirror 在循环内对每条日志先 lock infos 再 lock files，且 infos 锁在整个 for 循环期间持有（info_guard 跨迭代不释放），files 锁虽在循环内但每条都 lock/insert。parking_lot Mutex 非异步但此处在 spawn_blocking 内，高频批次（500 条）下锁竞争会串行化所有镜像写。",
+      "suggestion": "按 run_id 分组后批量写：先按 run_id group_by，再对每个 run 加锁一次写入全部行；infos 锁可在循环外提前 clone 出 needed Map 后释放。"
+    },
+    {
+      "type": "performance",
+      "level": "medium",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 645,
+      "message": "scan_java_procs 调用 sysinfo::System::new_all() + refresh_all()，会刷新全系统所有进程的全部信息（CPU/内存/磁盘/网络），而此处仅需 java 进程的命令行。在进程数多的机器上（数百进程）开销显著，且 recover 与 RECOVERY_RESCAN 每次都全量刷新。",
+      "suggestion": "改用 System::new() + refresh_processes(ProcessesToUpdate::All, false) 仅刷新进程列表，或用更轻量的 Win32 EnumProcesses + QueryFullProcessImageName 按 java 关键字过滤。"
+    },
+    {
+      "type": "performance",
+      "level": "medium",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 430,
+      "message": "stop 中等待 lifecycle 收尾采用 100ms 轮询 pid_slot 的忙等循环（tokio::time::sleep 100ms），最长 STOP_WAIT_PID_SECS。这是典型的「轮询等条件」反模式，浪费调度且延迟最高 100ms；lifecycle 侧退出时已有 bus.send 通知，可改事件驱动。",
+      "suggestion": "为 ProcHandle 增加 tokio::sync::Notify 或 oneshot，lifecycle 收尾时 notify_one，stop 用 notify.await + timeout 替代轮询。"
+    },
+    {
+      "type": "performance",
+      "level": "low",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 213,
+      "message": "list() 在 lock 内对每个 handle 再 lock pid_slot / metrics，多次小锁虽无死锁风险但锁竞争随进程数线性增长；且 list 经 server.rs LIST 方法每次调用都全量 clone module_name 等字符串。",
+      "suggestion": "进程数通常不大可接受，但若 UI 高频轮询 LIST，可考虑缓存快照或减少 per-handle 锁粒度（pid/metrics 合并到一个 Mutex）。"
+    },
+    {
+      "type": "performance",
+      "level": "medium",
+      "file": "src-tauri/daemon/src/store.rs",
+      "line": 169,
+      "message": "_write_logs 对每条日志单独 stmt.execute（逐行 INSERT），未使用事务包裹。SQLite 默认每条 INSERT 独立事务，500 条批次会产生 500 次 fsync（即便 WAL 模式也有 commit 开销），高频日志下是主要瓶颈。",
+      "suggestion": "用 conn.execute_batch('BEGIN') ... 循环 execute ... COMMIT 包裹批次，或用 conn.transaction() 一次性提交；配合已 prepare_cached 可显著提升吞吐。"
+    },
+    {
+      "type": "performance",
+      "level": "low",
+      "file": "src-tauri/daemon/src/store.rs",
+      "line": 25,
+      "message": "Store 仅持单个 Mutex<Connection>，所有读写（含日志高频写、tail 读、spec 读）都串行化在同一连接上。日志写是热点路径，与 UI 的 tail/list 查询竞争同一把锁，高并发时延迟叠加。",
+      "suggestion": "考虑读写分离：日志写用独立连接（或专门的 writer 线程 + mpsc），查询用只读连接；或用 r2d2 连接池。至少将 service_log 的写与 process_spec/service_run 的读写分连接。"
+    },
+    {
+      "type": "performance",
+      "level": "low",
+      "file": "src-tauri/daemon/src/scan.rs",
+      "line": 197,
+      "message": "run_walk 在并行遍历中对每个 pom.xml 都 found.lock().push(path) 并 idx.fetch_add，found 是单一 Mutex，多线程并行时锁竞争随 pom 数量线性增长，削弱并行收益。",
+      "suggestion": "每个 worker 线程用本地 Vec 收集，遍历结束后合并；或用 crossbeam::queue::SegQueue 无锁队列。idx 用 AtomicUsize 已合理。"
+    },
+    {
+      "type": "concurrency",
+      "level": "medium",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 604,
+      "message": "stdin_split_reader 中判定启动失败时 *status.lock() == Starting 后再 *status.lock() = Error，两次独立加锁之间有窗口：另一 reader（stdout/stderr 各一个）或 port_probe 可在窗口内推进状态，导致 Error 被覆盖为 Running 或重复终止。advance_if_starting 已封装了原子推进，但此处未复用。",
+      "suggestion": "复用 handle.advance_if_starting(ProcStatus::Error) 做原子推进，仅当返回 true 时才执行 terminate_pid，避免与 port_probe 竞态。"
+    },
+    {
+      "type": "concurrency",
+      "level": "medium",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 500,
+      "message": "spawn_lifecycle 同时启动 stdout/stderr 两个 stdin_split_reader，二者共享同一 status Arc<Mutex>。两个 reader 都可能判到 Started 并尝试推进，第二个推进因非 Starting 而 no-op（advance_if_starting 保护），但当前实现用的是直接 *status.lock() = 赋值（line 605），未用 advance_if_starting，存在重复赋值与 Error/Running 竞态。",
+      "suggestion": "统一所有状态推进走 advance_if_starting，确保 Starting→target 的 CAS 语义；终止动作仅在首次推进成功时触发。"
+    },
+    {
+      "type": "concurrency",
+      "level": "medium",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 484,
+      "message": "spawn_lifecycle tokio::spawn 的 future 内捕获了 status_handle 与 started 两个 Arc::clone(&handle.status)（同一字段克隆两次），started 传给 stdin_split_reader，status_handle 在 wait 后直接 *status_handle.lock() = Stopped。但 stdin_split_reader 可能仍在运行（管道未 EOF），此时 lifecycle 已置 Stopped 并 runs.remove，reader 后续判到 Started 会推进一个已被移除的 handle 状态，且 terminate_pid 可能作用于已退出的 pid。",
+      "suggestion": "wait 完成后应确保 reader 也结束（drop child stdout/stderr 已 take，管道关闭应触发 EOF），但时序上 reader 的状态推进应在 wait 之前完成；建议在置 Stopped 前显式取消 reader 或用共享 cancel token。"
+    },
+    {
+      "type": "concurrency",
+      "level": "low",
+      "file": "src-tauri/daemon/src/monitor.rs",
+      "line": 63,
+      "message": "全局 static SYSTEM: Lazy<PMutex<System>> 在 sample 中锁住整个采样周期（refresh_cpu_usage + refresh_processes + 遍历回填），若未来采样间隔缩短或进程数大，会阻塞其他潜在调用者。当前仅 MonitorService 单点调用，风险低但扩展性差。",
+      "suggestion": "若未来有多处采样需求，改为 per-MonitorService 持有 System 实例；当前可保留但文档化「仅单调用方」约束。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "medium",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 1,
+      "message": "proc.rs 单文件 856 行（约 33KB），承载了 spawn / stop / lifecycle / 管道 reader / 就绪判定 / 端口探测 / 崩溃恢复 / spec 反构造 / java 进程扫描 9 个职责。spawn_lifecycle + stdin_split_reader + spawn_port_probe 三者通过共享 Arc 状态协作但分散在不同函数，状态机推进逻辑（Starting→Running/Error/Stopped）散落在 4 处（advance_if_starting、stdin_split_reader line 604、lifecycle line 514、port_probe line 556），难以推理完整状态转移。",
+      "suggestion": "拆分为：proc/handle.rs（ProcHandle 状态机）、proc/lifecycle.rs（spawn_lifecycle + reader）、proc/readiness.rs（classify_startup_line + port_probe）、proc/recovery.rs（recover + takeover + restart）。状态推进统一收敛到 ProcHandle 方法。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "medium",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 579,
+      "message": "stdin_split_reader 函数有 9 个参数（log, seq, status, bus, run_id, pipe, stream, job, pid_slot），是典型的参数膨胀（long parameter list）。调用处（line 500/503）两次调用都传一大串 Arc::clone，易传错且难以维护。",
+      "suggestion": "引入一个 SpawnCtx 结构体聚合共享 Arc（log/seq/status/bus/job/pid_slot/run_id），stdin_split_reader 接收 (&SpawnCtx, pipe, stream) 三个参数。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 805,
+      "message": "测试模块中 noise_lines_ignored 函数无 #[test] 属性（line 805），是死代码，永远不会被执行；且与 non_startup_noise_not_started 测试逻辑重复。",
+      "suggestion": "删除 noise_lines_ignored 函数，或补上 #[test] 属性。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 786,
+      "message": "测试模块为测试 advance_if_starting 重新定义了 ProcHandleRef 结构体与 advance_if_starting_owned 函数（line 786-803），重复了 ProcHandle 已有的 advance_if_starting 实现。测试应直接验证 ProcHandle::advance_if_starting 而非测试一个替身结构体，否则测试通过不代表真实代码正确。",
+      "suggestion": "构造真实 ProcHandle（child 可为空 Mutex）直接调用其 advance_if_starting 方法，删除替身结构体。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 393,
+      "message": "notify_status 中 serde_json::to_value(s).and_then(|v| serde_json::from_value::<String>(v)) 用「序列化再反序列化」把 ProcStatus 转成字符串，绕了一圈且 unwrap_or_default 吞掉错误。而 lifecycle 收尾处（line 517）直接硬编码 \"stopped\" 字符串，两处状态字符串来源不一致，若 ProcStatus 序列化名变更会失配。",
+      "suggestion": "为 ProcStatus 实现 Display 或 as_str() 方法返回规范字符串，notify_status 与 lifecycle 统一调用，避免硬编码与序列化绕路。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 326,
+      "message": "recovery_takeover 中 let _ = env_ok; 显式丢弃 env_ok，该变量在 match 中被绑定但从未使用，是死代码。看起来是开发过程中遗留的「环境变量校验」未完成逻辑。",
+      "suggestion": "若 env_ok 语义为「spec 环境变量是否完整」，应在 takeover 时据此决定是否标记 adopted 进程的环境变量可信；若确实无用则删除该绑定。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 477,
+      "message": "spawn_lifecycle 中 let status_handle = Arc::clone(&handle.status); let started = Arc::clone(&handle.status); 同一字段克隆两次取了两个不同名字（status_handle 与 started），后续 status_handle 用于 wait 后置 Stopped，started 传给 reader。两个变量指向同一 Arc，命名误导读者以为是不同状态。",
+      "suggestion": "统一使用一个变量名（如 status），删除冗余克隆。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/daemon/src/app.rs",
+      "line": 42,
+      "message": "AppState::new 中 Store::open / JobObject::create / LogPipeline::spawn 等用 .expect(\"打开存储失败\") / .expect(\"创建 Job Object 失败\")，daemon 启动时任一失败即 panic。虽是启动期可接受，但 panic 信息经 Rust 默认输出可能不含原始错误链（expect 仅字符串），且 main.rs 已捕获 block_on 错误，此处 panic 会绕过 main 的优雅退出。",
+      "suggestion": "改为返回 Result<AppState, Error>，由 main.rs 统一 log::error + exit(1)，保留完整错误链。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/daemon/src/job.rs",
+      "line": 40,
+      "message": "JobObject::assign 用 PROCESS_ALL_ACCESS 打开目标进程，权限远超 AssignProcessToJobObject 所需（仅需 PROCESS_SET_QUOTA | PROCESS_TERMINATE）。请求过高权限在目标进程 ACL 严格时会不必要地失败，且违反最小权限原则。",
+      "suggestion": "改用 JOB_OBJECT_ASSIGN_PROCESS 所需的最小权限掩码（PROCESS_SET_QUOTA | PROCESS_TERMINATE），与 terminate_pid 的 PROCESS_TERMINATE 区分。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/daemon/src/job.rs",
+      "line": 25,
+      "message": "unsafe impl Send/Sync for JobObject 手动实现，注释仅说「HANDLE 由本对象独占拥有；可在线程间移动/共享」，未按 Rust 参考文档要求写标准 SAFETY 注释说明为何 Send/Sync 安全（如 HANDLE 是不可变句柄、所有 mutating API 都在 spawn_blocking 内单线程访问等）。",
+      "suggestion": "补充 SAFETY: 注释，说明 HANDLE 的所有权与并发访问约束（如「HANDLE 通过 Windows API 创建且不与任何 Rust 借用关联，移动到其他线程后仍通过 unsafe API 访问，无数据竞争」）。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/daemon/src/job.rs",
+      "line": 30,
+      "message": "JobObject::create / assign / terminate / terminate_pid 内的 unsafe 块均无 SAFETY 注释。CreateJobObjectW 的安全性、OpenProcess 的 PID 有效性、TerminateJobObject 的影响范围都需说明。",
+      "suggestion": "每个 unsafe 块前加 SAFETY: 注释，说明前置条件（如「PID 来自刚 spawn 的子进程，必然有效」「Job handle 经 create 建立且未关闭」）。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 39,
+      "message": "STARTED_RE 用 .expect(\"合法正则\") 在 Lazy 初始化时校验正则，虽正则是常量不会失败，但 expect 在生产代码中不符合「不生产 unwrap/expect」约定。",
+      "suggestion": "改用 once_cell::sync::Lazy + unwrap_or_else 配合编译期校验，或用 lazy_regex! 宏在编译期校验正则，消除运行时 expect。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/daemon/src/main.rs",
+      "line": 58,
+      "message": "init_logger 中 .unwrap_or_else(|_| \"info\".to_string()) 对 JB_DAEMON_LOG 环境变量解析失败时静默回退到 info，未提示用户其设置的环境变量被忽略。若用户误设 JB_DAEMON_LOG=debugg（拼写错误），会无声用 info 级别，排查困难。",
+      "suggestion": "解析失败时 eprintln 一行警告，告知用户 JB_DAEMON_LOG 值无效并回退到 info。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/daemon/src/server.rs",
+      "line": 94,
+      "message": "handle_session 中事件订阅器对 broadcast::error::RecvError::Lagged(_) 静默忽略（空分支），不记录 lagged 数量。客户端在日志高频时会丢失事件且无任何告警，UI 无法感知数据不完整。",
+      "suggestion": "Lagged(n) 时 log::warn!(\"session 事件 lagged {n} 条\")，并通过协议向客户端发送 lagged 通知，让 UI 提示「部分事件丢失，请刷新」。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/daemon/src/server.rs",
+      "line": 104,
+      "message": "handle_session 中 framed.next() 读到 Err(_) 时直接 break，未区分错误类型（LinesCodec::MaxLineLengthExceeded vs IO 错误 vs EOF）。超长行（>8MB）被静默断连，客户端无错误反馈，可能误以为是网络问题。",
+      "suggestion": "对 MaxLineLengthExceeded 发送 ERR_INVALID_REQUEST 响应提示「行超长」后再 break；对 IO 错误 log::debug 记录原因。"
+    },
+    {
+      "type": "security",
+      "level": "low",
+      "file": "src-tauri/daemon/src/server.rs",
+      "line": 23,
+      "message": "MAX_LINE = 8 * 1024 * 1024（8MB）单行上限过大。JSON-RPC 请求单行 8MB 意味着客户端可发送 8MB 的 SpawnRequest.env_vars 或日志 body，恶意客户端可借此撑大内存（每 session 一个 framed 缓冲区）。LinesCodec 会预分配至 max_length。",
+      "suggestion": "按方法区分上限：请求行设 1MB 足够（SpawnRequest 环境变量合理上限），日志行若经同一通道则单独放宽；或对 env_vars/body 在业务层再设上限。"
+    },
+    {
+      "type": "security",
+      "level": "low",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 524,
+      "message": "write_spec_json 将完整 ProcessSpec（含 env_vars，可能含未脱敏的密钥/令牌）以 pretty JSON 写入数据目录 .spec-<run_id>.json。虽在数据目录而非用户项目，但明文落盘敏感环境变量，任何能读取该目录的进程可获取密钥。",
+      "suggestion": "spec 快照落盘前对 env_vars 中的敏感键（*_PASSWORD / *_TOKEN / *_SECRET）脱敏，或对 .spec-*.json 文件设置仅当前用户可读 ACL；数据库中的 env_vars 同样应评估是否需加密。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 152,
+      "message": "spawn 中 write_spec_json 是同步阻塞 IO（std::fs::create_dir_all + std::fs::write），却在 async fn spawn 内直接调用，未走 spawn_blocking。虽单文件写入很快，但与 store.rs 严格 spawn_blocking 的约定不一致，且在慢盘/网络盘上会阻塞 runtime。",
+      "suggestion": "将 write_spec_json 包入 spawn_blocking，或与 insert_spec 合并到同一 spawn_blocking 任务中。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 394,
+      "message": "notify_status 中 serde_json::to_value(s).and_then(|v| serde_json::from_value::<String>(v)).unwrap_or_default() 依赖 ProcStatus 的 serde 序列化为字符串。若 ProcStatus 是 enum 且 serde rename_all 未设置，序列化名可能与协议期望的 \"running\"/\"stopped\"/\"error\" 大小写不一致，unwrap_or_default 在失败时返回空字符串导致客户端收到 status: \"\"。",
+      "suggestion": "显式定义 ProcStatus 的 serde rename 或 as_str，并在此处用 match 显式映射，避免序列化失败静默返回空串。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/scan.rs",
+      "line": 426,
+      "message": "normalize_key 仅 trim_end 路径分隔符，未做路径规范化（canonicalize / to_lowercase）。Windows 路径大小写不敏感但 project_key 作为 SQLite 主键区分大小写，\"C:\\Proj\" 与 \"c:\\proj\" 会产生两条缓存记录，缓存命中率下降。",
+      "suggestion": "对 project_key 做路径规范化（std::fs::canonicalize 或至少 to_ascii_lowercase + 统一分隔符），确保同项目只命中一条缓存。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/scan.rs",
+      "line": 392,
+      "message": "find_app_class 用 depth > 8 限制递归深度，但 depth 在每次 pop 一个目录后 +1，实际是 BFS 层数而非递归深度。stack 是 LIFO，push 子目录后 depth 立即 +1，但同一层多个目录会让 depth 增长过快，可能在浅层就触发 8 限制而漏检深层 Application 类。",
+      "suggestion": "改为按目录真实深度限制（记录每个入栈目录的 depth 字段），或用显式 BFS 队列配合 level 计数。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/scan.rs",
+      "line": 404,
+      "message": "find_app_class 用 name.contains(\"Application\") 匹配主类文件名，过于宽泛：任何文件名含 Application 的 .java（如 ApplicationConfig.java / MyApplicationUtils.java）都会被读取并检查 @SpringBootApplication，增加无谓 IO 与误判风险。",
+      "suggestion": "优先匹配以 Application 结尾的文件名（name.ends_with(\"Application.java\")），或同时检查类名与注解。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/scan.rs",
+      "line": 350,
+      "message": "parse_pom 中 java.version 仅在 stack 倒数第二为 properties 时提取，但 Maven pom 中 java.version 可能在 <properties> 内不同位置，且 properties 可能有嵌套或命名空间前缀（如 <maven.compiler.source>）。当前仅认 java.version 一个标签，漏掉 maven.compiler.release / maven.compiler.source 等等价配置。",
+      "suggestion": "补充识别 maven.compiler.source / maven.compiler.release / maven.compiler.target 等常见 Java 版本属性，或在 properties 块内收集全部版本相关键。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/scan.rs",
+      "line": 348,
+      "message": "parse_pom 中 artifactId / packaging 用栈顶标签直接赋值（artifact_id = text），若 pom 内有多个 artifactId（如 <dependency><artifactId>...），后出现的会覆盖模块自身的 artifactId，导致模块名错误。",
+      "suggestion": "仅在 stack 顶层为 project（或其直接子元素）时才采集 artifactId/packaging，依赖/插件内的 artifactId 应跳过；用 stack 路径前缀判断。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/store.rs",
+      "line": 432,
+      "message": "truncate_logs 函数体为空（仅注释「预留」），标注 #[allow(dead_code)]。空预留函数若被误调用会静默无效果，且 dead_code 抑制会掩盖未来真正实现时的未使用警告。",
+      "suggestion": "删除该函数，待真正实现时再添加；或改为 unimplemented!() / todo!() 明确标记未完成，避免静默空操作。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/store.rs",
+      "line": 191,
+      "message": "_tail 中 next_seq = entries.last().map(|l| l.seq).unwrap_or(after_seq)，返回的是本批最后一条的 seq 而非「下一条应拉取的 seq」。客户端若用 next_seq 作为 after_seq 再次拉取，会跳过 next_seq 本身（已含），逻辑正确但命名误导（next_seq 实为 last_seq）。若中间有 seq 空洞（write_logs 失败），next_seq 之后仍有缺失，客户端无法感知。",
+      "suggestion": "重命名为 last_seq 或返回 next_expected_seq = last_seq + 1，并在协议中明确语义；对 seq 空洞增加检测或告警。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/store.rs",
+      "line": 259,
+      "message": "_cleanup 中 DELETE FROM process_spec WHERE run_id NOT IN (SELECT id FROM service_run) 是全表扫描子查询，process_spec 与 service_run 无外键约束，每次 cleanup 都做 NOT IN 扫描。数据量大时性能差，且 NOT IN 对 NULL 值有陷阱（若 service_run.id 有 NULL 会导致全部不删，虽 id 是 PK 不会 NULL）。",
+      "suggestion": "为 process_spec.run_id 与 service_run.id 建立外键（PRAGMA foreign_keys = ON）并用 ON DELETE CASCADE 自动清理，或改用 NOT EXISTS 子查询。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/run_logs.rs",
+      "line": 31,
+      "message": "fnv1a 自实现 FNV-1a 哈希，注释说明「不能用 DefaultHasher 因种子每次不同」。虽 FNV-1a 实现正确，但手写哈希易在维护中被误改；且 FNV-1a 非加密哈希，working_dir 不同但哈希碰撞时两个项目的运行产物会混在同一目录。",
+      "suggestion": "用 std::hash::BuildHasherDefault<FnvHasher> + fnv crate，或直接用 working_dir 的 canonicalize 路径作为目录名（截断后转 hex），避免哈希碰撞风险。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/daemon/src/run_logs.rs",
+      "line": 43,
+      "message": "prune_old 是同步阻塞 IO（read_dir + remove_file + remove_dir），在 server.rs spawn_cleanup_loop 中直接调用（line 280），未走 spawn_blocking。虽每小时一次且量不大，但若数据目录文件多（大量历史 run），阻塞 runtime 主线程。",
+      "suggestion": "将 prune_old 调用包入 tokio::task::spawn_blocking，与 store.cleanup 的异步风格一致。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/monitor.rs",
+      "line": 89,
+      "message": "sample 中 cpu_usage 直接 f32::clamp(0.0, 100.0)，但 sysinfo 的 cpu_usage 在多核机器上返回的是「单进程占单核的百分比」，可超过 100（如 200% 表示占满 2 核）。clamp 到 100 会丢失多核占用信息，UI 误以为 CPU 100% 封顶。",
+      "suggestion": "确认 sysinfo 版本的 cpu_usage 语义（单核百分比 vs 总体百分比），若为单核百分比则除以核数得到总体占比，或保留原值并在协议中注明「可超 100」。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/monitor.rs",
+      "line": 79,
+      "message": "sample 中 refresh_processes(ProcessesToUpdate::Some(&pids), true) 第二个参数 true 表示 remove_dead，会从 System 中移除已退出进程。但 SYSTEM 是全局复用实例，移除的进程在下次采样时若 PID 复用会被当作新进程，CPU 差分基线丢失，首次采样 CPU 恒为 0。",
+      "suggestion": "评估 remove_dead=true 的必要性；若需保留基线，改为 false 并由 lifecycle 收尾负责清理引用。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/app.rs",
+      "line": 59,
+      "message": "AppState::new 中 tokio::spawn 的日志事件转发循环无取消机制，daemon 退出时该任务被强制中止（runtime drop）。虽 daemon 退出即进程退出无泄漏，但单元测试中构造 AppState 会导致该任务泄漏到测试 runtime。",
+      "suggestion": "为转发任务提供 CancellationToken，测试中可显式取消；或文档化 AppState::new 的 spawn 副作用。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/server.rs",
+      "line": 265,
+      "message": "spawn_idle_watchdog 中 std::process::exit(0) 直接退出进程，跳过所有 Drop / tokio runtime 清理。正在运行的子进程 lifecycle 任务、未 flush 的日志、未关闭的 SQLite 连接都不会优雅收尾。虽注释为「空闲自杀」时无运行服务，但 sessions==0 与 has_active 的检查存在 TOCTOU：检查后到 exit 之间可能有新连接进入。",
+      "suggestion": "改为设置一个 AtomicBool 退出标志，让 run 主循环检查后优雅 return，由 main.rs 的 block_on 正常退出触发 Drop；至少在 exit 前 log 退出原因并等待关键任务完成。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/server.rs",
+      "line": 167,
+      "message": "SPAWN 方法中构造的 HelloResult 硬编码 has_running: false / has_pending_recovery: false（line 171-172），该 HelloResult 仅用于传给 procs.spawn 写入 spec.launcher_version。但 spawn 内部仅用 hello.daemon_version，其余字段被忽略，构造完整 HelloResult 是冗余且字段值不真实。",
+      "suggestion": "ProcService::spawn 改为只接收 daemon_version: &str 参数，避免构造虚假 HelloResult 误导读者。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 383,
+      "message": "bare_hello 与 server.rs route 中 HELLO 分支各自构造 HelloResult，两处逻辑重复（bare_hello 在 recovery_restart 内用，route 在 HELLO/SPAWN 内用）。字段计算逻辑（has_active / has_pending_recovery）若变更需同步改两处，易遗漏。",
+      "suggestion": "统一到 AppState 或 ProcService 的单一 hello() 方法，所有调用方复用。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 660,
+      "message": "scan_java_procs 中 proc.cmd().iter().map(|c| c.to_string_lossy().into_owned()).collect::<Vec<_>>().join(\" \") 对每个 java 进程的命令行参数都做完整 to_string_lossy + collect + join，命令行可能很长（含完整 classpath），全部读入内存并拼接。在 java 进程多且 classpath 长时内存与 CPU 开销大。",
+      "suggestion": "仅保留匹配所需的最小信息（如前 N 个参数或仅主类/jar 路径），避免全量 join；或延迟到 cmd_contains 真正需要时再拼接。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 666,
+      "message": "cmd_contains 用 lower.contains(&spec.module_name.to_ascii_lowercase()) 做子串匹配，module_name 若为短词（如 \"api\" / \"common\"）会误匹配大量无关 java 进程的命令行，导致 RecoveryKind::Fuzzy 误判。",
+      "suggestion": "改为更精确的匹配：命令行参数级别匹配（按空格分割后精确比较）或要求 module_name 出现在 -cp / -jar / 主类路径中，避免短词误命中。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/log_pipe.rs",
+      "line": 23,
+      "message": "MirrorMap 与 MirrorInfoMap 类型别名用 parking_lot::Mutex<HashMap<...>>，但 write_mirror 中先 lock infos 再 lock files（嵌套加锁顺序：infos → files）。若未来有其他代码以 files → infos 顺序加锁，会形成死锁。当前仅 write_mirror 一处加锁，但类型导出为 pub（同模块内）需文档化加锁顺序。",
+      "suggestion": "在 LogPipeline 文档中注明「加锁顺序始终为 infos → files」，或将两 Map 合并为单一 Mutex<struct{files, infos}> 消除嵌套锁。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/log_pipe.rs",
+      "line": 159,
+      "message": "write_line 中 let stream_tag = body; 注释「镜像只存正文」但变量名 stream_tag 误导（stream_tag 暗示是 stdout/stderr 标记），实际就是 body 原文。且镜像文件不区分 stdout/stderr，混合写入同一文件，丢失流来源信息。",
+      "suggestion": "重命名变量为 body；若需保留流来源，可在每行前加 [OUT]/[ERR] 前缀，或分文件存储。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/log_pipe.rs",
+      "line": 49,
+      "message": "broadcast::channel::<LogLine>(8192) 容量 8192，但 drain_loop 中每条日志都 self.events.send(l.clone())，若客户端订阅慢（如 UI 卡顿）会快速填满 8192 后 Lagged 丢消息。日志高频时 8192 可能不够，且 Lagged 仅 log::warn 在 app.rs 转发处（line 70），客户端无感知。",
+      "suggestion": "评估 8192 是否覆盖峰值；对 Lagged 在协议层通知客户端「日志有丢失，请 tail 回填」。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 448,
+      "message": "check_port_released 在 stop 后探测端口 20 次 × 300ms = 6s，但仅 log::warn 不影响 stop 返回 Ok。端口未释放时客户端认为 stop 成功，但端口仍占用，再次 spawn 同端口会失败，错误归因困难。",
+      "suggestion": "端口未释放时在 stop 返回值中携带 warning 或额外字段告知客户端「端口未释放」，便于 UI 提示。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 537,
+      "message": "spawn_port_probe 与 stdin_split_reader 都可能推进 Starting→Running，二者并发竞态。port_probe 用 advance_if_starting（正确），stdin_split_reader 用直接赋值（line 605，不正确）。若日志先判到 Error（直接赋值 Error），port_probe 随后 connect 成功调 advance_if_starting(Running) 会因非 Starting 而 no-op，正确；但若日志先判到 Running（直接赋值），port_probe 后续 connect 成功仍会 advance_if_starting(Running) no-op，正确。反之 port_probe 先 Running，日志后判 Error 直接赋值会覆盖 Running 为 Error，错误。",
+      "suggestion": "stdin_split_reader 的 Error 推进也改用 advance_if_starting(ProcStatus::Error)，确保 Running 不被 Error 覆盖（与 advance_only_from_starting_no_rollback 测试意图一致）。"
+    }
+  ]
+}

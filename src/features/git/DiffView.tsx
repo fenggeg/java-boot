@@ -4,9 +4,9 @@
 // 反复 setModel 的集成下可能失效；这里在 onMount 里补一组双向手动同步（带位置守卫防回环），
 // 保证左右两侧滚动行为一致。
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { DiffEditor } from "@monaco-editor/react";
-import type { editor } from "monaco-editor";
+import type { editor, IDisposable } from "monaco-editor";
 import { gitFileAtHead } from "./api";
 import { getMonacoLang } from "../../languages";
 import { getMonacoTheme } from "../../monaco-setup";
@@ -63,14 +63,20 @@ export default function DiffView({
   }, [repoRoot, filePath]);
 
   /** 双向手动滚动同步（带位置守卫，防 setScrollPosition 触发对端回环） */
-  const handleDiffMount = (diffEditor: editor.IDiffEditor) => {
+  const disposablesRef = useRef<IDisposable[]>([]);
+  const handleDiffMount = useCallback((diffEditor: editor.IDiffEditor) => {
     const originalEditor = diffEditor.getOriginalEditor();
     const modifiedEditor = diffEditor.getModifiedEditor();
+
+    // 清理上一次的 disposable（组件复用场景）
+    disposablesRef.current.forEach((d) => d.dispose());
+    disposablesRef.current = [];
+
     const sync = (
       source: editor.ICodeEditor,
       target: editor.ICodeEditor
     ) => {
-      source.onDidScrollChange((e) => {
+      const disposable = source.onDidScrollChange((e) => {
         // 目标已在相近位置（native 同步生效时天然 no-op）→ 跳过，防回环
         if (Math.abs(target.getScrollTop() - e.scrollTop) < 1) return;
         target.setScrollPosition({
@@ -78,10 +84,19 @@ export default function DiffView({
           scrollLeft: e.scrollLeft,
         });
       });
+      disposablesRef.current.push(disposable);
     };
     sync(originalEditor, modifiedEditor);
     sync(modifiedEditor, originalEditor);
-  };
+  }, []);
+
+  // 组件卸载时清理所有 disposable，避免内存泄漏
+  useEffect(() => {
+    return () => {
+      disposablesRef.current.forEach((d) => d.dispose());
+      disposablesRef.current = [];
+    };
+  }, []);
 
   return (
     <div className="git-diff-panel">

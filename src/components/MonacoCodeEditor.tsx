@@ -53,6 +53,9 @@ export default function MonacoCodeEditor({
   // 保存回调的 ref（避免每次 render 重建 editor addCommand）
   const onSaveRef = useRef(onSave);
   onSaveRef.current = onSave;
+  // path 的 ref（使 handleMount 不依赖 path，避免 onMount prop 变化触发编辑器重新挂载）
+  const pathRef = useRef(path);
+  pathRef.current = path;
 
   // ---- 多标签滚动位置隔离 ----
   // 背景：@monaco-editor/react 自带的 saveViewState 存在缺陷——切换标签时，
@@ -113,7 +116,7 @@ export default function MonacoCodeEditor({
       onEditorReady?.(ed);
       // 初始化 previousPathRef 为当前 path，使首次 tab 切换时保存逻辑
       // 走 prev !== null && prev !== path 分支，正确保存初始标签的 viewState。
-      previousPathRef.current = path;
+      previousPathRef.current = pathRef.current;
 
       // 暴露 handle 方法给父组件
       if (editorRef) {
@@ -143,7 +146,7 @@ export default function MonacoCodeEditor({
         onSaveRef.current();
       });
     },
-    [editorRef, path, onEditorReady]
+    [editorRef, onEditorReady]
   );
 
   // 监听主题切换

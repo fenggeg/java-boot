@@ -1,0 +1,999 @@
+{
+  "reviewId": "java-boot-full-review-20260904",
+  "project": "java-boot",
+  "version": "0.19.2",
+  "techStack": "Tauri 2.x + React 18 + TypeScript 5.6 + Zustand 5 + Monaco Editor + Ant Design 5 + Rust (tokio async runtime)",
+  "reviewDate": "2026-09-04",
+  "scope": "全量代码审查（前端 32 文件 + Rust 后端 40 文件，共 72 源文件）",
+  "summary": {
+    "totalIssues": 268,
+    "byLevel": {
+      "high": 11,
+      "medium": 79,
+      "low": 178
+    },
+    "byType": {
+      "security": 30,
+      "error_handling": 70,
+      "bad_smell": 78,
+      "performance": 22,
+      "architecture": 5,
+      "concurrency": 13
+    },
+    "byArea": {
+      "frontend": 65,
+      "rust_core": 53,
+      "rust_process": 49,
+      "rust_daemon": 64,
+      "rust_shared_config": 37
+    }
+  },
+  "highIssues": [
+    {
+      "id": "H-01",
+      "type": "security",
+      "file": "src-tauri/daemon/src/server.rs",
+      "line": 147,
+      "message": "daemon 命名管道握手门禁仅校验「是否调用过 hello」，HelloParams 无任何身份认证（无 token / 无来源校验）。任何能连接到命名管道的本地进程（含恶意脚本）均可完成 hello 并调用 spawn/stop/recovery_takeover 等敏感方法，存在未授权控制 daemon、拉起任意进程、终止他人 Java 进程的风险。",
+      "suggestion": "在 HelloParams 中加入一次性 token（由 launcher 启动 daemon 时通过命令行/环境变量传入并校验），或对管道 DACL 收紧为仅当前用户 SID 可访问；至少对 SPAWN/STOP/RECOVERY_* 等破坏性方法做二次授权校验。"
+    },
+    {
+      "id": "H-02",
+      "type": "security",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 140,
+      "message": "SpawnRequest.argv / working_dir / env_vars 来自客户端且未做任何校验即直接传入 tokio::process::Command::new(argv[0])。攻击者（或被劫持的 launcher）可执行任意程序（如 cmd.exe / powershell）、设置任意工作目录与环境变量，等同于任意代码执行。argv[0] 仅校验非空，未限制可执行文件范围。",
+      "suggestion": "对 argv[0] 做白名单或路径规范化校验（如限定 java/javaw 或项目 JDK 路径），对 working_dir 做存在性与路径范围校验，对 env_vars 体积与键名做上限校验，避免命令注入与资源滥用。"
+    },
+    {
+      "id": "H-03",
+      "type": "security",
+      "file": "src-tauri/shared/src/protocol.rs",
+      "line": 143,
+      "message": "协议缺少认证机制。daemon 监听命名管道 \\\\.\\pipe\\javaboot-daemon，任何同机器同权限进程均可连接并调用 proc.spawn / proc.stop / recovery.takeover 等方法，可被恶意进程利用启动任意命令、停止服务或接管进程。HelloParams 仅携带 client_version 做版本协商，无任何身份凭证校验。",
+      "suggestion": "在握手阶段增加认证：daemon 启动时生成随机 token 写入仅当前用户可读的文件，UI 连接时读取并随 hello 请求提交；daemon 校验 token 后才允许后续方法。或使用命名管道 DACL 限制为当前用户 SID。"
+    },
+    {
+      "id": "H-04",
+      "type": "security",
+      "file": "src-tauri/shared/src/redact.rs",
+      "line": 8,
+      "message": "敏感键名匹配词列表不完整，缺少 PRIVATE、CERT、PASSPHRASE、AUTH、BEARER、ACCESS、SECRET_ID、APPSECRET 等常见敏感字段模式。例如 PRIVATE_KEY、CLIENT_SECRET、AUTH_TOKEN、BEARER_TOKEN、ACCESS_KEY 等虽能被部分命中，但 PRIVATE、AUTH、BEARER、ACCESS 等独立词未列入，存在敏感环境变量未被脱敏而泄漏到持久化库与日志的风险。",
+      "suggestion": "扩展 SENSITIVE_SUBSTRINGS 列表，至少补充 PRIVATE、CERT、PASSPHRASE、AUTH、BEARER、ACCESS、APPSECRET、APIKEY 等模式；并考虑维护一份白名单以避免误伤（如 KEYSTORE_PATH 这类非敏感路径）。"
+    },
+    {
+      "id": "H-05",
+      "type": "security",
+      "file": "src-tauri/shared/src/redact.rs",
+      "line": 20,
+      "message": "is_sensitive_key 仅基于键名子串匹配，未覆盖值内容脱敏。当敏感值出现在非敏感键（如自定义业务变量 SPRING_DATASOURCE_URL=jdbc:mysql://user:pwd@host/db，URL 内嵌明文密码）时不会被脱敏，明文凭证会随 env_vars 持久化到 SQLite。",
+      "suggestion": "对 JDBC URL、连接串等已知含密格式做值模式脱敏（如正则匹配 ://user:password@）；或在文档中明确约束 env_vars 仅承载启动所需变量，敏感凭证必须走专用字段并强制脱敏。"
+    },
+    {
+      "id": "H-06",
+      "type": "security",
+      "file": "src-tauri/tauri.conf.json",
+      "line": 26,
+      "message": "CSP connect-src 包含硬编码外部域名 https://node-red.gyfwork.cc.cd，允许前端直接向该外部服务发起请求。该域名看起来是个人/内网 Node-RED 实例，存在数据外泄风险；且域名后缀 .cc.cd 可疑。同时该域名在 capabilities/default.json 的 http:default allow 列表中再次出现，双重放行。",
+      "suggestion": "确认该外部域名的必要性与安全性；若仅用于开发调试，应移到 dev 专用配置；生产构建应移除该 connect-src 条目与 http allow 规则，或改为可配置项。"
+    },
+    {
+      "id": "H-07",
+      "type": "architecture",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 188,
+      "message": "ProcessManager 承担了进程生命周期管理、Maven 构建编排、classpath 解析、端口冲突检测、资源指标采集、依赖拓扑编排、打包、批量启停等十余种职责，达 3045 行，是典型的 God Object。单一职责被严重违反，难以独立测试和维护。",
+      "suggestion": "按职责拆分为独立模块：ProcessLauncher（spawn/Job 绑定）、BuildOrchestrator（mvn 编译/classpath/打包）、RuntimeStore（runtimes 状态/指标/端口）、DependencyScheduler（拓扑排序与批量编排）。ProcessManager 仅作为门面聚合调用。"
+    },
+    {
+      "id": "H-08",
+      "type": "architecture",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 1027,
+      "message": "start() 方法单函数约 390 行（1027-1414），承担 placeholder 准备、env 解析、构建策略决策、classpath 解析、主类探测、java 参数构造、命令行超长处理（argfile/CLASSPATH）、daemon 载荷构造、spawn 委托等全部流程，嵌套深、分支多，可读性与可测试性差。",
+      "suggestion": "将 start() 拆分为 prepare_launch_env()、resolve_classpath()、build_java_command()、maybe_delegate_to_daemon() 等子函数，start() 仅做编排。"
+    },
+    {
+      "id": "H-09",
+      "type": "error_handling",
+      "file": "src-tauri/src/lib.rs",
+      "line": 333,
+      "message": "run() 末尾 .expect(\"error while running tauri application\") 在生产代码中使用 panic，违反 Rust 参考文档「不生产 unwrap/expect」要求。应用启动失败时直接 panic 退出，无法走正常错误处理与日志。",
+      "suggestion": "改为处理 Result 并通过日志记录错误后以非零码退出，例如 .run(tauri::generate_context!()).unwrap_or_else(|e| { log::error!(\"启动失败: {e}\"); std::process::exit(1); });"
+    },
+    {
+      "id": "H-10",
+      "type": "security",
+      "file": "src-tauri/shared/src/model.rs",
+      "line": 39,
+      "message": "ProcessSpec.jvm_args 以 JSON 字符串保存完整 argv，其中可能包含 -Dspring.datasource.password=xxx、-Djavax.net.ssl.keyStorePassword=xxx 等命令行内嵌的明文敏感参数。redact 流程只处理 env_vars，未对 jvm_args 做脱敏，导致明文凭证持久化到 process_spec 表。",
+      "suggestion": "在 from_request 中对 jvm_args 同样执行脱敏扫描：对 -D*=* 形式的系统属性按键名走 is_sensitive_key 判定并替换值；或单独提供 redact_argv 函数处理命令行参数。"
+    },
+    {
+      "id": "H-11",
+      "type": "security",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 524,
+      "message": "write_spec_json 将完整 ProcessSpec（含 env_vars，可能含未脱敏的密钥/令牌）以 pretty JSON 写入数据目录 .spec-<run_id>.json。虽在数据目录而非用户项目，但明文落盘敏感环境变量，任何能读取该目录的进程可获取密钥。",
+      "suggestion": "spec 快照落盘前对 env_vars 中的敏感键（*_PASSWORD / *_TOKEN / *_SECRET）脱敏，或对 .spec-*.json 文件设置仅当前用户可读 ACL；数据库中的 env_vars 同样应评估是否需加密。"
+    }
+  ],
+  "mediumIssues": [
+    {
+      "id": "M-01",
+      "type": "security",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 680,
+      "message": "spec_to_request 从持久化的 spec.env_vars（JSON 字符串）反序列化为 SpawnRequest.env_vars 并再次 spawn。spec 由客户端写入且 env_vars 仅过滤 REDACTED 占位，未对键名/值长度做限制，恶意 spec 可注入超大环境变量或带特殊字符的键名导致子进程行为异常。",
+      "suggestion": "在 spec_to_request 中对 env_vars 键名做合法标识符校验、对值长度设上限，并对整体数量做限制。"
+    },
+    {
+      "id": "M-02",
+      "type": "security",
+      "file": "src-tauri/daemon/src/scan.rs",
+      "line": 57,
+      "message": "scan.start 接收 project_path 客户端参数后直接作为 ignore::WalkBuilder 遍历根目录，未校验路径范围。客户端可传入任意系统目录（如 C:\\Windows / 用户家目录）触发全盘遍历，造成高 IO/CPU 占用与目录结构信息泄漏。",
+      "suggestion": "校验 project_path 必须存在 pom.xml 且限制在用户项目目录范围内，或要求路径经 launcher 端预校验后再传入；对遍历深度与文件数量设上限。"
+    },
+    {
+      "id": "M-03",
+      "type": "security",
+      "file": "src-tauri/daemon/src/scan.rs",
+      "line": 405,
+      "message": "detect_main_class / find_app_class 用 std::fs::read_to_string 读取源码文件并匹配 @SpringBootApplication，将源文件内容读入内存。若项目含超大 .java 文件或恶意构造文件，可能造成内存峰值；且仅靠字符串 contains 匹配注解易误判。",
+      "suggestion": "对读取文件设大小上限（如 1MB），超过则跳过；匹配前做最小词法过滤（排除注释块）或改用更精确的注解检测。"
+    },
+    {
+      "id": "M-04",
+      "type": "security",
+      "file": "src-tauri/shared/src/protocol.rs",
+      "line": 144,
+      "message": "from_line 直接对任意长度 JSON 调用 serde_json::from_str，未限制单行最大长度。恶意客户端可发送超大单行 JSON 触发内存爆炸（DoS）。",
+      "suggestion": "在读取层对单行字节数设上限（如 1MB），超限直接拒绝并断开连接；protocol 层可暴露 MAX_LINE_LEN 常量供 IO 层使用。"
+    },
+    {
+      "id": "M-05",
+      "type": "security",
+      "file": "src-tauri/shared/src/protocol.rs",
+      "line": 148,
+      "message": "from_value 解析过于宽松：未校验 jsonrpc 字段是否为 \"2.0\"，未校验 method 是否在白名单内，未限制 params 的深度/大小。任意 JSON 对象只要带 method 或 id 即被接受，便于伪造请求。",
+      "suggestion": "严格校验 jsonrpc == \"2.0\"；method 在已知方法集合内才接受；对 params 递归深度设限。"
+    },
+    {
+      "id": "M-06",
+      "type": "security",
+      "file": "src-tauri/shared/src/protocol.rs",
+      "line": 159,
+      "message": "params 字段使用 obj.get(\"params\").cloned() 整体克隆 Value，未限制嵌套深度。深嵌套 JSON 可触发 serde_json 递归解析栈溢出或性能退化。",
+      "suggestion": "对入站 JSON 设置递归深度限制。"
+    },
+    {
+      "id": "M-07",
+      "type": "security",
+      "file": "src-tauri/shared/src/protocol.rs",
+      "line": 143,
+      "message": "消息缺少完整性校验。NDJSON 线协议无 MAC/签名，中间进程若能写入管道流可篡改请求/响应。",
+      "suggestion": "在握手后协商对称密钥，对每条消息附加 HMAC；或至少对 spawn/stop/recovery 等高危方法签名校验。"
+    },
+    {
+      "id": "M-08",
+      "type": "security",
+      "file": "src-tauri/shared/src/model.rs",
+      "line": 42,
+      "message": "ProcessSpec.working_dir、log_file、main_class、classpath_key 等路径/类路径字段未脱敏。working_dir 可能包含用户名（C:\\Users\\<name>\\...）等隐私信息，会随 proc.list / spec.get 下发给 UI 并可能写入日志。",
+      "suggestion": "评估是否需要对路径中的用户名做部分脱敏；至少在跨进程上报与日志输出场景统一处理路径隐私。"
+    },
+    {
+      "id": "M-09",
+      "type": "security",
+      "file": "src-tauri/shared/src/redact.rs",
+      "line": 17,
+      "message": "脱敏替换值 REDACTED 为固定字符串 «redacted»，所有敏感键替换后值相同，丢失了值的可区分性。当多个同类型敏感字段被脱敏后无法区分。",
+      "suggestion": "考虑保留键名哈希前缀或类型标识（如 «redacted:sha256(前4位)»），便于排查与对账，同时不泄漏明文。"
+    },
+    {
+      "id": "M-10",
+      "type": "security",
+      "file": "src-tauri/tauri.conf.json",
+      "line": 26,
+      "message": "CSP script-src 包含 'wasm-unsafe-eval'，允许 WebAssembly 内的 eval 行为。结合 style-src 'unsafe-inline'，整体 CSP 偏宽松，削弱了 XSS 防护。",
+      "suggestion": "确认 wasm-unsafe-eval 是否必需；style-src 'unsafe-inline' 若非必要应收紧为 nonce-based。"
+    },
+    {
+      "id": "M-11",
+      "type": "security",
+      "file": "src-tauri/tauri.conf.json",
+      "line": 27,
+      "message": "freezePrototype 设为 false，未冻结 Object.prototype。在加载第三方内容或存在 XSS 注入点时，原型污染攻击更易成功。",
+      "suggestion": "设为 true 以冻结原型链，增强前端运行时安全（需确认前端框架兼容）。"
+    },
+    {
+      "id": "M-12",
+      "type": "security",
+      "file": "src-tauri/capabilities/default.json",
+      "line": 19,
+      "message": "permissions 包含 opener:default，tauri-plugin-opener 默认允许通过系统默认程序打开任意 URL/文件。结合前端可能的用户输入，可被诱导打开恶意文件或 URL。",
+      "suggestion": "将 opener 权限收紧为具体 allow 列表，仅允许预期的 URL scheme 或特定文件类型；避免使用 :default 全量放行。"
+    },
+    {
+      "id": "M-13",
+      "type": "security",
+      "file": "src-tauri/capabilities/default.json",
+      "line": 18,
+      "message": "dialog:default 全量放行对话框插件默认权限，未限定具体命令。配合前端逻辑可访问任意文件系统路径。",
+      "suggestion": "评估是否需要限定 dialog 的具体权限范围，遵循最小权限原则。"
+    },
+    {
+      "id": "M-14",
+      "type": "security",
+      "file": "src-tauri/Cargo.toml",
+      "line": 21,
+      "message": "未配置 cargo-audit / cargo-deny，缺少依赖漏洞扫描机制。reqwest、rusqlite、windows 等依赖版本范围宽松，可能引入已知漏洞版本。",
+      "suggestion": "引入 cargo-audit 或 cargo-deny 配置文件，在 CI 中执行依赖漏洞扫描；考虑锁定依赖具体版本。"
+    },
+    {
+      "id": "M-15",
+      "type": "security",
+      "file": "src-tauri/src/project_fs.rs",
+      "line": 549,
+      "message": "reveal_in_file_manager 中 std::process::Command::new(\"explorer\").arg(format!(\"/select,{}\", target.display())) 将路径直接拼入 explorer 参数。路径含特殊字符（如逗号、引号）可能被 explorer 参数解析器误处理。",
+      "suggestion": "使用 Windows API SHOpenFolderAndSelectItems 替代命令行拼接。"
+    },
+    {
+      "id": "M-16",
+      "type": "security",
+      "file": "src-tauri/src/update.rs",
+      "line": 29,
+      "message": "ALLOWED_DOWNLOAD_HOSTS 白名单包含 \"node-red.gyfwork.cc.cd\"，该域名非 GitHub 官方域名。若该域名被劫持或 DNS 污染，可推送恶意安装包。",
+      "suggestion": "确认该域名的安全性与归属；对非 GitHub 官方域名增加签名校验而非仅依赖域名白名单。"
+    },
+    {
+      "id": "M-17",
+      "type": "security",
+      "file": "src-tauri/src/port/mod.rs",
+      "line": 85,
+      "message": "build_tcp_table 将 buf 直接转换为 MIB_TCPTABLE_OWNER_PID 结构体引用，未校验对齐（buf 是 u8 对齐，结构体可能需更高对齐）。",
+      "suggestion": "使用 bytemuck::from_bytes 或显式校验对齐，或用 read_unaligned 替代 &* 转换。"
+    },
+    {
+      "id": "M-18",
+      "type": "security",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 995,
+      "message": "进程退出 reaper 中对日志行做 &l[..200] 字节切片预览，若该行包含多字节 UTF-8 字符且恰好在 200 字节边界处截断，会触发 panic。",
+      "suggestion": "用 l.chars().take(200).collect::<String>() 或 floor_char_boundary 做字符边界安全的截断。"
+    },
+    {
+      "id": "M-19",
+      "type": "security",
+      "file": "src-tauri/src/process/env.rs",
+      "line": 441,
+      "message": "inject_env 在每次构造 Command 时调用 resolve_java_home，若 cfg.java_home 为空且 PATH 中有 java，批量启动多个服务时会重复 spawn java 进程做反推（虽有缓存但首次仍阻塞）。",
+      "suggestion": "在 start() 入口处一次性解析 EnvConfig 时预计算 java_home 并存入 EnvConfig 字段，inject_env 直接读取。"
+    },
+    {
+      "id": "M-20",
+      "type": "error_handling",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 178,
+      "message": "AssignProcessToJobObject 失败时仅 log::warn 后继续流程，进程已 spawn 但未挂入 Job Object。该进程将脱离 daemon 的 Job 托管，stop 时 Job 整树终止会漏杀，形成孤儿进程。",
+      "suggestion": "Job 分配失败应视为致命错误：终止刚 spawn 的子进程并回滚 run 记录，或至少将 ProcHandle 标记为「未托管」并在 stop 路径强制 terminate_pid 兜底。"
+    },
+    {
+      "id": "M-21",
+      "type": "error_handling",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 414,
+      "message": "stop 路径中 terminate_pid 失败仅 warn，随后仍进入「等待 lifecycle 收尾」循环。若进程实际未被终止，pid_slot 永不清空，stop 会一直阻塞到 STOP_WAIT_PID_SECS 超时，期间客户端无错误反馈。",
+      "suggestion": "terminate_pid 失败时应立即向调用方返回错误，避免静默长阻塞。"
+    },
+    {
+      "id": "M-22",
+      "type": "error_handling",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 682,
+      "message": "spec_to_request 中 serde_json::from_str(&spec.env_vars).unwrap_or_default() 在 env_vars JSON 损坏时静默退化为空 env，导致干净重启的进程丢失全部环境变量（含 DB_PASSWORD 等关键配置）。",
+      "suggestion": "JSON 解析失败应返回 Error::Other 而非 unwrap_or_default，让 recovery_restart 显式失败并提示用户 spec 损坏。"
+    },
+    {
+      "id": "M-23",
+      "type": "error_handling",
+      "file": "src-tauri/daemon/src/log_pipe.rs",
+      "line": 115,
+      "message": "flush_batch 中 store.write_logs 失败仅 log::warn，该批日志永久丢失（buf 已 take，无重试队列）。在高频日志或 SQLite 繁忙场景下会静默丢日志，且日志 seq 已递增，导致 tail 出现 seq 空洞。",
+      "suggestion": "落库失败时将 lines 写入内存重试队列或回退到镜像文件兜底；至少在响应中标记 seq 空洞。"
+    },
+    {
+      "id": "M-24",
+      "type": "error_handling",
+      "file": "src-tauri/daemon/src/log_pipe.rs",
+      "line": 152,
+      "message": "write_mirror 中 write_line 失败（磁盘满 / 权限）用 let _ = 吞掉，镜像文件与数据库长期不一致且无任何日志。",
+      "suggestion": "对 write_line 错误至少 log::warn 一次，并在连续失败时移除该 run 的文件句柄缓存。"
+    },
+    {
+      "id": "M-25",
+      "type": "error_handling",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 309,
+      "message": "restore_running_services() 在持有 handles 锁的循环内反复获取 runtimes 锁，每次循环都加锁/解锁，且持锁跨度长，存在与 set_status 等并发路径争用的风险。",
+      "suggestion": "在进入 handles 锁前一次性构建 service_id→pid 的判定集合，或先在 runtimes 锁内快照所需状态再释放，避免在 handles 锁内嵌套获取 runtimes 锁。"
+    },
+    {
+      "id": "M-26",
+      "type": "error_handling",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 901,
+      "message": "spawn_and_monitor() 中 child.id().unwrap_or(0) 后，若 pid==0（理论上 spawn 成功但取不到 pid），后续仍继续创建 Job Object 并进入日志读取流程，pid=0 的 handle 会导致 stop/kill 逻辑失效。",
+      "suggestion": "pid==0 时应判定为异常并清理 handle、返回错误，而非继续走监控流程。"
+    },
+    {
+      "id": "M-27",
+      "type": "error_handling",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 1614,
+      "message": "resolve_classpath_via_mvn() 与 build_and_resolve_classpath() 在 mvn 执行成功后用 std::fs::read_to_string(&cp_file).unwrap_or_default() 读取 classpath 文件，文件不存在或读取失败时静默返回空串，丢失了真实 IO 错误原因。",
+      "suggestion": "用 match 处理 read_to_string 结果，将 IO 错误信息包含在返回的 AppError 中。"
+    },
+    {
+      "id": "M-28",
+      "type": "error_handling",
+      "file": "src-tauri/src/process/build.rs",
+      "line": 206,
+      "message": "wait_with_timeout() 用 100ms 间隔的 try_wait 轮询实现超时，在 spawn_blocking 线程上忙轮询 sleep，600 秒超时下最多 6000 次轮询。若多个服务同时编译可耗尽线程池。",
+      "suggestion": "考虑用 Child::wait 配合独立 watchdog 线程 + channel，或限制并发编译数量。"
+    },
+    {
+      "id": "M-29",
+      "type": "error_handling",
+      "file": "src-tauri/src/process/build.rs",
+      "line": 98,
+      "message": "run_mvn_once() 起两个 std::thread 读取 stdout/stderr，主线程在 wait_with_timeout 后 join 这两个线程。若读线程因 BufReader 阻塞且进程子进程仍持有管道写端，读线程可能不退出，join 无超时会永久阻塞 spawn_blocking 线程。",
+      "suggestion": "为 join 添加超时，超时后 detach 读线程避免阻塞 blocking 池。"
+    },
+    {
+      "id": "M-30",
+      "type": "error_handling",
+      "file": "src-tauri/src/process/env.rs",
+      "line": 69,
+      "message": "parse_env_vars() 在 serde_json::from_str 失败时静默返回空 Vec，不记录日志也不向上传递错误。用户配置了格式错误的 env_vars JSON 时完全无感知。",
+      "suggestion": "解析失败时 log::warn! 记录原始 JSON 与错误信息，或返回 Result 让调用方决定是否报错。"
+    },
+    {
+      "id": "M-31",
+      "type": "error_handling",
+      "file": "src-tauri/src/process/env.rs",
+      "line": 161,
+      "message": "detect_java_home_from_java_exe() 的缓存清理策略为'超过 64 条直接 cache.clear()'，全量清空会导致后续请求缓存全 miss，批量启动时可能反复执行 java -XshowSettings 探测，造成性能抖动。",
+      "suggestion": "改用 LRU 淘汰最旧条目而非全量清空。"
+    },
+    {
+      "id": "M-32",
+      "type": "error_handling",
+      "file": "src-tauri/src/process/delegate.rs",
+      "line": 39,
+      "message": "DaemonBridge::register() 中先 lock fwd 再 lock rev，而 normalize_event 的 Disconnected 分支同时 lock fwd 和 lock rev。双锁操作非原子，register 过程中 Disconnected 清空 fwd 后 register 仍写入 rev，导致孤儿反向映射。",
+      "suggestion": "用单一结构体或将 fwd/rev 合并为一个 Mutex<HashMap> 保证原子性。"
+    },
+    {
+      "id": "M-33",
+      "type": "error_handling",
+      "file": "src-tauri/src/process/delegate.rs",
+      "line": 117,
+      "message": "spawn_service() 中 pid = v.get(\"pid\").as_u64().map(|p| p as u32).unwrap_or(0)，daemon 未返回 pid 时默认 0 并继续注册 bridge 映射。pid=0 会被 set_pid 写入 runtime 和 DB，后续 stop/kill 用 pid=0 调 kill_process_tree_by_pid(0) 无效。",
+      "suggestion": "pid==0 时应视为 daemon 异常，返回错误或至少 log::warn 并不写 set_pid。"
+    },
+    {
+      "id": "M-34",
+      "type": "error_handling",
+      "file": "src-tauri/src/git_cli.rs",
+      "line": 422,
+      "message": "file_at_head 中 cat-file 失败时一律 Err(_) => Ok(None)，将「新文件不在 HEAD」与「git 执行失败/仓库损坏/IO 错误」混为一谈，吞掉了真实错误。",
+      "suggestion": "区分错误类型：仅当 git 退出码指示「对象不存在」时返回 Ok(None)；其他失败向上传播 Err。"
+    },
+    {
+      "id": "M-35",
+      "type": "error_handling",
+      "file": "src-tauri/src/git_cli.rs",
+      "line": 24,
+      "message": "GitResult<T> = Result<T, String> 用 String 作错误类型，丢失错误链与结构化信息。git_cli 是库模块，应使用 thiserror 定义枚举错误类型。",
+      "suggestion": "定义 #[derive(thiserror::Error)] enum GitError，GitResult<T> = Result<T, GitError>，并在 commands 层映射为 AppError。"
+    },
+    {
+      "id": "M-36",
+      "type": "error_handling",
+      "file": "src-tauri/src/git_cli.rs",
+      "line": 144,
+      "message": "toplevel() 末尾 Ok(self.repo_root.as_ref().unwrap()) 在已确认 repo_root.is_none() 为 false 后使用 unwrap，违反「不生产 unwrap」规范。",
+      "suggestion": "改为 if let Some(r) = &self.repo_root { Ok(r) } else { unreachable!() } 或用 expect 明确不变量。"
+    },
+    {
+      "id": "M-37",
+      "type": "error_handling",
+      "file": "src-tauri/src/ipc.rs",
+      "line": 449,
+      "message": "spawn_daemon_process 中 LAST_SPAWN_AT.lock().unwrap() 使用 unwrap，锁中毒时会 panic。同文件其他地方已采用 unwrap_or_else(|p| p.into_inner()) 恢复模式，此处不一致。",
+      "suggestion": "统一使用 unwrap_or_else(|poisoned| poisoned.into_inner()) 恢复中毒锁。"
+    },
+    {
+      "id": "M-38",
+      "type": "error_handling",
+      "file": "src/store.ts",
+      "line": 413,
+      "message": "refreshDaemon 中 getDaemonHello 与 getDaemonConnected 任一抛错会导致整个函数 reject，后续 set 不执行，daemonProcesses 会停留在旧值，UI 显示与实际状态脱节。",
+      "suggestion": "对 getDaemonHello / getDaemonConnected 分别 try/catch，或在最外层 catch 后仍 set 一个安全的兜底状态。"
+    },
+    {
+      "id": "M-39",
+      "type": "error_handling",
+      "file": "src/App.tsx",
+      "line": 208,
+      "message": "navigator.clipboard.writeText 的 Promise 仅 .catch(() => {}) 静默吞掉，复制失败时用户无任何反馈，但上方已 message.success 提示「已复制」，造成误导。",
+      "suggestion": "在 .then 中才调用 message.success，在 .catch 中调用 message.error('复制失败')。"
+    },
+    {
+      "id": "M-40",
+      "type": "error_handling",
+      "file": "src/components/ServiceCard.tsx",
+      "line": 136,
+      "message": "打包成功后 modal.success 的 onCancel 中 navigator.clipboard.writeText 的 Promise 未处理 reject，复制失败时用户无感知。",
+      "suggestion": "添加 .catch 分支并 message.error('复制失败')。"
+    },
+    {
+      "id": "M-41",
+      "type": "error_handling",
+      "file": "src/components/FilePanel.tsx",
+      "line": 1098,
+      "message": "revealInFileManager 的 catch 中 message.error 使用 ${e} 直接拼接错误对象，而非 api.toErrMsg(e)，错误信息可能显示为 [object Object]。",
+      "suggestion": "统一使用 api.toErrMsg(e) 格式化错误。"
+    },
+    {
+      "id": "M-42",
+      "type": "error_handling",
+      "file": "src/components/FilePanel.tsx",
+      "line": 1209,
+      "message": "标签右键菜单 reveal 项的 catch 同样使用 ${e} 拼接，错误信息可能不友好。",
+      "suggestion": "改用 api.toErrMsg(e)。"
+    },
+    {
+      "id": "M-43",
+      "type": "error_handling",
+      "file": "src/components/FilePanel.tsx",
+      "line": 300,
+      "message": "refreshDir 的 catch 中 message.error 使用 ${e} 拼接错误对象而非 api.toErrMsg(e)。",
+      "suggestion": "改用 api.toErrMsg(e) 保持错误格式统一。"
+    },
+    {
+      "id": "M-44",
+      "type": "error_handling",
+      "file": "src/components/FilePanel.tsx",
+      "line": 441,
+      "message": "closeTab 的 useCallback 依赖 tabs 和 activePath，在 doClose 中通过 tabs[idx+1] / tabs[idx-1] 计算下一个激活标签。但 doClose 是在 modal.confirm 的 onOk 回调中执行的，此时 tabs 可能已过期（闭包捕获的是确认时的 tabs）。",
+      "suggestion": "在 doClose 内使用 tabsRef.current 获取最新 tabs，避免用户确认期间其他标签被关闭导致 next 计算错误。"
+    },
+    {
+      "id": "M-45",
+      "type": "error_handling",
+      "file": "src/components/TopBar.tsx",
+      "line": 104,
+      "message": "handleStopAll 内部 await api.stopAll() 失败后 refreshServices() 不会执行，用户可能看到「停止失败」但服务列表仍为旧状态。",
+      "suggestion": "在 catch 中也尝试 refreshServices()，或至少在 finally 中刷新，保证 UI 与后端状态同步。"
+    },
+    {
+      "id": "M-46",
+      "type": "error_handling",
+      "file": "src/components/SettingsDrawer.tsx",
+      "line": 63,
+      "message": "handleClose 在关闭抽屉时若有 pending 配置会立即 updateConfig，但若 updateConfig 失败仅 message.error，抽屉仍会关闭，用户可能未注意到错误提示，配置丢失。",
+      "suggestion": "可在 updateConfig 失败时阻止关闭或保持抽屉打开并高亮错误。"
+    },
+    {
+      "id": "M-47",
+      "type": "error_handling",
+      "file": "src/update.ts",
+      "line": 149,
+      "message": "checkForUpdate 中 tauriFetch(UPDATE_API) 未设置超时，若更新服务器无响应，fetch 会一直挂起，TopBar 的 silentCheck 会永久等待，hasUpdate 状态无法更新。",
+      "suggestion": "使用 AbortController 设置超时（如 10 秒），超时后 throw 并走 catch 静默忽略。"
+    },
+    {
+      "id": "M-48",
+      "type": "error_handling",
+      "file": "src-tauri/shared/src/protocol.rs",
+      "line": 136,
+      "message": "to_line 在序列化失败时回退为 \"{}\"，吞掉了错误。\"{}\" 既非合法 JSON-RPC 请求也非响应，对端 from_line 会将其解析为缺少 method/id 的对象并返回 Err，但调用方无法区分是序列化失败还是网络问题。",
+      "suggestion": "to_line 应返回 Result<String, Error>，由调用方决定错误处理。"
+    },
+    {
+      "id": "M-49",
+      "type": "error_handling",
+      "file": "src-tauri/shared/src/model.rs",
+      "line": 61,
+      "message": "serde_json::to_string(&req.argv).unwrap_or_else(|_| \"[]\".to_string()) 在序列化失败时回退为空数组 \"[]\"，丢失了完整启动参数。后续 argv() 反解析得到空 Vec，导致崩溃恢复模糊匹配与重放失败。",
+      "suggestion": "序列化失败应传播错误或记录日志，不应静默回退为空数组。"
+    },
+    {
+      "id": "M-50",
+      "type": "concurrency",
+      "file": "src-tauri/src/watcher.rs",
+      "line": 83,
+      "message": "watch() 中 std::thread::spawn 启动防抖 worker 线程，线程内 std::panic::catch_unwind(AssertUnwindSafe(|| {...})) 捕获 panic。AssertUnwindSafe 包裹了捕获了外部变量的闭包，AppHandle 跨 panic 的内部状态安全性未验证。",
+      "suggestion": "确认 AppHandle 在 panic 后仍可安全使用；若不确定，panic 分支应避免再次使用 app_worker，仅记录日志并退出。"
+    },
+    {
+      "id": "M-51",
+      "type": "concurrency",
+      "file": "src-tauri/src/watcher.rs",
+      "line": 138,
+      "message": "watch worker panic 重建分支中 std::thread::sleep(delay) 在 catch_unwind 之后的线程内同步阻塞，重建逻辑 get_watch_manager().watch() 会再次获取 WATCHERS 锁，若 unwatch 同时持锁可能产生锁竞争。",
+      "suggestion": "确认 watch() 内部获取 self.watchers.lock() 与重建路径无重入死锁风险。"
+    },
+    {
+      "id": "M-52",
+      "type": "concurrency",
+      "file": "src-tauri/src/update.rs",
+      "line": 174,
+      "message": "download_update 是 async fn，内部 std::fs::File::create(&target) 与 writer.write_all(&chunk) 使用同步 std::io::BufWriter 在 async 函数中执行阻塞 IO。大文件下载时，每次 chunk 写入都阻塞 tokio runtime 线程。",
+      "suggestion": "使用 tokio::fs::File + tokio::io::AsyncWriteExt 异步写入，或用 spawn_blocking 包裹写入逻辑。"
+    },
+    {
+      "id": "M-53",
+      "type": "concurrency",
+      "file": "src-tauri/src/ipc.rs",
+      "line": 246,
+      "message": "run_session 中 tokio::select! 包含 next_line(reader) 分支，select! 取消时 reader 的 read_line 可能被中途取消，BufReader 内部缓冲区状态在取消后是否一致需确认。",
+      "suggestion": "确认 tokio::io::BufReader::read_line 取消安全性，可在 next_line 注释中标注。"
+    },
+    {
+      "id": "M-54",
+      "type": "concurrency",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 604,
+      "message": "stdin_split_reader 中判定启动失败时 *status.lock() == Starting 后再 *status.lock() = Error，两次独立加锁之间有窗口：另一 reader 或 port_probe 可在窗口内推进状态，导致 Error 被覆盖为 Running 或重复终止。",
+      "suggestion": "复用 handle.advance_if_starting(ProcStatus::Error) 做原子推进，仅当返回 true 时才执行 terminate_pid。"
+    },
+    {
+      "id": "M-55",
+      "type": "concurrency",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 500,
+      "message": "spawn_lifecycle 同时启动 stdout/stderr 两个 stdin_split_reader，二者共享同一 status Arc<Mutex>。当前实现用的是直接 *status.lock() = 赋值，未用 advance_if_starting，存在重复赋值与 Error/Running 竞态。",
+      "suggestion": "统一所有状态推进走 advance_if_starting，确保 Starting→target 的 CAS 语义。"
+    },
+    {
+      "id": "M-56",
+      "type": "concurrency",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 484,
+      "message": "spawn_lifecycle tokio::spawn 的 future 内捕获了 status_handle 与 started 两个 Arc::clone(&handle.status)（同一字段克隆两次），lifecycle 已置 Stopped 并 runs.remove，reader 后续判到 Started 会推进一个已被移除的 handle 状态。",
+      "suggestion": "wait 完成后应确保 reader 也结束；建议在置 Stopped 前显式取消 reader 或用共享 cancel token。"
+    },
+    {
+      "id": "M-57",
+      "type": "performance",
+      "file": "src/App.tsx",
+      "line": 48,
+      "message": "unreadMap 选择器在每次 store 变化时都会遍历 openedTabs 构造新对象；虽然 useShallow 做了浅比较，但 openedTabs 较多或日志频繁时仍存在不必要的计算开销。",
+      "suggestion": "可考虑用 zustand 的 selector + equalityFn 精确订阅，或把 hasUnread 拆成独立 Map 字段由 store 维护。"
+    },
+    {
+      "id": "M-58",
+      "type": "performance",
+      "file": "src/components/LogViewer.tsx",
+      "line": 111,
+      "message": "filtered 的 useMemo 依赖 logs（整个 LogBuffer 对象引用），而 store 的 flushLogs 每次 flush 都会为所有有日志的服务构造新的 nextLogs 对象，导致即使当前服务日志未变化，logs 引用也可能变化，触发不必要的 filter 重算。",
+      "suggestion": "选择器精确订阅 logs[serviceId]?.lines 而非整个 logs[serviceId]。"
+    },
+    {
+      "id": "M-59",
+      "type": "performance",
+      "file": "src/components/LogViewer.tsx",
+      "line": 171,
+      "message": "matchIndices 的 useMemo 对 filtered 全量遍历并执行 regex.test，当日志量大（万行级）且搜索词非空时，每次 filtered 变化都会重新扫描全部行，可能造成输入卡顿。",
+      "suggestion": "可在 filtered 计算时顺带收集匹配索引（合并为一个 useMemo），避免二次遍历。"
+    },
+    {
+      "id": "M-60",
+      "type": "performance",
+      "file": "src/components/FilePanel.tsx",
+      "line": 325,
+      "message": "组件挂载时和 project.id 变化时都会触发 loadChildren('')，首次挂载会执行两次 loadChildren('')（一次来自 [] effect，一次来自 [project.id] effect），造成重复 IPC 调用。",
+      "suggestion": "删除 [] effect，仅保留 [project.id] effect 负责初始加载和项目切换重置。"
+    },
+    {
+      "id": "M-61",
+      "type": "performance",
+      "file": "src/components/FilePanel.tsx",
+      "line": 351,
+      "message": "openFile 的 useCallback 依赖 tabs，每次 tabs 变化（如打开/关闭/编辑任何标签）都会重建 openFile，进而导致传递给 QuickOpenPanel 和 TreeRow 的 openFile/onSelect prop 引用变化。",
+      "suggestion": "用 tabsRef.current 替代对 tabs 的直接引用，将 tabs 从依赖中移除，使 openFile 引用稳定。"
+    },
+    {
+      "id": "M-62",
+      "type": "performance",
+      "file": "src-tauri/src/project_fs.rs",
+      "line": 311,
+      "message": "walk_files 在持有锁期间执行 clone(out) 对大文件列表（上限 50000 项）做全量克隆，性能开销大。",
+      "suggestion": "考虑返回 Arc<Vec<FlatFile>> 缓存值，命中时直接 clone Arc 而非深拷贝整个 Vec。"
+    },
+    {
+      "id": "M-63",
+      "type": "performance",
+      "file": "src-tauri/src/project_fs.rs",
+      "line": 327,
+      "message": "walk_files 写缓存时 cache.insert(project_id.to_string(), (out.clone(), ...)) 对最多 50000 项的 FlatFile 列表做 clone，而 out 随后即返回给调用方，存在不必要的深拷贝。",
+      "suggestion": "用 Arc<Vec<FlatFile>> 共享，缓存与返回值各持一份 Arc。"
+    },
+    {
+      "id": "M-64",
+      "type": "performance",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 428,
+      "message": "refresh_resource_usage() 在 changed 为 true 时，重新获取 runtimes 锁并克隆所有含 cpu_usage/memory_mb 的 ServiceRuntime，随后逐个 emit。注释声称'只 emit 发生变化的服务'，但 filter 条件是'有 CPU/内存数据'而非'本次变化'，与注释不符。",
+      "suggestion": "在阶段 2 写回时记录本次真正变化的 service_id 列表，emit 时只取这些 id 对应的快照。"
+    },
+    {
+      "id": "M-65",
+      "type": "performance",
+      "file": "src-tauri/src/process/build.rs",
+      "line": 92,
+      "message": "run_mvn_once() 用 Arc<PMutex<String>> 累积 mvn 全量输出（collected），大项目编译输出可达数 MB 至数十 MB，每行都 lock+push_str 两次加锁，高并发编译时锁争用严重且内存随输出线性增长。",
+      "suggestion": "仅在需要离线失败检测时累积输出；可用 thread-local 缓冲后批量追加，或限制累积上限。"
+    },
+    {
+      "id": "M-66",
+      "type": "performance",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 645,
+      "message": "scan_java_procs 调用 sysinfo::System::new_all() + refresh_all()，会刷新全系统所有进程的全部信息，而此处仅需 java 进程的命令行。在进程数多的机器上开销显著。",
+      "suggestion": "改用 System::new() + refresh_processes(ProcessesToUpdate::All, false) 仅刷新进程列表。"
+    },
+    {
+      "id": "M-67",
+      "type": "performance",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 430,
+      "message": "stop 中等待 lifecycle 收尾采用 100ms 轮询 pid_slot 的忙等循环，最长 STOP_WAIT_PID_SECS。这是典型的「轮询等条件」反模式，浪费调度且延迟最高 100ms。",
+      "suggestion": "为 ProcHandle 增加 tokio::sync::Notify 或 oneshot，lifecycle 收尾时 notify_one，stop 用 notify.await + timeout 替代轮询。"
+    },
+    {
+      "id": "M-68",
+      "type": "performance",
+      "file": "src-tauri/daemon/src/store.rs",
+      "line": 169,
+      "message": "_write_logs 对每条日志单独 stmt.execute（逐行 INSERT），未使用事务包裹。SQLite 默认每条 INSERT 独立事务，500 条批次会产生 500 次 fsync，高频日志下是主要瓶颈。",
+      "suggestion": "用 conn.execute_batch('BEGIN') ... 循环 execute ... COMMIT 包裹批次，或用 conn.transaction() 一次性提交。"
+    },
+    {
+      "id": "M-69",
+      "type": "performance",
+      "file": "src-tauri/daemon/src/log_pipe.rs",
+      "line": 132,
+      "message": "write_mirror 在循环内对每条日志先 lock infos 再 lock files，且 infos 锁在整个 for 循环期间持有，高频批次（500 条）下锁竞争会串行化所有镜像写。",
+      "suggestion": "按 run_id 分组后批量写：先按 run_id group_by，再对每个 run 加锁一次写入全部行。"
+    },
+    {
+      "id": "M-70",
+      "type": "bad_smell",
+      "file": "src-tauri/src/commands.rs",
+      "line": 1476,
+      "message": "entries_placeholder() 函数体 unreachable!() 且类型为 std::fs::DirEntry（无法构造），clear_tree 中 std::mem::drop(entries_placeholder()) 是无意义的死代码。",
+      "suggestion": "删除 entries_placeholder 函数及 clear_tree 中对应的 drop 调用。"
+    },
+    {
+      "id": "M-71",
+      "type": "architecture",
+      "file": "src-tauri/src/commands.rs",
+      "line": 1,
+      "message": "commands.rs 单文件 1572 行，聚合了 project/service/process/files/config/daemon/git/util/run-data 共 9 类命令，且包含 JDK/Maven 探测的复杂实现。属于 God Module，职责过载。",
+      "suggestion": "按领域拆分为 commands/project.rs、commands/service.rs、commands/files.rs 等子模块，commands.rs 仅做 re-export。"
+    },
+    {
+      "id": "M-72",
+      "type": "bad_smell",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 656,
+      "message": "prepare_start_placeholder() 内嵌套深度达 6 层以上（handles 锁→existing→pid>0→drop 锁→SYS 锁→重新 handles 锁→runtimes 锁），逻辑复杂且锁获取/释放交错，极易在后续维护中引入锁顺序错误。",
+      "suggestion": "抽取 check_existing_running_pid()、cleanup_stale_placeholder() 等小函数，每个函数只持有一把锁并快速返回布尔结果。"
+    },
+    {
+      "id": "M-73",
+      "type": "bad_smell",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 2506,
+      "message": "start_with_dependencies() 中等待依赖就绪的循环代码缩进混乱，表明可能经过多次手动修补，可读性差且易隐藏逻辑错误。",
+      "suggestion": "统一缩进风格，或将'等待服务就绪'逻辑抽取为 wait_until_running(sid, timeout) 公共函数。"
+    },
+    {
+      "id": "M-74",
+      "type": "bad_smell",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 2603,
+      "message": "start_services_batch() 中等待 Running 的轮询循环与 start_with_dependencies() 的等待逻辑几乎完全重复，且缩进同样混乱，属于明显的代码重复。",
+      "suggestion": "抽取 wait_for_status(sid, deadline) -> Result<(), AppError> 公共函数消除重复。"
+    },
+    {
+      "id": "M-75",
+      "type": "bad_smell",
+      "file": "src-tauri/src/process/manager.rs",
+      "line": 2177,
+      "message": "clean_service、package_service、recompile_and_start、compile_and_start 四个方法中'清理 pid==0 的 placeholder handle'的代码块完全重复出现 5 次以上。",
+      "suggestion": "抽取 cleanup_placeholder_handle(service_id) 方法统一调用。"
+    },
+    {
+      "id": "M-76",
+      "type": "bad_smell",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 1,
+      "message": "proc.rs 单文件 856 行，承载了 spawn / stop / lifecycle / 管道 reader / 就绪判定 / 端口探测 / 崩溃恢复 / spec 反构造 / java 进程扫描 9 个职责。状态机推进逻辑散落在 4 处，难以推理完整状态转移。",
+      "suggestion": "拆分为：proc/handle.rs、proc/lifecycle.rs、proc/readiness.rs、proc/recovery.rs。状态推进统一收敛到 ProcHandle 方法。"
+    },
+    {
+      "id": "M-77",
+      "type": "bad_smell",
+      "file": "src-tauri/daemon/src/proc.rs",
+      "line": 579,
+      "message": "stdin_split_reader 函数有 9 个参数（log, seq, status, bus, run_id, pipe, stream, job, pid_slot），是典型的参数膨胀。调用处两次调用都传一大串 Arc::clone，易传错且难以维护。",
+      "suggestion": "引入一个 SpawnCtx 结构体聚合共享 Arc，stdin_split_reader 接收 (&SpawnCtx, pipe, stream) 三个参数。"
+    },
+    {
+      "id": "M-78",
+      "type": "bad_smell",
+      "file": "src-tauri/src/process/env.rs",
+      "line": 458,
+      "message": "inject_env() 无条件设置 MAVEN_OPTS='-Xmx1g -Dfile.encoding=UTF-8'，即使用户显式配置了 -Xmx2g 也会变成 '-Xmx2g -Xmx1g -Dfile.encoding=UTF-8'，JVM 取最后一个 -Xmx 生效，实际堆被降为 1g，与用户意图相反。",
+      "suggestion": "检测用户 MAVEN_OPTS 中是否已含 -Xmx，若已含则不追加 MAVEN_OPTS_BASE 中的 -Xmx，仅补 file.encoding。"
+    },
+    {
+      "id": "M-79",
+      "type": "bad_smell",
+      "file": "src-tauri/src/process/build.rs",
+      "line": 67,
+      "message": "run_mvn_once() 有 7 个参数被 #[allow(clippy::too_many_arguments)] 抑制，参数过多表明该函数职责可进一步拆分或用参数结构体封装。",
+      "suggestion": "定义 MvnRunParams 结构体传参。"
+    }
+  ],
+  "lowIssuesSummary": {
+    "count": 178,
+    "byType": {
+      "bad_smell": 60,
+      "error_handling": 48,
+      "performance": 14,
+      "security": 12,
+      "concurrency": 8,
+      "architecture": 2
+    },
+    "themes": [
+      "前端：useCallback/useMemo 依赖管理不当导致子组件无效重渲染（FilePanel、ServiceList、TopBar 等）",
+      "前端：ID 生成策略不统一（Date.now+Math.random vs nextId 计数器），存在跨组件碰撞风险",
+      "前端：import 语句放在文件中间，违反顶部导入约定（ServiceConfigModal、ProjectConfigModal）",
+      "前端：formatBytes / formatSize 等工具函数重复实现，未提取共享模块",
+      "前端：ErrorBoundary 的 retryCount 重试机制失效（getDerivedStateFromError 重置计数）",
+      "前端：clipboard.writeText 的 Promise reject 多处静默吞掉，复制失败无用户反馈",
+      "Rust：多处 unwrap_or_default / unwrap_or(0) 静默吞掉解析错误，配置异常无日志",
+      "Rust：unsafe 块缺少 SAFETY 注释（port/mod.rs、job.rs、process/manager.rs GetACP）",
+      "Rust：Mutex 中毒恢复后未记录日志，静默恢复可能掩盖上游 panic 根因",
+      "Rust：DB 配置解析失败静默用默认值（unwrap_or(2)/unwrap_or(3)/unwrap_or(10000)）",
+      "Rust：pom 解析中 unescape 失败静默用空字符串，可能丢失文本内容",
+      "Rust：scan_java_procs 全量刷新系统进程信息，开销大",
+      "Rust：Store 单连接 Mutex 串行化所有读写，日志写与查询竞争同一把锁",
+      "Rust：scan 中 find_app_class 用 name.contains(\"Application\") 匹配主类文件名，过于宽泛",
+      "Rust：scan 中 parse_pom 的 artifactId 可能被依赖内的 artifactId 覆盖",
+      "Rust：monitor 中 cpu_usage clamp 到 100 会丢失多核占用信息",
+      "Rust：PIPE_NAME 硬编码未包含用户名，多用户共用机器会争抢同一管道名",
+      "Rust：MIN_CLIENT_VERSION 硬编码与 Cargo.toml 版本不一致，版本号分散易漂移",
+      "Rust：chrono_now_ms 函数名暗示使用 chrono 但实际用 std::time::SystemTime，命名误导",
+      "Rust：多处测试用例固化了宽松行为（protocol rejects_empty_or_bad_objects），阻碍未来收紧校验",
+      "Rust：truncate_logs 空预留函数 + #[allow(dead_code)]，若被误调用会静默无效果",
+      "Rust：fnv1a 自实现哈希易在维护中被误改，且非加密哈希存在碰撞风险",
+      "Rust：daemon server 中 broadcast Lagged 静默忽略，客户端无感知事件丢失",
+      "Rust：daemon server 中 framed.next() 读到 Err 时直接 break，未区分错误类型",
+      "Rust：spawn_idle_watchdog 中 std::process::exit(0) 跳过所有 Drop / tokio runtime 清理",
+      "Rust：JobObject::assign 用 PROCESS_ALL_ACCESS 打开目标进程，权限远超所需，违反最小权限原则",
+      "Rust：build.rs 中 siblings_all_built 的 canonicalize 比较基准不一致可能导致误判",
+      "Rust：env.rs 中 merge_registry_path 调用 std::env::set_var 修改全局环境变量，非线程安全",
+      "Rust：env.rs 中 detect_java_major_version 硬编码 Windows 路径分隔符，非跨平台",
+      "Rust：log_pipe.rs 中 check_started 用 line.len() <= 200 判断行首附近，字节长度而非字符数",
+      "Rust：log_pipe.rs 中 check_failed 运算符优先级 && 与 || 组合缺乏括号显式化",
+      "Rust：delegate.rs 中 normalize_event 直接访问 bridge().fwd.lock() 绕过封装方法",
+      "Rust：delegate.rs 中 adopt_local_processes 的 run_id.unwrap_or(0) 会导致 stop 误操作",
+      "Rust：job.rs 中 kill() 的 TerminateJobObject 和 CloseHandle 返回值被 let _ 忽略",
+      "Rust：commands.rs 中 detect_mavens 重复全量 JDK 探测，未复用 detect_jdks 缓存",
+      "Rust：commands.rs 中 spawn_blocking + .map_err 包装模式重复 11 处",
+      "Rust：commands.rs 中 git_status_all 等命令返回 Result<_, String> 而非 AppResult，错误类型不一致",
+      "Rust：lib.rs 中 CloseRequested 的退出超时线程无取消机制",
+      "Rust：lib.rs 中端口/CPU 定时刷新 loop 每次循环都查 DB，配置不频繁却频繁查询",
+      "Rust：error.rs 中 AppError 序列化为纯字符串，丢失错误类型信息",
+      "Rust：error.rs 中 AppError::Other(String) 被广泛使用，丢失结构化错误信息",
+      "Rust：db/schema.rs 中 run_migrations 用 if user_version < N 逐版本判断，易遗漏",
+      "Rust：db/mod.rs 中 with_conn r2d2 池 max_size=8，高并发场景可能阻塞",
+      "Rust：update.rs 中 safe_lock 恢复中毒锁时未记录日志",
+      "Rust：update.rs 中 clean_stale_installers 在 async 上下文内同步执行阻塞 runtime",
+      "Rust：update.rs 中 download_update 循环 timeout 错误被完全吞掉",
+      "Rust：git_cli.rs 中 parse_status_z 一次性收集所有分片到 Vec，大仓库产生全量分配",
+      "Rust：git_cli.rs 中 GitRunner::base() 依赖 PATH 解析 git，未校验可执行文件路径",
+      "Rust：git_cli.rs 中 GIT_ACTIVE/GIT_COND 用裸 static 实现信号量，缺乏约束文档",
+      "Rust：git_watcher.rs 中 refresh_all 吞掉数据库错误，git 监听静默不注册",
+      "Rust：git_watcher.rs 中 recompute_and_emit 在 notify 回调线程中同步调用 status_all 可能阻塞",
+      "Rust：project_fs.rs 中 safe_join 在 canonicalize 失败时回退到项目根，语义偏差",
+      "Rust：project_fs.rs 中 safe_join 的 file_name 为 None 时 join 空字符串可能绕过越界检查",
+      "Rust：pom/mod.rs 中 parse_pom 的 text_buf 未用 with_capacity，大 pom 有多次小分配",
+      "Rust：pom/scan.rs 中 read_head 用 String::from_utf8_lossy，非 UTF-8 源码可能漏检",
+      "Rust：port/mod.rs 中 ports_for_pid_windows 用 Vec::contains 线性去重",
+      "Rust：ipc.rs 中 driver 的 hello_tx.send 用 .ok() 吞掉 send 错误",
+      "Rust：ipc.rs 中 is_daemon_alive 每次调用 sysinfo::System::new_all() 全量刷新",
+      "Rust：ipc.rs 中 spawn_daemon_process 的 Err 分支直接返回 io::Error 未加 context",
+      "Rust：util.rs 中 canonicalize_clean 先转 String 再 strip_prefix，有不必要的 String 分配",
+      "Rust：process/mod.rs 中 mod.rs 未统一管理导出边界，外部模块可深入子模块路径引用",
+      "Rust：process/manager.rs 中 start() 内定义 check_cancel! 和 try_cleanup! 两个宏，无法复用",
+      "Rust：process/manager.rs 中 get_cached_module_classes_map 缓存命中时返回 map.clone()，大项目每次克隆整个 HashMap",
+      "Rust：process/manager.rs 中 topo_sort_multi 缺少独立的文档注释",
+      "Rust：process/manager.rs 中 stop_all 收集 ids 后释放锁再 spawn，ids 快照可能与实际不一致",
+      "Rust：process/manager.rs 中 clean_service 的 action_desc 两个分支返回相同字符串，死代码",
+      "Rust：process/build.rs 中 stdout 读线程连续两次获取同一把锁，应合并为一次",
+      "Rust：process/build.rs 中 resolve_pom_placeholders 用字节索引配合 chars().next() 混合推进，逻辑脆弱",
+      "Rust：process/build.rs 中 strip_verbatim_prefix 用 to_string_lossy 对含非 Unicode 字符的路径会丢失信息",
+      "Rust：process/env.rs 中 merge_registry_path 的 join_paths 失败回退到原始 PATH 但未记录日志",
+      "Rust：process/delegate.rs 中 adopt_local_processes 的 serde_json::from_value(pending).unwrap_or_default() 静默返回空 Vec",
+      "Rust：process/delegate.rs 中测试注释存在困惑，质疑自己的断言",
+      "Rust：process/job.rs 中 unsafe impl Send/Sync 缺少 SAFETY 注释",
+      "Rust：process/job.rs 中 assign 在 handle 为 None 时返回 ErrorKind::Other，语义不准确",
+      "Rust：process/log_pipe.rs 中 strip_ansi_codes 对每行日志都分配新的 String",
+      "Rust：process/log_pipe.rs 中 emit_log_raw 的 emit 返回值被 let _ 忽略",
+      "Rust：daemon/app.rs 中 AppState::new 用 .expect 在启动失败时 panic，绕过 main 的优雅退出",
+      "Rust：daemon/app.rs 中 tokio::spawn 的日志事件转发循环无取消机制",
+      "Rust：daemon/main.rs 中 init_logger 对 JB_DAEMON_LOG 解析失败静默回退到 info",
+      "Rust：daemon/server.rs 中 MAX_LINE = 8MB 单行上限过大",
+      "Rust：daemon/server.rs 中 SPAWN 方法构造的 HelloResult 硬编码 has_running: false 等字段值不真实",
+      "Rust：daemon/server.rs 中 bare_hello 与 route HELLO 分支各自构造 HelloResult，逻辑重复",
+      "Rust：daemon/proc.rs 中测试模块中 noise_lines_ignored 函数无 #[test] 属性，是死代码",
+      "Rust：daemon/proc.rs 中测试模块为测试 advance_if_starting 重新定义了替身结构体，测试通过不代表真实代码正确",
+      "Rust：daemon/proc.rs 中 notify_status 用「序列化再反序列化」把 ProcStatus 转成字符串，绕路且 unwrap_or_default 吞错",
+      "Rust：daemon/proc.rs 中 recovery_takeover 的 let _ = env_ok 显式丢弃，是死代码",
+      "Rust：daemon/proc.rs 中 spawn_lifecycle 的 status_handle 与 started 同一字段克隆两次取不同名字，命名误导",
+      "Rust：daemon/proc.rs 中 write_spec_json 是同步阻塞 IO 却在 async fn 内直接调用",
+      "Rust：daemon/proc.rs 中 scan_java_procs 对每个 java 进程的命令行参数做完整 to_string_lossy + collect + join",
+      "Rust：daemon/proc.rs 中 cmd_contains 用 lower.contains 做子串匹配，短词会误匹配大量无关进程",
+      "Rust：daemon/proc.rs 中 check_port_released 端口未释放时仅 warn 不影响 stop 返回 Ok",
+      "Rust：daemon/scan.rs 中 normalize_key 未做路径规范化，Windows 大小写不敏感导致缓存命中率下降",
+      "Rust：daemon/scan.rs 中 find_app_class 的 depth 限制实际是 BFS 层数而非递归深度",
+      "Rust：daemon/scan.rs 中 parse_pom 的 java.version 仅认一个标签，漏掉 maven.compiler.source 等等价配置",
+      "Rust：daemon/scan.rs 中 parse_pom 的 artifactId/packaging 可能被依赖内的同名标签覆盖",
+      "Rust：daemon/store.rs 中 truncate_logs 空预留函数",
+      "Rust：daemon/store.rs 中 _tail 的 next_seq 命名误导（实为 last_seq）",
+      "Rust：daemon/store.rs 中 _cleanup 的 NOT IN 子查询全表扫描，无外键约束",
+      "Rust：daemon/store.rs 中 Store 单 Mutex<Connection> 串行化所有读写",
+      "Rust：daemon/run_logs.rs 中 prune_old 同步阻塞 IO 在 server.rs 中直接调用未走 spawn_blocking",
+      "Rust：daemon/monitor.rs 中全局 static SYSTEM 锁住整个采样周期",
+      "Rust：daemon/monitor.rs 中 refresh_processes 的 remove_dead=true 会导致 PID 复用时 CPU 基线丢失",
+      "Rust：daemon/log_pipe.rs 中 MirrorMap 嵌套加锁顺序需文档化",
+      "Rust：daemon/log_pipe.rs 中 write_line 的 stream_tag 变量名误导",
+      "Rust：daemon/log_pipe.rs 中 broadcast channel 容量 8192 可能不够，Lagged 客户端无感知",
+      "Rust：shared/protocol.rs 中 Response 解析时 error 字段用 .ok() 静默吞掉反序列化错误",
+      "Rust：shared/protocol.rs 中测试用例固化了字符串 id 被静默降级为通知的宽松行为",
+      "Rust：shared/consts.rs 中 PIPE_NAME 硬编码未包含用户名或实例标识",
+      "Rust：shared/lib.rs 中 chrono_now_ms 使用 std::time::SystemTime 属于隐式 IO 依赖，模糊了「零 IO」边界",
+      "Rust：shared/model.rs 中 argv() 使用 unwrap_or_default() 静默吞掉反序列化错误",
+      "Rust：shared/model.rs 中 chrono_now_ms 在系统时钟异常时返回 0，吞掉错误",
+      "Rust：shared/model.rs 中 from_request 的 redact_map 中间数据结构转换开销可简化",
+      "Rust：shared/protocol.rs 中 from_value 的 params Value 整体深拷贝",
+      "Rust：shared/protocol.rs 中 Message enum 持有 owned 类型，高频通知路径产生额外分配",
+      "Rust：shared/protocol.rs 中错误码未提供构造辅助函数，调用方需手动拼接 RpcError",
+      "Rust：tauri.conf.json 中 webviewInstallMode 使用 downloadBootstrapper 增加供应链攻击面",
+      "Rust：tauri.conf.json 中 nsis.installMode 为 currentUser，daemon 二进制可被同权限进程替换",
+      "Rust：build.rs 仅调用 tauri_build::build()，未对配置一致性做校验",
+      "Rust：Cargo.toml 中 authors = [\"you\"] 为占位符",
+      "Rust：Cargo.toml 中 crate-type 包含 staticlib 可能冗余",
+      "Rust：Cargo.toml 中 reqwest 未指定 rustls 具体版本",
+      "前端：vite-env.d.ts、monaco-setup.ts、theme.ts、languages.ts 等可接受的小问题",
+      "前端：Icons.tsx 中 StatusDot 组件导出但未使用，属于死代码",
+      "前端：Icons.tsx 中 Image 图标与全局 window.Image 同名",
+      "前端：FileTreeRow.tsx 中 commonHandlers 对象在每次 render 时重建",
+      "前端：filePanelUtils.ts 中 dirOf 和 parentOf 两个函数实现完全相同",
+      "前端：QuickOpenPanel.tsx 中 loadFlatFiles 的 catch 静默忽略错误",
+      "前端：types.ts 中 STATUS_META 的 color 字段可能为死数据",
+      "前端：store.ts 中 removeService 解构出 _ 等未使用变量",
+      "前端：store.ts 中 pendingLogs 和 flushTimer 为模块级变量",
+      "前端：api.ts 中 toErrMsg 对 message 为对象的情况会显示 [object Object]",
+      "前端：main.tsx 中 data-theme 设置在 render 函数体内执行而非 useEffect",
+      "前端：useGitGutter.ts 中 listen 的 Promise 未处理 reject",
+      "前端：useGitGutter.ts 中 new Date().toLocaleString 在每次 showTooltip 时重复格式化",
+      "前端：DiffView.tsx 中 handleDiffMount 未用 useCallback 包裹",
+      "前端：DiffView.tsx 中双向滚动同步的 disposable 未在组件卸载时 dispose，存在内存泄漏",
+      "前端：update.ts 中 UPDATE_API 域名可疑，download_url 未做白名单校验",
+      "前端：update.ts 中 parseVersion 忽略预发布标识，与 semver 规范不完全一致",
+      "前端：utils/envVars.ts 中 idCounter 为模块级全局变量",
+      "前端：ServiceList.tsx 中 localStorage.getItem 后 JSON.parse 未校验解析结果类型",
+      "前端：ServiceList.tsx 中 ungroupedServices 未 useMemo 化",
+      "前端：UpdateModal.tsx 中通过 toErrMsg(e).includes('下载已取消') 字符串匹配判断取消操作",
+      "前端：AddProjectModal.tsx 中 useEffect 中调用 doScanFor 但未将其加入依赖数组",
+      "前端：AddProjectModal.tsx 中 handleAdd 的局部变量 project 遮蔽外层 project prop",
+      "前端：AddServiceModal.tsx 中 form.getFieldValue('name') 直接读取表单值但未先 validateFields",
+      "前端：MonacoCodeEditor.tsx 中 MutableRef<T> 接口与 React 内置类型重复",
+      "前端：MonacoCodeEditor.tsx 中 handleMount 的 useCallback 依赖 path 不必要"
+    ]
+  },
+  "architectureRecommendations": [
+    {
+      "priority": "high",
+      "title": "拆分 ProcessManager God Object",
+      "description": "src-tauri/src/process/manager.rs 达 3045 行，承担十余种职责。start() 方法单函数 390 行。这是全项目最严重的架构问题，严重影响可测试性与可维护性。",
+      "action": "按职责拆分为 ProcessLauncher、BuildOrchestrator、RuntimeStore、DependencyScheduler 四个模块，ProcessManager 仅作为门面。start() 拆分为 prepare_launch_env()、resolve_classpath()、build_java_command()、maybe_delegate_to_daemon() 等子函数。"
+    },
+    {
+      "priority": "high",
+      "title": "拆分 commands.rs God Module",
+      "description": "src-tauri/src/commands.rs 单文件 1572 行，聚合 9 类命令与 JDK/Maven 探测复杂实现。",
+      "action": "按领域拆分为 commands/project.rs、commands/service.rs、commands/files.rs、commands/daemon.rs、commands/git.rs、commands/tools.rs 等子模块，commands.rs 仅做 re-export。"
+    },
+    {
+      "priority": "high",
+      "title": "拆分 daemon proc.rs",
+      "description": "src-tauri/daemon/src/proc.rs 856 行，9 个职责，状态机推进逻辑散落 4 处。",
+      "action": "拆分为 proc/handle.rs（状态机）、proc/lifecycle.rs（spawn+reader）、proc/readiness.rs（就绪判定+端口探测）、proc/recovery.rs（崩溃恢复）。状态推进统一收敛到 ProcHandle 方法。"
+    },
+    {
+      "priority": "high",
+      "title": "建立 daemon 认证机制",
+      "description": "命名管道无认证、无完整性校验、协议解析宽松，构成完整的本地攻击面（H-01/H-02/H-03）。",
+      "action": "握手阶段增加 token 认证（daemon 启动生成随机 token 写入仅当前用户可读文件，UI 连接时提交）；收紧管道 DACL 为当前用户 SID；对 argv[0] 做白名单校验；严格校验 jsonrpc == \"2.0\" 与 method 白名单；对单行设长度上限。"
+    },
+    {
+      "priority": "high",
+      "title": "完善敏感数据脱敏体系",
+      "description": "redact.rs 脱敏词表不全、仅基于键名不覆盖值内容、jvm_args 未脱敏、spec 文件明文落盘（H-04/H-05/H-10/H-11）。",
+      "action": "扩展 SENSITIVE_SUBSTRINGS 列表；对 JDBC URL 等已知含密格式做值模式脱敏；在 from_request 中对 jvm_args 执行脱敏扫描；spec 快照落盘前脱敏或设置文件 ACL。"
+    },
+    {
+      "priority": "medium",
+      "title": "统一错误处理体系",
+      "description": "AppError::Other(String) 被滥用、git_cli 用 String 作错误类型丢失错误链、多处 unwrap_or_default 静默吞错、AppError 序列化为纯字符串丢失类型信息。",
+      "action": "为 git_cli 定义 thiserror 枚举错误类型；审查 AppError::Other 用法归入具体变体；AppError 序列化为 { kind, message } 结构保留类型；所有 unwrap_or_default 配合 log::warn 记录。"
+    },
+    {
+      "priority": "medium",
+      "title": "消除并发状态机竞态",
+      "description": "daemon proc.rs 中 stdin_split_reader / port_probe / lifecycle 三者通过共享 Arc<Mutex<ProcStatus>> 协作，但状态推进混用 advance_if_starting（CAS）与直接赋值，存在 Error 覆盖 Running 的竞态。",
+      "action": "统一所有状态推进走 advance_if_starting，确保 Starting→target 的 CAS 语义；终止动作仅在首次推进成功时触发。"
+    },
+    {
+      "priority": "medium",
+      "title": "优化 SQLite 日志写入性能",
+      "description": "daemon store.rs 逐行 INSERT 无事务包裹，500 条批次产生 500 次 fsync；Store 单 Mutex<Connection> 串行化所有读写。",
+      "action": "用 conn.transaction() 包裹批次提交；考虑读写分离（日志写用独立连接或 writer 线程 + mpsc，查询用只读连接）。"
+    },
+    {
+      "priority": "medium",
+      "title": "清理 CSP 与 capabilities 权限",
+      "description": "CSP connect-src 包含可疑外部域名、script-src 含 wasm-unsafe-eval、freezePrototype=false、opener/dialog 全量放行。",
+      "action": "移除生产构建中的外部域名 connect-src；评估 wasm-unsafe-eval 必要性；设 freezePrototype=true；将 opener/dialog 权限收紧为具体 allow 列表。"
+    },
+    {
+      "priority": "medium",
+      "title": "引入依赖漏洞扫描",
+      "description": "未配置 cargo-audit / cargo-deny，reqwest/rusqlite/windows 等依赖版本范围宽松。",
+      "action": "引入 cargo-deny 配置文件，在 CI 中执行依赖漏洞扫描；考虑锁定依赖具体版本。"
+    },
+    {
+      "priority": "low",
+      "title": "前端 useCallback/useMemo 依赖管理优化",
+      "description": "FilePanel、ServiceList、TopBar 等组件存在 useCallback 依赖不当导致子组件无效重渲染、对象每次 render 重建等问题。",
+      "action": "用 ref 替代对易变 state 的直接引用以稳定 callback；用 useMemo 包裹传递给子组件的对象/数组；统一 ID 生成策略为 envVars.ts 的 nextId。"
+    },
+    {
+      "priority": "low",
+      "title": "补充 unsafe 块 SAFETY 注释",
+      "description": "port/mod.rs、job.rs、process/manager.rs GetACP 等多处 unsafe 块无 SAFETY 注释，违反 Rust 参考文档要求。",
+      "action": "为每个 unsafe 块添加 SAFETY 注释，说明前置条件与不变量。"
+    }
+  ],
+  "topPriorityFixes": [
+    "H-01/H-02/H-03: 为 daemon 命名管道增加 token 认证 + argv[0] 白名单校验（安全 Critical）",
+    "H-04/H-05/H-10/H-11: 完善脱敏词表 + jvm_args 脱敏 + spec 文件 ACL（数据保护 Critical）",
+    "H-06: 移除 CSP 中的可疑外部域名（数据外泄风险）",
+    "H-07/H-08: 拆分 ProcessManager God Object（可维护性 Critical）",
+    "H-09: 替换 lib.rs 中的 .expect() panic 为优雅错误处理",
+    "M-22: spec_to_request 的 unwrap_or_default 会导致恢复时丢失全部环境变量",
+    "M-78: inject_env 的 MAVEN_OPTS -Xmx 覆盖用户配置，实际堆被降为 1g",
+    "M-54/M-55/M-56: 统一 daemon proc 状态机推进为 advance_if_starting CAS"
+  ]
+}

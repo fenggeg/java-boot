@@ -1,0 +1,448 @@
+{
+  "batch": "B_rust_core",
+  "filesReviewed": [
+    "src-tauri/src/main.rs",
+    "src-tauri/src/lib.rs",
+    "src-tauri/src/error.rs",
+    "src-tauri/src/commands.rs",
+    "src-tauri/src/ipc.rs",
+    "src-tauri/src/git_cli.rs",
+    "src-tauri/src/git_watcher.rs",
+    "src-tauri/src/watcher.rs",
+    "src-tauri/src/project_fs.rs",
+    "src-tauri/src/update.rs",
+    "src-tauri/src/util.rs",
+    "src-tauri/src/db/mod.rs",
+    "src-tauri/src/db/models.rs",
+    "src-tauri/src/db/schema.rs",
+    "src-tauri/src/pom/mod.rs",
+    "src-tauri/src/pom/scan.rs",
+    "src-tauri/src/port/mod.rs"
+  ],
+  "issues": [
+    {
+      "type": "error_handling",
+      "level": "high",
+      "file": "src-tauri/src/lib.rs",
+      "line": 333,
+      "message": "run() 末尾 .expect(\"error while running tauri application\") 在生产代码中使用 panic，违反 Rust 参考文档「不生产 unwrap/expect」要求。应用启动失败时直接 panic 退出，无法走正常错误处理与日志。",
+      "suggestion": "改为处理 Result 并通过日志记录错误后以非零码退出，例如 .run(tauri::generate_context!()).unwrap_or_else(|e| { log::error!(\"启动失败: {e}\"); std::process::exit(1); });"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src-tauri/src/ipc.rs",
+      "line": 449,
+      "message": "spawn_daemon_process 中 LAST_SPAWN_AT.lock().unwrap() 使用 unwrap，锁中毒时会 panic。同文件其他地方（如 update.rs safe_lock）已采用 unwrap_or_else(|p| p.into_inner()) 恢复模式，此处不一致。",
+      "suggestion": "统一使用 unwrap_or_else(|poisoned| poisoned.into_inner()) 恢复中毒锁，避免 panic。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src-tauri/src/project_fs.rs",
+      "line": 311,
+      "message": "WALK_CACHE.lock().unwrap_or_else(|e| e.into_inner()) 已正确处理中毒锁，但 walk_files 在持有锁期间执行 clone(out)（第 327 行）对大文件列表（上限 50000 项）做全量克隆，性能开销大。",
+      "suggestion": "考虑返回 Arc<Vec<FlatFile>> 缓存值，命中时直接 clone Arc（仅原子引用计数）而非深拷贝整个 Vec。"
+    },
+    {
+      "type": "performance",
+      "level": "medium",
+      "file": "src-tauri/src/project_fs.rs",
+      "line": 327,
+      "message": "walk_files 写缓存时 cache.insert(project_id.to_string(), (out.clone(), ...)) 对最多 50000 项的 FlatFile 列表做 clone，而 out 随后即返回给调用方，存在不必要的深拷贝。",
+      "suggestion": "用 Arc<Vec<FlatFile>> 共享，缓存与返回值各持一份 Arc，避免 50000 项深拷贝。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "medium",
+      "file": "src-tauri/src/commands.rs",
+      "line": 1476,
+      "message": "entries_placeholder() 函数体 unreachable!() 且类型为 std::fs::DirEntry（无法构造），clear_tree 第 1452 行 std::mem::drop(entries_placeholder()) 是无意义的死代码，明显是为绕过编译器「未使用变量」而写的占位。",
+      "suggestion": "删除 entries_placeholder 函数及 clear_tree 中对应的 drop 调用；clear_tree 第 1451 行的 let Ok(entries) = ... 失败分支直接 return 即可，无需任何占位。"
+    },
+    {
+      "type": "architecture",
+      "level": "medium",
+      "file": "src-tauri/src/commands.rs",
+      "line": 1,
+      "message": "commands.rs 单文件 1572 行，聚合了 project/service/process/files/config/daemon/git/util/run-data 共 9 类命令，且包含 JDK/Maven 探测的复杂实现（collect_jdk_candidates/probe_jdk/probe_maven 等数百行）。属于 God Module，职责过载，违反关注点分离。",
+      "suggestion": "按领域拆分为 commands/project.rs、commands/service.rs、commands/files.rs、commands/daemon.rs、commands/git.rs、commands/tools.rs（JDK/Maven 探测）等子模块，commands.rs 仅做 re-export。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/commands.rs",
+      "line": 1188,
+      "message": "detect_tools(candidates, move |m| probe_maven(m, fallback_java_home.as_deref())) 中闭包捕获 fallback_java_home（String）按 move 捕获，但 detect_tools 要求 F: Fn（非 FnOnce）+ 'static + Send + Sync，闭包需满足多次调用。此处 fallback_java_home.as_deref() 每次 borrow 闭包持有的 String，逻辑正确但闭包签名约束隐晦，易误用。",
+      "suggestion": "可读性优化：将 fallback_java_home 提前 clone 进 Arc<Option<String>>，闭包内 deref，明确表达共享只读语义。"
+    },
+    {
+      "type": "performance",
+      "level": "low",
+      "file": "src-tauri/src/commands.rs",
+      "line": 830,
+      "message": "detect_jdks 在写锁内 let cloned = result.clone() 后存缓存，对 JDK 列表做深拷贝。JDK 列表通常很小（个位数），影响有限，但与 detect_mavens（第 1192 行）同样模式重复。",
+      "suggestion": "若后续列表可能增大，可缓存 Arc<Vec<JdkInfo>>；当前规模可接受，保持现状亦可。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src-tauri/src/git_cli.rs",
+      "line": 422,
+      "message": "file_at_head 中 cat-file 失败时一律 Err(_) => Ok(None)，将「新文件不在 HEAD」与「git 执行失败/仓库损坏/IO 错误」混为一谈，吞掉了真实错误。违反「不吞错误」原则，调用方无法区分「无历史版本」与「git 异常」。",
+      "suggestion": "区分错误类型：仅当 git 退出码指示「对象不存在」（cat-file 对不存在 blob 返回非零且 stderr 含 'Not a valid object'）时返回 Ok(None)；其他失败向上传播 Err。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src-tauri/src/git_cli.rs",
+      "line": 24,
+      "message": "GitResult<T> = Result<T, String> 用 String 作错误类型，丢失错误链与结构化信息。git_cli 是库模块，按 Rust 参考文档应使用 thiserror 定义枚举错误类型，保留 #[source]。",
+      "suggestion": "定义 #[derive(thiserror::Error)] enum GitError { NotFound, NotRepo, NonUtf8, Exec(String), ... }，GitResult<T> = Result<T, GitError>，并在 commands 层映射为 AppError。"
+    },
+    {
+      "type": "performance",
+      "level": "low",
+      "file": "src-tauri/src/git_cli.rs",
+      "line": 559,
+      "message": "parse_status_z 中 data.split(|&b| b == 0).collect::<Vec<&[u8]>>() 一次性收集所有分片到 Vec，对大仓库（status 输出可达数 MB）产生一次全量分配。随后仅顺序遍历。",
+      "suggestion": "可改为迭代器逐条处理（split 后直接 for rec in data.split(...)），避免中间 Vec 分配；或至少用 with_capacity 估算。当前实现可接受，但大仓库下有优化空间。"
+    },
+    {
+      "type": "security",
+      "level": "low",
+      "file": "src-tauri/src/git_cli.rs",
+      "line": 186,
+      "message": "GitRunner::base() 用 Command::new(\"git\") 依赖 PATH 解析 git，未校验 git 可执行文件路径。若用户 PATH 被注入恶意 git.exe，可执行任意命令。虽属本地桌面应用、风险有限，但与「命令注入/安全」审查点相关。",
+      "suggestion": "可考虑在首次探测时缓存 git 绝对路径（which git），后续 Command::new 使用绝对路径，避免每次依赖 PATH 查找。至少在文档中明确信任边界。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/git_cli.rs",
+      "line": 31,
+      "message": "GIT_ACTIVE: Mutex<u32> 与 GIT_COND: Condvar 用裸 static 实现信号量，acquire_git_slot 在 Condvar::wait 中阻塞线程。若在 async 上下文（如 spawn_blocking 之外的 tokio task）中调用会阻塞 runtime 线程。当前调用均在 spawn_blocking 内，但缺乏约束文档。",
+      "suggestion": "在函数文档中明确标注「仅可在同步线程/spawn_blocking 中调用，禁止在 async 上下文直接调用」；或改用 tokio::sync::Semaphore 提供 async 版本。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src-tauri/src/git_cli.rs",
+      "line": 144,
+      "message": "toplevel() 末尾 Ok(self.repo_root.as_ref().unwrap()) 在已确认 repo_root.is_none() 为 false 后使用 unwrap，逻辑上安全但违反「不生产 unwrap」规范，且 as_ref().unwrap() 模式可用 expect 或 match 替代以提升可读性。",
+      "suggestion": "改为 if let Some(r) = &self.repo_root { Ok(r) } else { unreachable!() } 或用 expect(\"toplevel 已初始化\") 明确不变量。"
+    },
+    {
+      "type": "concurrency",
+      "level": "medium",
+      "file": "src-tauri/src/watcher.rs",
+      "line": 83,
+      "message": "watch() 中 std::thread::spawn 启动防抖 worker 线程，线程内 std::panic::catch_unwind(AssertUnwindSafe(|| {...})) 捕获 panic。AssertUnwindSafe 包裹了捕获了 app_worker/sid_worker/cancel_worker 等外部变量的闭包，AssertUnwindSafe 仅声明这些变量 panic 安全，但 AppHandle 跨 panic 的内部状态安全性未验证。",
+      "suggestion": "确认 AppHandle 在 panic 后仍可安全使用（Tauri AppHandle 内部 Arc，通常安全）；若不确定，panic 分支应避免再次使用 app_worker，仅记录日志并退出。"
+    },
+    {
+      "type": "concurrency",
+      "level": "medium",
+      "file": "src-tauri/src/watcher.rs",
+      "line": 138,
+      "message": "watch worker panic 重建分支中 std::thread::sleep(delay) 在 catch_unwind 之后的线程内同步阻塞（5s/10s/20s...），虽在独立线程不阻塞 runtime，但重建逻辑 get_watch_manager().watch() 会再次获取 WATCHERS 锁，若 unwatch 同时持锁可能产生锁竞争（parking_lot Mutex 不可重入）。",
+      "suggestion": "确认 watch() 内部获取 self.watchers.lock() 与重建路径无重入死锁风险；重建时考虑先释放任何可能持有的锁。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/watcher.rs",
+      "line": 185,
+      "message": "watch() 末尾 let _ = tx; 注释说明「tx 在此 drop」，但 tx 实际在第 151 行已 clone 给 tx_for_cb，此处 let _ = tx 仅是显式标记，语义模糊，易被误读为「忽略 send 错误」。",
+      "suggestion": "改为 drop(tx); 显式表达 drop 意图，或删除该行并加注释说明 tx 随作用域结束自动 drop。"
+    },
+    {
+      "type": "concurrency",
+      "level": "low",
+      "file": "src-tauri/src/watcher.rs",
+      "line": 319,
+      "message": "trigger_restart 中 RESTART_IN_PROGRESS.lock() 与 mgr.get_runtime(service_id).status 检查在同一个锁作用域内（第 319-339 行），get_runtime 内部若也获取锁可能产生锁顺序问题。虽当前 get_runtime 返回的是 ProcessManager 内部状态（不同锁），但跨锁检查无文档约束。",
+      "suggestion": "在注释中明确锁顺序：RESTART_IN_PROGRESS 锁内禁止调用会获取 ProcessManager 内部锁的阻塞操作；或拆分为先获取 status 再加锁。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/src/git_watcher.rs",
+      "line": 60,
+      "message": "refresh_all 中 db::list_projects().unwrap_or_default() 吞掉数据库错误，仅返回空列表。若 DB 未初始化或查询失败，git 监听静默不注册，用户无感知。",
+      "suggestion": "改为记录 log::warn! 或 log::error! 后返回空列表，便于排查「git 监听未生效」问题。"
+    },
+    {
+      "type": "concurrency",
+      "level": "low",
+      "file": "src-tauri/src/git_watcher.rs",
+      "line": 100,
+      "message": "recompute_and_emit 在 notify 回调线程中同步调用 git_cli::status_all(root)（run_bytes 内部 acquire_git_slot 可能阻塞等待信号量），notify 回调线程阻塞可能影响其他项目的监听事件分发（notify-debouncer-full 单线程回调）。",
+      "suggestion": "确认 notify-debouncer-full 回调是否单线程；若是，长时间阻塞 status_all 会延迟其他项目的事件处理。可考虑在回调中仅发信号，由独立线程池执行 status_all。"
+    },
+    {
+      "type": "security",
+      "level": "medium",
+      "file": "src-tauri/src/project_fs.rs",
+      "line": 549,
+      "message": "reveal_in_file_manager 中 std::process::Command::new(\"explorer\").arg(format!(\"/select,{}\", target.display())) 将路径直接拼入 explorer 参数。虽 explorer 非 shell，但路径含特殊字符（如逗号、引号）可能被 explorer 参数解析器误处理，且 target 来自 canonicalize 后的项目内路径，风险较低但未做转义。",
+      "suggestion": "explorer /select, 参数对路径中的逗号/引号无标准转义规则，建议确认路径不含特殊字符或使用 Windows API SHOpenFolderAndSelectItems 替代命令行拼接。reveal_path（第 578 行）同样问题。"
+    },
+    {
+      "type": "security",
+      "level": "low",
+      "file": "src-tauri/src/project_fs.rs",
+      "line": 99,
+      "message": "safe_join 在 canonicalize 失败时（文件不存在）回退 canonical_parent.join(joined.file_name().unwrap_or_default())，若 file_name 为 None（如路径以 / 结尾）则 join(\"\") 返回父目录本身，可能绕过越界检查。虽上游已拒绝 .. 与绝对路径，但边界情况未覆盖。",
+      "suggestion": "file_name 为 None 时应返回错误而非 join 空字符串；增加对「路径以分隔符结尾」的显式校验。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/project_fs.rs",
+      "line": 92,
+      "message": "safe_join 中 parent.canonicalize().unwrap_or_else(|_| canonical_root.clone()) 在父目录 canonicalize 失败时回退到项目根，可能导致最终路径校验通过但实际指向项目根（非用户期望的子目录），语义偏差。",
+      "suggestion": "父目录 canonicalize 失败应返回错误而非静默回退到根目录，避免写入到非预期位置。"
+    },
+    {
+      "type": "security",
+      "level": "medium",
+      "file": "src-tauri/src/update.rs",
+      "line": 29,
+      "message": "ALLOWED_DOWNLOAD_HOSTS 白名单包含 \"node-red.gyfwork.cc.cd\"，该域名非 GitHub 官方域名，且看起来像内部 CDN/代理。若该域名被劫持或 DNS 污染，可推送恶意安装包。白名单信任边界需明确。",
+      "suggestion": "确认该域名的安全性与归属；对非 GitHub 官方域名增加签名校验（验证安装包数字签名）而非仅依赖域名白名单。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/src/update.rs",
+      "line": 48,
+      "message": "safe_lock 函数名与 update.rs 第 47 行文档「安全获取 Mutex guard」一致，但 mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) 恢复中毒锁时未记录日志，静默恢复可能掩盖上游 panic 根因。",
+      "suggestion": "恢复中毒锁时增加 log::warn!(\"Mutex 中毒已恢复\") 记录，便于排查上游 panic。"
+    },
+    {
+      "type": "concurrency",
+      "level": "medium",
+      "file": "src-tauri/src/update.rs",
+      "line": 174,
+      "message": "download_update 是 async fn，内部 std::fs::File::create(&target)（第 174 行）与 writer.write_all(&chunk)（第 206 行）使用同步 std::io::BufWriter 在 async 函数中执行阻塞 IO。大文件下载时，每次 chunk 写入都阻塞 tokio runtime 线程。",
+      "suggestion": "使用 tokio::fs::File + tokio::io::AsyncWriteExt 异步写入，或用 spawn_blocking 包裹写入逻辑；当前虽 BufWriter 缓冲减少 syscall，但仍属「async 中阻塞」反模式。"
+    },
+    {
+      "type": "concurrency",
+      "level": "low",
+      "file": "src-tauri/src/update.rs",
+      "line": 99,
+      "message": "clean_stale_installers 中 std::fs::read_dir 与 std::fs::remove_file 在 install_update（async fn）调用链中同步执行（第 172 行 clean_stale_installers(&target) 在 async 上下文内直接调用），阻塞 runtime。",
+      "suggestion": "install_update 中的文件系统操作（clean_stale_installers、path_exists_follow_junction）应包裹在 spawn_blocking 中。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/src/update.rs",
+      "line": 210,
+      "message": "download_update 循环中 tokio::time::timeout(SAMPLE_INTERVAL, stream.next()).await 的 Err(_) => {} 分支（超时）静默忽略，未区分超时与流错误。虽设计为「空闲超时也采样」，但 timeout 错误被完全吞掉。",
+      "suggestion": "可接受（设计意图），但建议加注释明确「Err 分支仅超时，非错误」；或用 Ok(None) break 与 Err 分离。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/util.rs",
+      "line": 86,
+      "message": "canonicalize_clean 中 let s = p.to_string_lossy().to_string(); 先转 String 再 strip_prefix，对路径做一次 String 分配。PathBuf 操作可用 Path::strip_prefix 避免 String 中间量。",
+      "suggestion": "可接受（Windows 路径前缀处理需字符串操作），但若热路径调用频繁可优化为直接操作 OsStr。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/src/db/mod.rs",
+      "line": 477,
+      "message": "load_config 中 v.parse().unwrap_or(2) / unwrap_or(3) / unwrap_or(10000) 对配置值解析失败静默用默认值，吞掉解析错误。若 DB 中存了非法值（如 \"abc\"），用户配置被静默覆盖为默认，无日志。",
+      "suggestion": "解析失败时 log::warn!(\"配置项 {} 值非法: {}，使用默认\", k, v) 后再用默认值，便于排查配置异常。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/db/mod.rs",
+      "line": 332,
+      "message": "update_service 动态拼 SQL：let params: Vec<&dyn ToSql> = values.iter().map(|v| v as &dyn ToSql).collect(); 每次调用都分配 Vec 并拼字符串 SQL。虽参数化防注入，但动态 SQL 拼接可读性差，且 sets.join(\", \") 字符串拼接在每次调用重复。",
+      "suggestion": "可接受（SQLite 无 prepared statement 缓存动态列），但可考虑用 rusqlite::params_from_iter 替代手动 collect，减少一层间接。"
+    },
+    {
+      "type": "concurrency",
+      "level": "low",
+      "file": "src-tauri/src/db/mod.rs",
+      "line": 56,
+      "message": "with_conn 在每次调用时 pool.get() 获取连接，r2d2 池 max_size=8。若并发命令超过 8 个会阻塞等待连接。SQLite WAL 模式支持并发读，但写仍串行。当前设计可接受，但高并发场景需关注。",
+      "suggestion": "可接受；若未来并发增高，可区分读/写连接池或用 connection_per_thread 模式。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/db/schema.rs",
+      "line": 104,
+      "message": "run_migrations 用 if user_version < N 逐版本判断，新增迁移需手动添加 if 块并递增 CURRENT_VERSION。易遗漏且重复模式。第 109 行 user_version 读取用 unwrap_or(0) 吞掉 PRAGMA 错误。",
+      "suggestion": "可重构为 Vec<fn(&Connection) -> Result<()>> 迭代执行；user_version 读取失败应记录日志而非静默 unwrap_or(0)。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/pom/mod.rs",
+      "line": 54,
+      "message": "parse_pom 中 let mut buf = Vec::new(); 每次 read_event_into 复用 buf，但 text_buf 用 String::new() 后 push_str 累积，未用 with_capacity。对大 pom.xml（含大量 properties）有多次小分配。",
+      "suggestion": "text_buf 可考虑 with_capacity(256) 减少增量分配；buf 已复用，可接受。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/src/pom/mod.rs",
+      "line": 116,
+      "message": "parse_pom 中 Event::Text(e) => text_buf.push_str(&e.unescape().unwrap_or_default())，unescape 失败静默用空字符串，可能丢失文本内容。XML 转义失败属异常，应记录或传播。",
+      "suggestion": "unescape 失败时 log::warn! 或返回 Err，避免静默丢失 pom 文本内容导致解析结果不完整。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/pom/scan.rs",
+      "line": 89,
+      "message": "read_head 用 String::from_utf8_lossy(&buf).into_owned() 将可能非 UTF-8 的字节转为 String，lossy 转换会用 � 替换无效字节。若 Java 源码含非 UTF-8 编码（如 GBK 注释），@SpringBootApplication 检测可能因替换字符而漏判。",
+      "suggestion": "可接受（Java 源码通常 UTF-8），但可在文档中注明「非 UTF-8 源码可能漏检」。"
+    },
+    {
+      "type": "security",
+      "level": "low",
+      "file": "src-tauri/src/port/mod.rs",
+      "line": 61,
+      "message": "build_tcp_table 中多处 unsafe 块调用 GetExtendedTcpTable 与指针解引用（第 62、74-83、86-87、94-99、110-111、122-131、133-134、141-143 行），无 SAFETY 注释说明 unsafe 前置条件。违反 Rust 参考文档「每个 unsafe 块应有 SAFETY 注释」要求。",
+      "suggestion": "为每个 unsafe 块添加 SAFETY 注释，说明缓冲区大小校验、指针有效性、对齐等不变量；unsafe fn 应加 # Safety 文档。"
+    },
+    {
+      "type": "security",
+      "level": "medium",
+      "file": "src-tauri/src/port/mod.rs",
+      "line": 85,
+      "message": "build_tcp_table 第 85 行 if result == 0 && buf.len() >= size_of::<MIB_TCPTABLE_OWNER_PID>() 后，第 86-87 行 let table = unsafe { &*(buf.as_ptr() as *const MIB_TCPTABLE_OWNER_PID) } 直接将 buf 转换为结构体引用。虽第 93 行 header_size + count * entry_size <= buf.len() 做了边界校验，但未校验对齐（buf 是 u8 对齐，结构体可能需更高对齐）。",
+      "suggestion": "使用 bytemuck::from_bytes 或显式校验对齐：确认 MIB_TCPTABLE_OWNER_PID 的对齐要求 ≤ 1，或用 read_unaligned 替代 &* 转换。IPv6 部分（第 132-134 行）同样问题。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/port/mod.rs",
+      "line": 35,
+      "message": "ports_for_pid_windows 中 if !ports.contains(port) { ports.push(*port) } 用 Vec::contains 线性去重，单进程端口数通常少，但 all_listening_ports_windows 直接返回全量 Vec 无去重。",
+      "suggestion": "可接受（端口数有限）；若需去重可用 HashSet。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/src/ipc.rs",
+      "line": 204,
+      "message": "driver 中 hello_tx.send(Some(hello.clone())).ok() 与 connected_tx.send(true) 用 .ok() 吞掉 send 错误。若所有 watch Receiver 已 drop，send 失败被忽略，但 driver 仍继续运行，状态可能不一致。",
+      "suggestion": "可接受（watch send 失败仅表示无观察者），但建议 log::debug 记录 send 失败以便排查。"
+    },
+    {
+      "type": "concurrency",
+      "level": "medium",
+      "file": "src-tauri/src/ipc.rs",
+      "line": 246,
+      "message": "run_session 中 tokio::select! 包含 heartbeat.tick() / next_line(reader) / cmd_rx.recv() 三个分支。next_line(reader) 是 async fn 调用，select! 取消时 reader 的 read_line 可能被中途取消，BufReader 内部缓冲区状态在取消后是否一致需确认。tokio::io::BufReader::read_line 是取消安全的（文档保证），但自定义 next_line 包装层未标注。",
+      "suggestion": "确认 tokio::io::BufReader::read_line 取消安全性（官方文档保证），可在 next_line 注释中标注「取消安全：read_line 取消时不丢失已读数据」。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/ipc.rs",
+      "line": 377,
+      "message": "is_daemon_alive 与 stop_daemon 每次调用 sysinfo::System::new_all() + refresh_all()，全量刷新所有进程信息，开销大（遍历系统全部进程）。stop_daemon 在 install_update 路径调用，升级时全量扫描进程。",
+      "suggestion": "可用 sysinfo::System::new() + refresh_processes(ProcessesToUpdate::All, true) 精简刷新；或按进程名过滤减少扫描范围。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/src/ipc.rs",
+      "line": 474,
+      "message": "spawn_daemon_process 中 match cmd.spawn() { Ok(child) => { let _ = child.id(); ... } Err(e) => Err(e) }，Err 分支直接返回 io::Error 未加 context，调用方（lib.rs 第 111 行）仅 log::warn! 记录，丢失错误细节。",
+      "suggestion": "Err 分支可加 context：Err(e) => { log::warn!(\"拉起 daemon 失败: {e}\"); Err(e) } 或用 anyhow::Context 包装。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/lib.rs",
+      "line": 98,
+      "message": "CloseRequested 处理中 std::thread::spawn(|| { std::thread::sleep(Duration::from_secs(10)); std::process::exit(0); }) 作为「退出超时强制杀进程」兜底。该线程无取消机制——若 app.exit(0) 正常执行完成，该线程仍会 sleep 10s 后调用 process::exit(0)，虽此时进程已退出无影响，但逻辑上存在「正常退出后仍触发强制退出」的冗余。",
+      "suggestion": "可接受（进程已退出时 process::exit 不会执行）；但可用 AtomicBool 标记正常退出完成，线程检查后提前 return，语义更清晰。"
+    },
+    {
+      "type": "concurrency",
+      "level": "low",
+      "file": "src-tauri/src/lib.rs",
+      "line": 162,
+      "message": "setup 中 tauri::async_runtime::spawn(async move { tokio::time::sleep(Duration::from_secs(2)).await; ... restore_running_services(&handle); ... }) 在 async task 中调用 restore_running_services（同步函数，内部可能含阻塞 IO/进程操作），虽注释说明延迟 2s 等前端加载，但 restore_running_services 若阻塞会占用 tokio worker 线程。",
+      "suggestion": "确认 restore_running_services 是否含阻塞操作；若是，用 spawn_blocking 包裹；detect_main_class（第 233 行）已用 spawn_blocking，模式应一致。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/lib.rs",
+      "line": 240,
+      "message": "setup 中端口/CPU 定时刷新 loop 内 db::load_config() 每次循环都查 DB（第 242 行），间隔虽 2s 但持续 DB 查询。配置变更不频繁，频繁查询浪费。",
+      "suggestion": "可缓存配置，仅在配置变更（save_config 时）刷新间隔；或用 watch channel 监听配置变化。当前可接受但可优化。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src-tauri/src/error.rs",
+      "line": 38,
+      "message": "impl serde::Serialize for AppError 将错误序列化为纯字符串 s.serialize_str(&self.to_string())，丢失错误类型信息（前端无法区分 Db/NotFound/ServiceNotFound 等）。虽简化前端处理，但调试与错误分类受限。",
+      "suggestion": "可序列化为 { kind: \"Db\", message: \"...\" } 结构保留类型；或保持现状但在文档中说明前端仅能拿到字符串。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/error.rs",
+      "line": 34,
+      "message": "AppError::Other(String) 作为兜底变体被广泛使用（ipc.rs、commands.rs、project_fs.rs 等多处 AppError::Other(format!(...))），丢失结构化错误信息，且 Other 与具体变体（如 NotFound）边界模糊，部分本应用 NotFound 的场景用了 Other。",
+      "suggestion": "审查各 AppError::Other 用法，归入具体变体；或为 Other 增加 source 链保留上游错误。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/commands.rs",
+      "line": 467,
+      "message": "list_files/read_project_file/write_project_file 等文件操作命令均用 tokio::task::spawn_blocking 包裹 project_fs 调用，模式重复 11 处（第 467-576 行）。每处都 .map_err(|e| AppError::Other(format!(\"...任务失败: {}\", e)))，错误包装重复。",
+      "suggestion": "可提取 helper：async fn spawn_blocking_fs<F, R>(f: F) -> AppResult<R> 统一 spawn_blocking + JoinError 包装，减少重复。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/commands.rs",
+      "line": 1504,
+      "message": "git_status_all/git_file_diff/git_file_at_head/git_blame 四个命令返回 Result<_, String> 而非 AppResult，与文件其他命令（返回 AppResult）不一致。git_cli 用 String 错误类型，commands 层未映射为 AppError。",
+      "suggestion": "在 commands 层将 git_cli 的 String 错误映射为 AppError（如 AppError::Other 或新增 AppError::Git 变体），统一错误类型。"
+    },
+    {
+      "type": "performance",
+      "level": "low",
+      "file": "src-tauri/src/commands.rs",
+      "line": 1182,
+      "message": "detect_mavens 内部再次调用 collect_jdk_candidates + detect_tools(probe_jdk) 探测 JDK（第 1178-1182 行），与 detect_jdks 逻辑重复。detect_mavens 为获取 fallback_java_home 重复全量 JDK 探测，若 detect_jdks 已缓存则 detect_mavens 仍走完整探测。",
+      "suggestion": "detect_mavens 应复用 detect_jdks 的缓存结果（调用 detect_jdks().await 取首个 JDK），避免重复探测。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src-tauri/src/commands.rs",
+      "line": 301,
+      "message": "update_project_env 命令内的 normalize 闭包（第 301-332 行）实现路径规范化（斜杠转换、UNC 保留、连续反斜杠合并），逻辑复杂且内联在命令中。该闭包用 chars().enumerate() 逐字符处理，含 prev_bs 状态机，可读性差。",
+      "suggestion": "提取为 util::normalize_windows_path 独立函数，便于测试与复用。"
+    },
+    {
+      "type": "concurrency",
+      "level": "low",
+      "file": "src-tauri/src/commands.rs",
+      "line": 810,
+      "message": "detect_jdks 慢路径中 let mut _guard = JDK_CACHE.write().await; 持有写锁期间执行 collect_jdk_candidates（spawn_blocking）+ detect_tools（多次 spawn_blocking probe_jdk），耗时可达数秒。期间其他 detect_jdks 调用阻塞在 write().await，虽双重检查避免重复探测，但持锁时间过长影响并发。",
+      "suggestion": "可在持锁期间仅标记「探测中」标志，实际探测在锁外执行，完成后再加锁写入结果；或用 tokio::sync::OnceCell 模式。"
+    }
+  ]
+}

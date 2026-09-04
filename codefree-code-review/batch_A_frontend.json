@@ -1,0 +1,559 @@
+{
+  "batch": "batch_A_frontend",
+  "filesReviewed": [
+    "src/api.ts",
+    "src/App.tsx",
+    "src/vite-env.d.ts",
+    "src/monaco-setup.ts",
+    "src/main.tsx",
+    "src/languages.ts",
+    "src/theme.ts",
+    "src/styles.css",
+    "src/store.ts",
+    "src/types.ts",
+    "src/update.ts",
+    "src/utils/envVars.ts",
+    "src/features/git/useGitGutter.ts",
+    "src/features/git/DiffView.tsx",
+    "src/features/git/api.ts",
+    "src/components/UpdateModal.tsx",
+    "src/components/TopBar.tsx",
+    "src/components/SettingsDrawer.tsx",
+    "src/components/ServiceList.tsx",
+    "src/components/ServiceConfigModal.tsx",
+    "src/components/ServiceCard.tsx",
+    "src/components/QuickOpenPanel.tsx",
+    "src/components/ProjectConfigModal.tsx",
+    "src/components/MonacoCodeEditor.tsx",
+    "src/components/LogViewer.tsx",
+    "src/components/Icons.tsx",
+    "src/components/FileTreeRow.tsx",
+    "src/components/filePanelUtils.ts",
+    "src/components/FilePanel.tsx",
+    "src/components/ErrorBoundary.tsx",
+    "src/components/AddServiceModal.tsx",
+    "src/components/AddProjectModal.tsx"
+  ],
+  "issues": [
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src/store.ts",
+      "line": 413,
+      "message": "refreshDaemon 中 getDaemonHello 与 getDaemonConnected 任一抛错会导致整个函数 reject，后续 set 不执行，daemonProcesses 会停留在旧值，UI 显示与实际状态脱节。",
+      "suggestion": "对 getDaemonHello / getDaemonConnected 分别 try/catch，或在最外层 catch 后仍 set 一个安全的兜底状态（如 daemonConnected: false, daemonProcesses: []），保证 UI 不会因单次 IPC 失败而永久卡在陈旧数据。"
+    },
+    {
+      "type": "performance",
+      "level": "medium",
+      "file": "src/App.tsx",
+      "line": 48,
+      "message": "unreadMap 选择器在每次 store 变化时都会遍历 openedTabs 构造新对象；虽然 useShallow 做了浅比较，但 openedTabs 较多或日志频繁时仍存在不必要的计算开销。",
+      "suggestion": "可考虑用 zustand 的 selector + equalityFn 精确订阅，或把 hasUnread 拆成独立 Map 字段由 store 维护，避免每次 render 都重建 Record。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src/App.tsx",
+      "line": 208,
+      "message": "navigator.clipboard.writeText 的 Promise 仅 .catch(() => {}) 静默吞掉，复制失败时用户无任何反馈，但上方已 message.success 提示「已复制」，造成误导。",
+      "suggestion": "在 .then 中才调用 message.success，在 .catch 中调用 message.error('复制失败')，确保提示与实际结果一致。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/App.tsx",
+      "line": 323,
+      "message": "在 JSX 中使用 IIFE {(() => { ... })()} 渲染 FilePanel，逻辑内联在 return 中，可读性差且难以被 React DevTools 识别为独立组件。",
+      "suggestion": "提取为独立的 FilePanelSlot 子组件或 useMemo 化的变量，保持 render 函数扁平。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src/components/ServiceCard.tsx",
+      "line": 136,
+      "message": "打包成功后 modal.success 的 onCancel 中 navigator.clipboard.writeText 的 Promise 未处理 reject，复制失败时用户无感知。",
+      "suggestion": "添加 .catch 分支并 message.error('复制失败')。"
+    },
+    {
+      "type": "performance",
+      "level": "medium",
+      "file": "src/components/LogViewer.tsx",
+      "line": 111,
+      "message": "filtered 的 useMemo 依赖 logs（整个 LogBuffer 对象引用），而 store 的 flushLogs 每次 flush 都会为所有有日志的服务构造新的 nextLogs 对象，导致即使当前服务日志未变化，logs 引用也可能变化，触发不必要的 filter 重算。",
+      "suggestion": "选择器精确订阅 logs[serviceId]?.lines 而非整个 logs[serviceId]，减少无关 flush 引起的重算。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/LogViewer.tsx",
+      "line": 113,
+      "message": "void logFlushTick; 是为让 useMemo 依赖 logFlushTick 但不实际使用它的 hack，意图不直观。",
+      "suggestion": "直接将 logFlushTick 放入依赖数组即可（已放入），删除 void logFlushTick; 这行无意义语句。"
+    },
+    {
+      "type": "performance",
+      "level": "medium",
+      "file": "src/components/LogViewer.tsx",
+      "line": 171,
+      "message": "matchIndices 的 useMemo 对 filtered 全量遍历并执行 regex.test，当日志量大（万行级）且搜索词非空时，每次 filtered 变化都会重新扫描全部行，可能造成输入卡顿。",
+      "suggestion": "可在 filtered 计算时顺带收集匹配索引（合并为一个 useMemo），避免二次遍历；或对 matchIndices 做进一步节流。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src/components/LogViewer.tsx",
+      "line": 135,
+      "message": "handleLogContextAction 的 copy 分支中 navigator.clipboard.writeText 的 .then 里 message.success，但 .catch 静默吞掉，复制失败无反馈。",
+      "suggestion": "添加 .catch 分支提示复制失败。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/ServiceConfigModal.tsx",
+      "line": 140,
+      "message": "newOverrideId / newEnvVarId 使用 Date.now()+Math.random 生成 ID，而 utils/envVars.ts 已有统一的 nextId 计数器方案。两套 ID 生成策略并存，且 ServiceConfigModal 的随机 ID 与 envVars.ts 的计数器 ID 可能碰撞（前缀相同 env-/ovr-）。",
+      "suggestion": "统一使用 envVars.ts 导出的 nextId（需导出），或在 envVars.ts 中提供 createEnvVarEntry / createOverrideEntry 工厂函数，消除 ID 策略分叉。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/ServiceConfigModal.tsx",
+      "line": 130,
+      "message": "import 语句放在文件中间（在常量定义之后），虽然 ESM 会被 hoist，但不符合常规的顶部导入约定，影响可读性。",
+      "suggestion": "将 parseOverrideProperties / serializeOverrideProperties 等导入移到文件顶部的 import 区。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/ProjectConfigModal.tsx",
+      "line": 18,
+      "message": "import 语句放在文件中间（interface Props 之后），与顶部导入分离，可读性差。",
+      "suggestion": "将 parseEnvVars / serializeEnvVars / EnvVarEntry 导入合并到文件顶部。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/ProjectConfigModal.tsx",
+      "line": 25,
+      "message": "newEnvVarId 使用 Date.now()+Math.random 生成 ID，与 envVars.ts 的 nextId 计数器策略不一致，且 ProjectConfigModal 与 ServiceConfigModal 各自独立生成 env- 前缀 ID，存在跨组件碰撞风险。",
+      "suggestion": "统一使用 envVars.ts 的 ID 生成方案。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src/components/FilePanel.tsx",
+      "line": 1098,
+      "message": "revealInFileManager 的 catch 中 message.error 使用 ${e} 直接拼接错误对象，而非 api.toErrMsg(e)，错误信息可能显示为 [object Object]。",
+      "suggestion": "统一使用 api.toErrMsg(e) 格式化错误。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src/components/FilePanel.tsx",
+      "line": 1209,
+      "message": "标签右键菜单 reveal 项的 catch 同样使用 ${e} 拼接，错误信息可能不友好。",
+      "suggestion": "改用 api.toErrMsg(e)。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src/components/FilePanel.tsx",
+      "line": 300,
+      "message": "refreshDir 的 catch 中 message.error 使用 ${e} 拼接错误对象而非 api.toErrMsg(e)。",
+      "suggestion": "改用 api.toErrMsg(e) 保持错误格式统一。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/FilePanel.tsx",
+      "line": 327,
+      "message": "useEffect 依赖数组为 [] 但内部调用 loadChildren，添加了 eslint-disable 注释。虽然功能上只在挂载时执行一次是正确的，但 loadChildren 是 useCallback 依赖 project.id，若 project.id 在挂载后变化会使用旧的 loadChildren。",
+      "suggestion": "实际上下方已有 [project.id] 的 effect 做重置，此处可保留；但建议将初始加载逻辑合并到 [project.id] effect 中，避免两个 effect 都在挂载时触发 loadChildren('') 导致重复加载。"
+    },
+    {
+      "type": "performance",
+      "level": "medium",
+      "file": "src/components/FilePanel.tsx",
+      "line": 325,
+      "message": "组件挂载时和 project.id 变化时都会触发 loadChildren('')，首次挂载会执行两次 loadChildren('')（一次来自 [] effect，一次来自 [project.id] effect），造成重复 IPC 调用。",
+      "suggestion": "删除 [] effect，仅保留 [project.id] effect 负责初始加载和项目切换重置。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src/components/FilePanel.tsx",
+      "line": 1187,
+      "message": "标签右键 copyPath 的 navigator.clipboard.writeText 的 .catch 中 message.error('复制失败') 但未提供具体原因，且 .then 中 message.success 与 .catch 并列，逻辑正确但可合并。",
+      "suggestion": "可接受现状，或统一为 .then(success).catch(error) 链式写法。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/FilePanel.tsx",
+      "line": 757,
+      "message": "dnd 对象在每次 render 时都会被重新创建（draggingPath 变化也会导致重建），传递给 TreeRow 的 dnd prop 引用每次不同，可能导致 memo 优化的子组件无效重渲染。",
+      "suggestion": "用 useMemo 包裹 dnd 对象，依赖 [draggingPath, handleDropInto]。"
+    },
+    {
+      "type": "performance",
+      "level": "medium",
+      "file": "src/components/FilePanel.tsx",
+      "line": 351,
+      "message": "openFile 的 useCallback 依赖 tabs，每次 tabs 变化（如打开/关闭/编辑任何标签）都会重建 openFile，进而导致传递给 QuickOpenPanel 和 TreeRow 的 openFile/onSelect prop 引用变化。",
+      "suggestion": "用 tabsRef.current 替代对 tabs 的直接引用，将 tabs 从依赖中移除，使 openFile 引用稳定。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src/components/FilePanel.tsx",
+      "line": 441,
+      "message": "closeTab 的 useCallback 依赖 tabs 和 activePath，在 doClose 中通过 tabs[idx+1] / tabs[idx-1] 计算下一个激活标签。但 doClose 是在 modal.confirm 的 onOk 回调中执行的，此时 tabs 可能已过期（闭包捕获的是确认时的 tabs）。",
+      "suggestion": "在 doClose 内使用 tabsRef.current 获取最新 tabs，避免用户确认期间其他标签被关闭导致 next 计算错误。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/ServiceList.tsx",
+      "line": 191,
+      "message": "result.failed.map(([id, _]) => ...) 中使用 _ 作为解构名，虽然常见但部分 lint 规则禁止未使用变量名为 _。且 services.find 在 map 内部对每个失败项遍历 services 数组。",
+      "suggestion": "可预先构建 id→name 的 Map，避免 map 内嵌 find 的 O(n*m) 查找。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/ServiceList.tsx",
+      "line": 253,
+      "message": "同上，handlePackageAll 中 result.failed.map 内嵌 services.find，O(n*m) 查找。",
+      "suggestion": "预建 id→name Map。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src/components/ServiceList.tsx",
+      "line": 60,
+      "message": "localStorage.getItem('jb_collapsed_groups') 后 JSON.parse 未校验解析结果是否为对象（非 boolean 值的 Record），若存储被篡改为数组或字符串，setCollapsed 会得到非法值。",
+      "suggestion": "增加 typeof parsed === 'object' && !Array.isArray(parsed) 校验。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/ServiceList.tsx",
+      "line": 107,
+      "message": "ungroupedServices 在每次 render 时都通过 filter 计算，未 useMemo 化，services 变化时每次 render 都重新过滤。",
+      "suggestion": "用 useMemo 包裹，依赖 [services]。"
+    },
+    {
+      "type": "performance",
+      "level": "low",
+      "file": "src/components/ServiceList.tsx",
+      "line": 272,
+      "message": "renderProjectGroup 在每次 render 时定义新函数，且内部 moreMenuItems 数组每次 render 都重建。虽然功能正确，但传递给 Dropdown 的 menu items 引用每次变化。",
+      "suggestion": "可接受，但若性能敏感可将 moreMenuItems 用 useMemo 化。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src/components/TopBar.tsx",
+      "line": 104,
+      "message": "handleStopAll 是普通 async 函数而非 useCallback，每次 render 都会创建新引用，但作为 Popconfirm 的 onConfirm 传递不影响功能。然而 handleStopAll 内部 await api.stopAll() 失败后 refreshServices() 不会执行，用户可能看到「停止失败」但服务列表仍为旧状态。",
+      "suggestion": "在 catch 中也尝试 refreshServices()，或至少在 finally 中刷新，保证 UI 与后端状态同步。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/TopBar.tsx",
+      "line": 104,
+      "message": "handleStopAll 未用 useCallback 包裹，每次 render 重建。虽然 Popconfirm 的 onConfirm 不做引用优化，但不符合组件内事件处理的常规约定。",
+      "suggestion": "用 useCallback 包裹 handleStopAll。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src/components/UpdateModal.tsx",
+      "line": 93,
+      "message": "handleUpdate 的 catch 中通过 toErrMsg(e).includes('下载已取消') 判断是否为取消操作，依赖错误消息字符串匹配，若后端消息文案变更则会误弹错误提示。",
+      "suggestion": "后端取消时返回一个结构化错误或特定错误码，前端按类型判断而非字符串匹配。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/UpdateModal.tsx",
+      "line": 174,
+      "message": "重试按钮 onClick={() => runCheck({value: false})} 每次创建新的 {value: false} 对象，虽然 runCheck 内部不依赖 cancelledRef 的初始值（会立即 setPhase('checking')），但传入 {value: false} 的语义不清晰。",
+      "suggestion": "runCheck 的 cancelledRef 参数设计用于取消控制，重试时传 {value: false} 表示「未取消」是正确的，但可考虑更清晰的 API 设计，如 runCheck 不接受参数，取消逻辑由 effect cleanup 管理。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src/components/SettingsDrawer.tsx",
+      "line": 63,
+      "message": "handleClose 在关闭抽屉时若有 pending 配置会立即 updateConfig，但若 updateConfig 失败仅 message.error，抽屉仍会关闭，用户可能未注意到错误提示，配置丢失。",
+      "suggestion": "可在 updateConfig 失败时阻止关闭或保持抽屉打开并高亮错误，确保用户知晓保存失败。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/SettingsDrawer.tsx",
+      "line": 114,
+      "message": "formatBytes 函数在组件内部定义，每次 render 都重建。且 update.ts 中已有 formatSize 函数功能类似但实现不同（MB/KB/B vs B/KB/MB/GB）。",
+      "suggestion": "提取为共享的工具函数（如 utils/format.ts），统一字节格式化逻辑，避免重复实现。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/SettingsDrawer.tsx",
+      "line": 226,
+      "message": "刷新按钮的 loading={clearing} 与清除按钮共用 clearing 状态，刷新时清除按钮也会显示 loading，语义混淆。",
+      "suggestion": "为刷新和清除分别使用独立的 loading 状态。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src/components/AddProjectModal.tsx",
+      "line": 100,
+      "message": "useEffect 中调用 doScanFor 但未将其加入依赖数组（eslint-disable），且 doScanFor 在组件中定义但未 useCallback 化，每次 render 重建。若 doScanFor 引用了过期的 state 可能导致问题。",
+      "suggestion": "将 doScanFor 用 useCallback 包裹并加入 effect 依赖，或将扫描逻辑内联到 effect 中。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/AddProjectModal.tsx",
+      "line": 193,
+      "message": "handleAdd 中 const project = await api.addProject(...) 的局部变量 project 与 Props 中的 project 同名，遮蔽了外层 project prop。虽然功能正确（此时 rescan 模式下 project 已用于扫描），但命名容易混淆。",
+      "suggestion": "将局部变量重命名为 addedProject 或 result。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src/components/AddServiceModal.tsx",
+      "line": 43,
+      "message": "handleAdd 中 form.getFieldValue('name') 直接读取表单值，但未先 validateFields，若 name 字段有校验规则可能获取到非法值。当前 name 字段无 required 规则所以功能正确，但绕过校验流程不够健壮。",
+      "suggestion": "若未来 name 字段增加校验，应改用 validateFields 统一校验后再取值。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/MonacoCodeEditor.tsx",
+      "line": 38,
+      "message": "MutableRef<T> 接口在文件中定义但与 React 内置的 MutableRefObject 功能重复，且通过 as 断言使用，类型安全度较低。",
+      "suggestion": "可直接使用 React.MutableRefObject 或 React.RefObject，避免自定义类型与 as 断言。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/MonacoCodeEditor.tsx",
+      "line": 146,
+      "message": "handleMount 的 useCallback 依赖 [editorRef, path, onEditorReady]，其中 path 变化会导致 handleMount 重建，进而触发 Editor 组件的 onMount prop 变化。虽然 onMount 只在挂载时调用一次，但依赖 path 不必要（path 仅用于初始化 previousPathRef）。",
+      "suggestion": "将 path 通过 ref 引用，从依赖中移除，使 handleMount 引用稳定。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src/features/git/useGitGutter.ts",
+      "line": 149,
+      "message": "listen(GIT_CHANGED_EVENT, ...) 的 Promise 未处理 reject 情况，且 unlisten 在 cancelled 时调用 f() 但未从 unlisteners 中移除，逻辑正确但若 listen reject（如事件系统异常）会静默失败，git gutter 不会刷新。",
+      "suggestion": "可添加 .catch 记录警告日志，或在 reject 时设置降级状态。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/features/git/useGitGutter.ts",
+      "line": 236,
+      "message": "new Date(bl.time * 1000).toLocaleString() 在每次 showTooltip 时创建新 Date 并调用 toLocaleString，频繁 hover 时有轻微开销。",
+      "suggestion": "可在 blameCache 中缓存格式化后的时间字符串，避免重复格式化。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src/features/git/DiffView.tsx",
+      "line": 66,
+      "message": "handleDiffMount 未用 useCallback 包裹，每次 render 创建新函数引用，传递给 DiffEditor 的 onMount prop 每次变化。虽然 onMount 只在挂载时调用，但可能触发 DiffEditor 内部不必要的 effect。",
+      "suggestion": "用 useCallback 包裹 handleDiffMount。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/features/git/DiffView.tsx",
+      "line": 73,
+      "message": "双向滚动同步的 sync 函数在 onDidScrollChange 回调中注册，但未在组件卸载时 dispose 对应的 disposable。两个 editor 的 onDidScrollChange 返回的 disposable 被丢弃，存在内存泄漏。",
+      "suggestion": "保存 onDidScrollChange 返回的 disposable，在组件卸载或 handleDiffMount 重新调用时 dispose。"
+    },
+    {
+      "type": "error_handling",
+      "level": "medium",
+      "file": "src/update.ts",
+      "line": 149,
+      "message": "checkForUpdate 中 tauriFetch(UPDATE_API) 未设置超时，若更新服务器无响应，fetch 会一直挂起，TopBar 的 silentCheck 会永久等待，hasUpdate 状态无法更新。",
+      "suggestion": "使用 AbortController 设置超时（如 10 秒），超时后 throw 并走 catch 静默忽略。"
+    },
+    {
+      "type": "security",
+      "level": "low",
+      "file": "src/update.ts",
+      "line": 32,
+      "message": "UPDATE_API 硬编码为 https://node-red.gyfwork.cc.cd/api/get/java-boot，域名包含 cc.cd 顶级域，非常见域名。虽走 HTTPS，但更新包下载地址 download_url 来自该 API 返回的 GitHub Release asset URL，若 API 被劫持可返回恶意下载地址。",
+      "suggestion": "对 download_url 域名做白名单校验（如限定 github.com / objects.githubusercontent.com），防止 API 被篡改后诱导下载恶意安装包。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/update.ts",
+      "line": 82,
+      "message": "parseVersion 对非数字段 parseInt 后 || 0 兜底，如 '1.0.0-rc1' 会解析为 [1,0,0]，忽略预发布标识。与语义化版本规范不完全一致（预发布版本应低于正式版本）。",
+      "suggestion": "若需严格 semver 比较，可引入 semver 库或手动处理预发布标签。当前场景（仅比较 x.y.z）可接受。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/utils/envVars.ts",
+      "line": 23,
+      "message": "idCounter 为模块级全局变量，在 HMR 或测试环境下可能持续累加或跨实例共享，虽不影响功能（ID 仅需唯一），但不可预测。",
+      "suggestion": "可接受，或改用 crypto.randomUUID() / useId 等方案。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/store.ts",
+      "line": 379,
+      "message": "removeService 中 const { [serviceId]: _, ...remainingRuntimes } = state.runtimes 解构出 _ 和 __、___ 等未使用变量，部分 lint 规则会警告。",
+      "suggestion": "可使用 omit 工具函数或 // eslint-disable-next-line 注释。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src/store.ts",
+      "line": 337,
+      "message": "updateConfig 中 await api.saveConfig(cfg) 失败会抛错，但调用方 SettingsDrawer 的 scheduleSave 已有 catch。然而 store 的 config 状态在 catch 前已被 set({config: cfg}) 更新（第 339 行在 await 之后），若 saveConfig 失败，store 中的 config 与后端不一致。",
+      "suggestion": "将 set({config: cfg}) 移到 await api.saveConfig(cfg) 成功之后，确保 store 状态与后端一致。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/store.ts",
+      "line": 63,
+      "message": "pendingLogs 和 flushTimer 为模块级变量，在 HMR 时通过 import.meta.hot.dispose 清理，但在非 HMR 环境（生产构建）下若 store 被多次 create（如测试）会共享状态。",
+      "suggestion": "可接受（生产环境 store 只创建一次），但测试时需注意重置。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/api.ts",
+      "line": 216,
+      "message": "toErrMsg 中 typeof e === 'object' && 'message' in e 的类型断言 (e as {message: unknown}).message 后 String() 包装，但若 message 为对象（如嵌套 Error）会显示 [object Object]。",
+      "suggestion": "可递归提取 message，或对 message 为 object 的情况做 toErrMsg(message) 递归。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/main.tsx",
+      "line": 116,
+      "message": "ThemedApp 中 document.documentElement.setAttribute('data-theme', mode) 在 render 函数体内直接执行（非 useEffect），属于副作用。虽然 React 18 的 concurrent 模式下 render 可能被中断，但 DOM 写操作在 render 中执行不推荐。",
+      "suggestion": "将 data-theme 设置移入 useEffect，依赖 [mode]。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/Icons.tsx",
+      "line": 281,
+      "message": "StatusDot 组件导出但未在项目其他文件中使用（grep 未发现引用），属于死代码。",
+      "suggestion": "若确认未使用可删除，或保留供外部使用。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/Icons.tsx",
+      "line": 471,
+      "message": "Image 图标与全局 window.Image 构造函数同名，虽然作为命名导出不会冲突，但在使用文件中 import { Image } 可能与 DOM Image 混淆。FilePanel 中已用 Image as ImageIcon 别名规避。",
+      "suggestion": "可重命名为 ImageIcon 原生导出，避免使用方需要 alias。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/FileTreeRow.tsx",
+      "line": 69,
+      "message": "commonHandlers 对象在每次 render 时重建，并展开到两个不同的 div（目录行和文件行）上。draggable: true 对文件行也生效，但文件行的 onDragStart/onDragEnd 与目录行共用同一套，语义正确但对象每次 render 重建。",
+      "suggestion": "可用 useMemo 包裹 commonHandlers，依赖 [node.path, node.isDir, dnd]。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/filePanelUtils.ts",
+      "line": 87,
+      "message": "toBufferEol 中 raw.replace(/\\r\\n?/g, '\\n') 的正则 \\r\\n? 会把单独的 \\r 也替换为 \\n，但 \\r\\n 中的 \\r 已被 \\r\\n 匹配。逻辑正确，但 if 分支已检查 raw.includes('\\r\\n')，进入 else 说明无 CRLF，此时 \\r 替换为 \\n 是处理旧 Mac 风格 CR 换行，合理。",
+      "suggestion": "可添加注释说明处理 CR-only 换行的意图，提升可读性。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/filePanelUtils.ts",
+      "line": 95,
+      "message": "dirOf 和 parentOf 两个函数实现完全相同（lastIndexOf('/') + slice），仅函数名不同。虽然语义不同（dirOf 强调「路径的目录部分」，parentOf 强调「父目录」），但代码重复。",
+      "suggestion": "可保留两个名称但让 parentOf 直接调用 dirOf，或合并为一个函数。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src/components/QuickOpenPanel.tsx",
+      "line": 32,
+      "message": "loadFlatFiles 的 catch 静默忽略错误并保留上次结果，但用户无任何反馈，可能误以为已加载最新文件列表。",
+      "suggestion": "可接受（注释说明保留上次结果），或在多次失败后提示用户检查项目状态。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/QuickOpenPanel.tsx",
+      "line": 42,
+      "message": "quickResults 的 useMemo 在 flatFiles 为 null 时返回 []，但 flatFiles 加载完成后会触发重算。空查询时返回 flatFiles.slice(0, 50) 每次都创建新数组，但 useMemo 会缓存，合理。",
+      "suggestion": "可接受，无需修改。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/languages.ts",
+      "line": 33,
+      "message": "toml: 'ini' 映射不够准确，Monaco 的 ini 高亮对 TOML 的 section [xxx] 和键值对支持有限。但 Monaco 无内置 TOML 语言，退化为 ini 可接受。",
+      "suggestion": "可接受，或考虑注册自定义 TOML 语言。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/theme.ts",
+      "line": 11,
+      "message": "模块顶层直接读取 localStorage，在 SSR 环境会报错。虽然 Tauri 桌面应用无 SSR 场景，但 typeof localStorage !== 'undefined' 的守卫已处理。",
+      "suggestion": "可接受，守卫已到位。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/monaco-setup.ts",
+      "line": 21,
+      "message": "self.MonacoEnvironment 直接赋值到全局 self，在模块加载时执行。若多个模块都设置 MonacoEnvironment 会互相覆盖。",
+      "suggestion": "可接受（单应用只初始化一次），但可用 Object.assign 合并而非直接赋值。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/types.ts",
+      "line": 178,
+      "message": "STATUS_META 中 stopped 的 color 为 'default'，但 ServiceCard 中未使用 meta.color（直接用 meta.dot 设置颜色），color 字段可能为死数据。",
+      "suggestion": "确认 color 字段是否被使用，若未使用可删除。"
+    },
+    {
+      "type": "bad_smell",
+      "level": "low",
+      "file": "src/components/ErrorBoundary.tsx",
+      "line": 24,
+      "message": "getDerivedStateFromError 中 retryCount 被重置为 0，但 handleReset 会递增 retryCount。若错误持续发生，用户可无限重试，retryCount 始终从 0 开始（因 getDerivedStateFromError 再次触发会重置），canRetry 永远为 true。",
+      "suggestion": "getDerivedStateFromError 应保留 retryCount：return { hasError: true, error, retryCount: state.retryCount }（需改为接收 state 的签名）。或在 handleReset 中不依赖 retryCount 限制，改为记录总重试次数。"
+    },
+    {
+      "type": "error_handling",
+      "level": "low",
+      "file": "src/components/ErrorBoundary.tsx",
+      "line": 28,
+      "message": "componentDidCatch 仅 console.error，未上报到错误监控服务。对于桌面应用可接受，但生产环境建议接入错误上报。",
+      "suggestion": "可接入 Sentry 或自建上报端点，收集客户端崩溃信息。"
+    }
+  ]
+}
