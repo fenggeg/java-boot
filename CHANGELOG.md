@@ -5,7 +5,18 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.13.0...HEAD)
+## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.20.1...HEAD)
+
+## [0.20.1] - 2026-09-07
+
+### 修复
+
+- **点击文件浏览器按钮弹出终端窗口**：`git_cli.rs` 的 `is_git_installed()` 调用 `Command::new("git")` 时缺少 `creation_flags_no_window()`（`CREATE_NO_WINDOW`），Windows GUI 应用启动 git 进程时会弹出一个一闪而过的控制台窗口；打开文件浏览器会触发 git 可用性探测，因此每次点击都会闪现终端。现补齐该标志，与 `base()` 等其他 git 调用保持一致
+- **Diff 对比面板与主编辑器无法同步滚动**：DiffView 与左侧主编辑器是两个独立组件，此前仅 Diff 内部 original↔modified 双向同步，主编辑器滚动不会带动 Diff、反之亦然；现新增 `mainEditor` prop，在 `handleDiffMount` 中建立主编辑器 ↔ Diff modified 侧的双向滚动同步（两者内容相同、行号一一对应，按行号换算 scrollTop），带回环守卫与位置守卫
+
+### 优化
+
+- **Diff 对比面板 modified 侧不再显示行号**：主编辑器已显示行号，Diff 并排模式再各显示一列会形成重复两列行号；现隐藏 Diff modified 侧行号，只保留 original（HEAD）侧行号，避免视觉冗余
 
 ## [0.20.0] - 2026-09-07
 
