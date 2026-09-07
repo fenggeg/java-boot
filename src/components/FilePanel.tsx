@@ -1007,6 +1007,7 @@ export default function FilePanel({
                     filePath={activeTab.path}
                     modified={activeTab.content}
                     readonly={activeTab.meta.readonly}
+                    mainEditor={editorInstance}
                   />
                 )}
               </div>

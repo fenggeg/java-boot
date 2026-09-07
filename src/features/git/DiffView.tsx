@@ -23,6 +23,8 @@ export interface DiffViewProps {
   modified: string;
   /** 是否只读文件（Diff 只读展示） */
   readonly: boolean;
+  /** 主编辑器实例（用于与 Diff modified 侧双向同步滚动） */
+  mainEditor?: editor.IStandaloneCodeEditor | null;
 }
 
 export default function DiffView({
@@ -30,6 +32,7 @@ export default function DiffView({
   filePath,
   modified,
   readonly,
+  mainEditor,
 }: DiffViewProps) {
   const [original, setOriginal] = useState<string | null>(null);
   const [state, setState] = useState<
@@ -72,6 +75,9 @@ export default function DiffView({
   const handleDiffMount = (diffEditor: editor.IDiffEditor) => {
     const originalEditor = diffEditor.getOriginalEditor();
     const modifiedEditor = diffEditor.getModifiedEditor();
+
+    // 隐藏 modified 侧行号：主编辑器已显示行号，并排时避免出现重复两列行号
+    modifiedEditor.updateOptions({ lineNumbers: "off" });
 
     // 清理上一次的 disposable（组件复用场景）
     disposablesRef.current.forEach((d) => d.dispose());
@@ -176,6 +182,43 @@ export default function DiffView({
 
     attach(originalEditor, modifiedEditor, true);
     attach(modifiedEditor, originalEditor, false);
+
+    // 主编辑器 ↔ Diff modified 侧同步滚动：
+    // 两者内容相同（当前缓冲区），行号一一对应，直接按行号换算 scrollTop。
+    // 回环守卫复用外层 syncing；位置守卫避免 native 联动回环。
+    if (mainEditor) {
+      const mainToDiff = mainEditor.onDidScrollChange((e) => {
+        if (syncing) return;
+        const topLine = topLineAt(mainEditor, e.scrollTop);
+        const targetTop = modifiedEditor.getTopForLineNumber(topLine);
+        if (Math.abs(modifiedEditor.getScrollTop() - targetTop) < 2) return;
+        syncing = true;
+        try {
+          modifiedEditor.setScrollPosition({
+            scrollTop: targetTop,
+            scrollLeft: e.scrollLeft,
+          });
+        } finally {
+          syncing = false;
+        }
+      });
+      const diffToMain = modifiedEditor.onDidScrollChange((e) => {
+        if (syncing) return;
+        const topLine = topLineAt(modifiedEditor, e.scrollTop);
+        const targetTop = mainEditor.getTopForLineNumber(topLine);
+        if (Math.abs(mainEditor.getScrollTop() - targetTop) < 2) return;
+        syncing = true;
+        try {
+          mainEditor.setScrollPosition({
+            scrollTop: targetTop,
+            scrollLeft: e.scrollLeft,
+          });
+        } finally {
+          syncing = false;
+        }
+      });
+      disposablesRef.current.push(mainToDiff, diffToMain);
+    }
   };
 
   // 组件卸载时清理所有 disposable，避免内存泄漏

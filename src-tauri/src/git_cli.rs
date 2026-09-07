@@ -232,6 +232,7 @@ pub fn is_git_installed() -> bool {
         let _slot = acquire_git_slot();
         Command::new("git")
             .arg("--version")
+            .creation_flags_no_window()
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
