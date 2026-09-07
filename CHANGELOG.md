@@ -7,6 +7,23 @@
 
 ## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.13.0...HEAD)
 
+## [0.20.0] - 2026-09-07
+
+### 新增
+
+- **gutter 颜色条点击预览变更**：点击编辑器左侧变更标记（绿/黄/红颜色条）即可内联展开 view zone 预览对应变更内容——绿色（added）展示新增行、黄色（modified）展示 HEAD 原始代码、红色（deleted）展示被删除代码；此前仅纯删除标记可点击
+
+### 修复
+
+- **Diff 对比面板左右两侧无法同步滚动（v0.19.5 遗留）**：`@monaco-editor/react` 在 `original`/`modified` prop 变化时调用 `setValue()`/`executeEdits()` 触发 diff 重新计算，此期间 `getLineChanges()` 返回空数组，`mapLine` 直接返回原行号但两侧行号含义不同（HEAD 行号 vs 当前行号）导致对端跳到错误位置；现增加 `onDidUpdateDiff` 就绪守卫，diff 未就绪或无 changes 时跳过映射同步
+- **`file_at_head` 吞掉所有 git 错误**：`cat-file` 的所有失败一律降级为 `Ok(None)`，掩盖仓库损坏等真实故障并误导前端显示「尚未提交」；现区分「文件不在 HEAD」（stderr 含 `does not exist`/`Not a valid object` → `Ok(None)`）与 git 故障（→ `Err`）
+- **Diff 按钮在文件无改动时仍可点击**：`unmodified` 状态下点击进入只显示「无差异」空面板，浪费一次 git 调用；现 `disabled` 禁用
+
+### 优化
+
+- **`FileDiff.status` 类型收紧**：从裸 `string` 改为联合类型（`added | modified | deleted | renamed | unmodified | binary`），编译期约束状态值，避免拼接未定义 CSS class
+- **DiffView `handleDiffMount` 闭包**：移除 `useCallback([])` 空依赖，消除组件复用场景下 disposable 清理的闭包陈旧风险
+
 ## [0.19.5] - 2026-09-05
 
 ### 修复
