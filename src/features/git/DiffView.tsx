@@ -1,11 +1,13 @@
 // DiffView：Git 差异对比面板（P0），与编辑器并排共存。
 // original = HEAD 版本内容（git cat-file 取回），modified = 当前缓冲区内容（实时跟随输入）。
-// 滚动同步：monaco 0.52 内置同步在 @monaco-editor/react 反复 setModel 的集成下可能失效，
-// 且纯像素级同步（直接复制 scrollTop）在两侧行数不同时位置必然错位。这里在 onMount 里
-// 按「行号映射」做双向同步：source 顶部可见行 → 经 diff 的 ILineChange 映射到对端行号 →
-// getTopForLineNumber 换算目标 scrollTop。带回环守卫 + 位置守卫，native 生效时天然 no-op。
+// 滚动同步：monaco 0.52 内置同步在 @monaco-editor/react 反复 setModel/setValue 的集成下
+// 会失效（original prop 变化时库调用 original.setValue() 重置滚动），且纯像素级同步
+// （直接复制 scrollTop）在两侧行数不同时位置必然错位。这里在 onMount 里按「行号映射」
+// 做双向同步：source 顶部可见行 → 经 diff 的 ILineChange 映射到对端行号 →
+// getTopForLineNumber 换算目标 scrollTop。带回环守卫 + 位置守卫 + diff 就绪守卫，
+// native 生效时天然 no-op。
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { DiffEditor } from "@monaco-editor/react";
 import type { editor, IDisposable } from "monaco-editor";
 import { gitFileAtHead } from "./api";
@@ -65,13 +67,24 @@ export default function DiffView({
 
   /** 双向手动滚动同步：按 diff 行号映射（像素级复制在两侧行数不同时必然错位） */
   const disposablesRef = useRef<IDisposable[]>([]);
-  const handleDiffMount = useCallback((diffEditor: editor.IDiffEditor) => {
+  const diffReadyRef = useRef(false);
+
+  const handleDiffMount = (diffEditor: editor.IDiffEditor) => {
     const originalEditor = diffEditor.getOriginalEditor();
     const modifiedEditor = diffEditor.getModifiedEditor();
 
     // 清理上一次的 disposable（组件复用场景）
     disposablesRef.current.forEach((d) => d.dispose());
     disposablesRef.current = [];
+    diffReadyRef.current = false;
+
+    // diff 计算完成标记：onDidUpdateDiff 在 diff 重新计算完成后触发，
+    // 未就绪前 getLineChanges() 返回 null/空数组，此时映射会错位
+    disposablesRef.current.push(
+      diffEditor.onDidUpdateDiff(() => {
+        diffReadyRef.current = true;
+      })
+    );
 
     // 回环守卫：手动设置对端滚动位置时不再反向触发同步
     let syncing = false;
@@ -139,7 +152,11 @@ export default function DiffView({
     ) => {
       const disposable = source.onDidScrollChange((e) => {
         if (syncing) return;
+        // diff 就绪守卫：未就绪时 getLineChanges() 返回 null/空数组，
+        // 两侧行号含义不同（HEAD 行号 vs 当前行号），直接映射会错位
+        if (!diffReadyRef.current) return;
         const changes = diffEditor.getLineChanges() ?? [];
+        if (changes.length === 0) return;
         const mapped = mapLine(topLineAt(source, e.scrollTop), forward, changes);
         const targetTop = target.getTopForLineNumber(mapped);
         // 位置守卫：目标已在相近位置（native 同步或已同步）→ no-op，防回环
@@ -159,7 +176,7 @@ export default function DiffView({
 
     attach(originalEditor, modifiedEditor, true);
     attach(modifiedEditor, originalEditor, false);
-  }, []);
+  };
 
   // 组件卸载时清理所有 disposable，避免内存泄漏
   useEffect(() => {

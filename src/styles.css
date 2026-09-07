@@ -2478,10 +2478,12 @@ body {
 .jb-gutter-added {
   border-left: 3px solid #2da44e;
   background: rgba(45, 164, 78, 0.14);
+  cursor: pointer;
 }
 .jb-gutter-modified {
   border-left: 3px solid #bf8700;
   background: rgba(191, 135, 0, 0.14);
+  cursor: pointer;
 }
 .jb-gutter-deleted {
   border-left: 3px solid #cf222e;
@@ -2493,12 +2495,26 @@ body {
 [data-theme="dark"] .jb-gutter-modified { background: rgba(210, 153, 34, 0.18); }
 [data-theme="dark"] .jb-gutter-deleted { background: rgba(248, 81, 73, 0.18); }
 
-/* —— 删除标记点击后内联展示的 view zone —— */
+/* —— gutter 颜色条点击后内联展示的 view zone —— */
 .jb-deleted-zone {
   background: rgba(207, 34, 46, 0.06);
   border-left: 3px solid #cf222e;
   border-bottom: 1px dashed rgba(207, 34, 46, 0.3);
 }
+.jb-diff-zone-modified {
+  background: rgba(191, 135, 0, 0.06);
+  border-left: 3px solid #bf8700;
+  border-bottom: 1px dashed rgba(191, 135, 0, 0.3);
+}
+.jb-diff-zone-added {
+  background: rgba(45, 164, 78, 0.06);
+  border-left: 3px solid #2da44e;
+  border-bottom: 1px dashed rgba(45, 164, 78, 0.3);
+}
+.jb-diff-zone-modified .jb-deleted-zone-head { color: #bf8700; }
+.jb-diff-zone-added .jb-deleted-zone-head { color: #2da44e; }
+[data-theme="dark"] .jb-diff-zone-modified .jb-deleted-zone-head { color: #d29922; }
+[data-theme="dark"] .jb-diff-zone-added .jb-deleted-zone-head { color: #3fb950; }
 
 .jb-deleted-zone-head {
   display: flex;

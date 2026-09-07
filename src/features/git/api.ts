@@ -17,7 +17,7 @@ export interface Hunk {
 export interface FileDiff {
   path: string;
   /** added / modified / deleted / renamed / unmodified / binary */
-  status: string;
+  status: "added" | "modified" | "deleted" | "renamed" | "unmodified" | "binary";
   isBinary: boolean;
   hunks: Hunk[];
 }

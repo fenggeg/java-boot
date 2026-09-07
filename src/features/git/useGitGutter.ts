@@ -55,8 +55,8 @@ export function useGitGutter(
 
     let cancelled = false;
     const coll = editor.createDecorationsCollection();
-    // 纯删除标记行 → hunk（view zone 用）
-    const deletedHunks = new Map<number, Hunk>();
+    // 行号 → hunk（view zone 预览用，覆盖 added/modified/deleted 所有类型）
+    const lineHunks = new Map<number, Hunk>();
     // blame 缓存（finalLine → BlameLine；git://changed 后失效重新加载）
     const blameCache = new Map<number, BlameLine>();
     // view zone：key = `${filePath}#${line}` → zone id
@@ -68,13 +68,13 @@ export function useGitGutter(
     const applyDiff = (d: FileDiff) => {
       const lineCount = model.getLineCount();
       const decorations: editor.IModelDeltaDecoration[] = [];
-      deletedHunks.clear();
+      lineHunks.clear();
       for (const h of d.hunks) {
         if (h.newLines === 0) {
           // 纯删除：标记画在 newStart+1（间隙后第一行），clamp 到 lineCount
           const line = Math.min(h.newStart + 1, lineCount);
           if (line < 1 || line > lineCount) continue;
-          deletedHunks.set(line, h);
+          lineHunks.set(line, h);
           decorations.push({
             range: new monaco.Range(line, 1, line, 1),
             options: {
@@ -98,6 +98,8 @@ export function useGitGutter(
           if (start < 1 || end < start) continue;
           const added = h.oldLines === 0;
           const color = added ? GIT_COLORS.added : GIT_COLORS.modified;
+          // 每一行都注册到 lineHunks，点击任意行均可预览
+          for (let l = start; l <= end; l++) lineHunks.set(l, h);
           decorations.push({
             range: new monaco.Range(start, 1, end, 1),
             options: {
@@ -151,14 +153,23 @@ export function useGitGutter(
       else unlisten = f;
     });
 
-    // ---------------- P2：删除标记 view zone ----------------
-    const buildZoneDom = (lines: string[], onClose: () => void) => {
+    // ---------------- P2：gutter 颜色条点击预览变更 ----------------
+    const buildZoneDom = (
+      lines: string[],
+      kind: "deleted" | "modified" | "added",
+      onClose: () => void
+    ) => {
       const wrap = document.createElement("div");
-      wrap.className = "jb-deleted-zone";
+      wrap.className = `jb-deleted-zone jb-diff-zone-${kind}`;
       const header = document.createElement("div");
       header.className = "jb-deleted-zone-head";
       const label = document.createElement("span");
-      label.textContent = `已删除 ${lines.length} 行`;
+      const labelMap = {
+        deleted: `已删除 ${lines.length} 行`,
+        modified: `原始版本 ${lines.length} 行`,
+        added: `新增 ${lines.length} 行`,
+      };
+      label.textContent = labelMap[kind];
       const close = document.createElement("button");
       close.type = "button";
       close.className = "jb-deleted-zone-close";
@@ -167,10 +178,12 @@ export function useGitGutter(
       header.appendChild(label);
       header.appendChild(close);
       wrap.appendChild(header);
-      const pre = document.createElement("pre");
-      pre.className = "jb-deleted-zone-body";
-      pre.textContent = lines.join("\n");
-      wrap.appendChild(pre);
+      if (lines.length > 0) {
+        const pre = document.createElement("pre");
+        pre.className = "jb-deleted-zone-body";
+        pre.textContent = lines.join("\n");
+        wrap.appendChild(pre);
+      }
       return wrap;
     };
 
@@ -188,17 +201,37 @@ export function useGitGutter(
         removeZone(key);
         return;
       }
+      // 纯新增（oldLines === 0）：无原始版本可展示，展示当前新增行
+      if (h.oldLines === 0) {
+        const modelLines: string[] = [];
+        const lc = model.getLineCount();
+        for (let l = h.newStart; l <= Math.min(h.newStart + h.newLines - 1, lc); l++) {
+          modelLines.push(model.getLineContent(l));
+        }
+        if (modelLines.length === 0) return;
+        editor.changeViewZones((accessor) => {
+          const id = accessor.addZone({
+            afterLineNumber: Math.min(h.newStart + h.newLines - 1, lc),
+            heightInLines: modelLines.length + 1,
+            domNode: buildZoneDom(modelLines, "added", () => removeZone(key)),
+          });
+          zoneIdByKey.set(key, id);
+        });
+        return;
+      }
+      // 修改/删除：展示 HEAD 中的原始代码
       const head = await gitFileAtHead(repoRoot, filePath);
       if (head == null) return;
       const all = head.split(/\r?\n/);
       const start = Math.max(0, h.oldStart - 1);
       const slice = all.slice(start, start + h.oldLines);
       if (slice.length === 0) return;
+      const kind = h.newLines === 0 ? "deleted" : "modified";
       editor.changeViewZones((accessor) => {
         const id = accessor.addZone({
           afterLineNumber: line,
           heightInLines: slice.length + 1,
-          domNode: buildZoneDom(slice, () => removeZone(key)),
+          domNode: buildZoneDom(slice, kind, () => removeZone(key)),
         });
         zoneIdByKey.set(key, id);
       });
@@ -266,12 +299,12 @@ export function useGitGutter(
 
     const onMouseDown = (e: editor.IEditorMouseEvent) => {
       const t = e.target;
-      const isGutter =
-        t.type === monaco.editor.MouseTargetType.GUTTER_LINE_DECORATIONS ||
-        t.type === monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS;
-      if (!isGutter || t.position == null) return;
+      // 点击 gutter 颜色条（GUTTER_LINE_DECORATIONS）触发预览
+      const isGutterDecoration =
+        t.type === monaco.editor.MouseTargetType.GUTTER_LINE_DECORATIONS;
+      if (!isGutterDecoration || t.position == null) return;
       const line = t.position.lineNumber;
-      const h = deletedHunks.get(line);
+      const h = lineHunks.get(line);
       if (!h) return;
       void toggleViewZone(line, h);
     };

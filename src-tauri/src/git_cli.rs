@@ -412,6 +412,11 @@ fn build_diff(path: &str, raw_status: &str, out: &[u8]) -> FileDiff {
 }
 
 /// HEAD 中该文件的原始内容（新文件不在 HEAD 中 → None；非 UTF-8 → None）
+///
+/// 错误区分：
+/// - git 明确表示对象不存在（stderr 含 "does not exist" / "Not a valid object"）
+///   → Ok(None)，这是「文件不在 HEAD」的正常语义
+/// - 其他 git 故障（进程无法启动、仓库损坏等）→ Err，向上传播避免掩盖真实问题
 pub fn file_at_head(project_root: &Path, file_path: &str) -> GitResult<Option<String>> {
     let mut r = GitRunner::new(project_root.to_path_buf());
     let repo_root = r.toplevel()?.clone();
@@ -419,7 +424,17 @@ pub fn file_at_head(project_root: &Path, file_path: &str) -> GitResult<Option<St
     let arg = format!("HEAD:{}", rel);
     match r.run_bytes(&["cat-file", "-p", &arg]) {
         Ok(bytes) => Ok(String::from_utf8(bytes).ok()),
-        Err(_) => Ok(None), // 新文件不在 HEAD / 其它失败一律视为无历史版本
+        Err(msg) => {
+            // git cat-file 对不存在的对象以非 0 退出码返回，stderr 包含特征文本
+            let not_in_head = msg.contains("does not exist")
+                || msg.contains("Not a valid object")
+                || msg.contains("not a valid object");
+            if not_in_head {
+                Ok(None)
+            } else {
+                Err(format!("读取 HEAD 版本失败: {}", msg))
+            }
+        }
     }
 }
 

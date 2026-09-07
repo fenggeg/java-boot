@@ -953,6 +953,7 @@ export default function FilePanel({
                       size="small"
                       icon={<Commit size={13} />}
                       type={diffOpen ? "primary" : "default"}
+                      disabled={!gitDiff || gitDiff.status === "unmodified"}
                       onClick={() => setDiffOpen((o) => !o)}
                     >
                       Diff
