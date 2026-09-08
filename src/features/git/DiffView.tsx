@@ -92,8 +92,15 @@ export default function DiffView({
       })
     );
 
-    // 回环守卫：手动设置对端滚动位置时不再反向触发同步
-    let syncing = false;
+    // 回环守卫：分为内外两层，互不干扰。
+    // internalSyncing：diff 内部 original↔modified 双向同步
+    // externalSyncing：主编辑器 ↔ diff modified 侧双向同步
+    // 之前共用单个 syncing 导致：用户滚动 diff 时 attach(original→modified)
+    // 设置 syncing=true，随后 modifiedEditor.onDidScrollChange 上注册的
+    // diffToMain 监听器看到 syncing=true 直接 return，造成 diff→主编辑器
+    // 单向失灵。
+    let internalSyncing = false;
+    let externalSyncing = false;
 
     // 从 scrollTop 求顶部可见行号（二分查找）
     const topLineAt = (ed: editor.ICodeEditor, scrollTop: number): number => {
@@ -157,7 +164,7 @@ export default function DiffView({
       forward: boolean
     ) => {
       const disposable = source.onDidScrollChange((e) => {
-        if (syncing) return;
+        if (internalSyncing) return;
         // diff 就绪守卫：未就绪时 getLineChanges() 返回 null/空数组，
         // 两侧行号含义不同（HEAD 行号 vs 当前行号），直接映射会错位
         if (!diffReadyRef.current) return;
@@ -167,14 +174,14 @@ export default function DiffView({
         const targetTop = target.getTopForLineNumber(mapped);
         // 位置守卫：目标已在相近位置（native 同步或已同步）→ no-op，防回环
         if (Math.abs(target.getScrollTop() - targetTop) < 2) return;
-        syncing = true;
+        internalSyncing = true;
         try {
           target.setScrollPosition({
             scrollTop: targetTop,
             scrollLeft: e.scrollLeft,
           });
         } finally {
-          syncing = false;
+          internalSyncing = false;
         }
       });
       disposablesRef.current.push(disposable);
@@ -185,36 +192,36 @@ export default function DiffView({
 
     // 主编辑器 ↔ Diff modified 侧同步滚动：
     // 两者内容相同（当前缓冲区），行号一一对应，直接按行号换算 scrollTop。
-    // 回环守卫复用外层 syncing；位置守卫避免 native 联动回环。
+    // 回环守卫使用独立 externalSyncing；位置守卫避免 native 联动回环。
     if (mainEditor) {
       const mainToDiff = mainEditor.onDidScrollChange((e) => {
-        if (syncing) return;
+        if (externalSyncing) return;
         const topLine = topLineAt(mainEditor, e.scrollTop);
         const targetTop = modifiedEditor.getTopForLineNumber(topLine);
         if (Math.abs(modifiedEditor.getScrollTop() - targetTop) < 2) return;
-        syncing = true;
+        externalSyncing = true;
         try {
           modifiedEditor.setScrollPosition({
             scrollTop: targetTop,
             scrollLeft: e.scrollLeft,
           });
         } finally {
-          syncing = false;
+          externalSyncing = false;
         }
       });
       const diffToMain = modifiedEditor.onDidScrollChange((e) => {
-        if (syncing) return;
+        if (externalSyncing) return;
         const topLine = topLineAt(modifiedEditor, e.scrollTop);
         const targetTop = mainEditor.getTopForLineNumber(topLine);
         if (Math.abs(mainEditor.getScrollTop() - targetTop) < 2) return;
-        syncing = true;
+        externalSyncing = true;
         try {
           mainEditor.setScrollPosition({
             scrollTop: targetTop,
             scrollLeft: e.scrollLeft,
           });
         } finally {
-          syncing = false;
+          externalSyncing = false;
         }
       });
       disposablesRef.current.push(mainToDiff, diffToMain);
