@@ -5,7 +5,13 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.20.1...HEAD)
+## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.20.2...HEAD)
+
+## [0.20.2] - 2026-09-08
+
+### 修复
+
+- **Diff→主编辑器滚动同步单向失灵**：DiffView 的 diff 内部同步（original↔modified）与外部同步（main↔diff）共用单个 `syncing` 布尔回环守卫，导致用户滚动 diff 页面时 `attach(original→modified)` 先设置 `syncing=true`，随后 `modifiedEditor.onDidScrollChange` 上注册的 `diffToMain` 监听器看到标志为 true 直接 return，diff→主编辑器方向永远无法同步。现将单一守卫拆分为 `internalSyncing`（diff 内部）与 `externalSyncing`（main↔diff），两层互不干扰，滚动同步在所有方向正常工作
 
 ## [0.20.1] - 2026-09-07
 
