@@ -1,0 +1,196 @@
+/* ========================================================
+   TopBar — macOS vibrancy material
+   ======================================================== */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 18px;
+  height: 56px;
+  background: var(--surface-blur);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  position: relative;
+  z-index: 10;
+  animation: fade-down 0.6s var(--ease-out) both;
+}
+
+.topbar-stats {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: default;
+}
+
+/* 窗口控制（自定义标题栏）— 与顶栏同材质、同圆角、同悬停语言 */
+.window-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 8px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+
+.win-btn {
+  width: 32px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease);
+}
+
+.win-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text);
+}
+
+.win-btn:active {
+  transform: scale(0.94);
+}
+
+.win-btn.close:hover {
+  background: var(--red);
+  color: #ffffff;
+}
+
+[data-theme="dark"] .win-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+[data-theme="dark"] .win-btn.close:hover {
+  background: var(--red);
+  color: #ffffff;
+}
+
+/* ========================================================
+   Update Modal — 版本徽标 / 更新日志 / 下载进度
+   ======================================================== */
+.update-center {
+  padding: 44px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.update-status-ok {
+  color: var(--green);
+  display: inline-flex;
+}
+
+.update-status-err {
+  color: var(--red);
+  display: inline-flex;
+}
+
+.update-version-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.update-version-pill {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: var(--r-pill);
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.update-version-pill.new {
+  background: var(--blue-glow);
+  color: var(--blue);
+  font-weight: 600;
+  box-shadow: 0 0 0 1px rgba(0, 113, 227, 0.15);
+}
+
+.update-version-arrow {
+  color: var(--text-4);
+  display: inline-flex;
+}
+
+.update-meta {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.update-changelog {
+  max-height: 380px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  padding: 4px 16px;
+}
+
+.update-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.update-progress-row .ant-progress {
+  flex: 1;
+  margin: 0;
+}
+
+.update-progress-row .ant-progress-text {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+[data-theme="dark"] .update-version-pill {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.stat-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-item .stat-label {
+  color: var(--text-3);
+}
+
+.stat-item .stat-val {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.stat-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.6),
+    0 0 8px currentColor;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

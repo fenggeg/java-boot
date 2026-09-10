@@ -1,0 +1,330 @@
+/* ========================================================
+   Log Panel
+   ======================================================== */
+.log-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+  background: var(--bg-elevated);
+  animation: fade-in 0.6s var(--ease-out) 0.1s both;
+}
+
+.log-tabs {
+  flex-shrink: 0;
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-blur);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+}
+
+.log-tabs .ant-tabs {
+  flex: 1;
+  min-width: 0;
+}
+
+.log-collapse-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  margin: 4px 6px 0 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease);
+}
+
+.log-collapse-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text);
+}
+
+.log-collapse-btn.accent {
+  color: var(--blue);
+}
+
+.log-collapse-btn.accent:hover {
+  background: var(--blue-glow);
+  color: var(--blue);
+}
+
+[data-theme="dark"] .log-collapse-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.log-tabs-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  padding-right: 6px;
+}
+
+/* Dock 顶部工具条：标题 + 收起 */
+.dock-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  height: 36px;
+  padding: 0 10px 0 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.dock-header-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-2);
+  margin-right: auto;
+  user-select: none;
+}
+
+.dock-body {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* 收起后左侧窄条：点击展开日志 */
+.log-expand-strip {
+  flex-shrink: 0;
+  width: 36px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 0;
+  border: none;
+  border-right: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease);
+}
+
+.log-expand-strip span {
+  writing-mode: vertical-rl;
+  letter-spacing: 0.12em;
+  font-size: 12px;
+}
+
+.log-expand-strip:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.log-content {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.log-viewer {
+  flex: 1;
+  overflow: auto;
+  padding: 12px 16px 16px;
+  font-family: var(--font-code);
+  font-size: 12px;
+  line-height: 1.6;
+  user-select: text;
+  background: var(--bg-elevated);
+  color: var(--text);
+  position: relative;
+}
+
+.log-line {
+  white-space: pre;
+  /* 固定行高与 LogViewer 的 LINE_HEIGHT 常量一致，保证虚拟滚动定位精确 */
+  line-height: 19px;
+  height: 19px;
+  position: relative;
+  border-radius: 4px;
+  padding: 0 4px;
+  transition: background 0.1s var(--ease);
+}
+
+.log-line:hover {
+  background: rgba(0, 0, 0, 0.025);
+}
+
+.log-line.app { color: var(--text); }
+.log-line.mvn { color: var(--blue); }
+
+.log-line .log-source {
+  color: var(--text-4);
+  margin-right: 8px;
+  font-size: 10.5px;
+  letter-spacing: -0.01em;
+}
+
+.log-line .log-time {
+  color: var(--text-3);
+  margin-right: 8px;
+  font-size: 10.5px;
+}
+
+.log-line.warn { color: var(--orange); }
+.log-line.error { color: var(--red); }
+
+.log-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.log-toolbar .toolbar-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.log-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  font-size: 14px;
+  background: var(--bg-elevated);
+}
+
+/* ========================================================
+   Empty / hero states — Apple-grade hero
+   ======================================================== */
+.hero-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  padding: 40px;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.hero-empty::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(0, 113, 227, 0.07), transparent 55%);
+  pointer-events: none;
+}
+
+.hero-mark {
+  display: grid;
+  place-items: center;
+  color: var(--blue);
+  position: relative;
+  z-index: 1;
+  filter: drop-shadow(0 8px 24px rgba(0, 113, 227, 0.35))
+    drop-shadow(0 1px 2px rgba(0, 113, 227, 0.2));
+  animation: hero-rise 0.8s var(--ease-spring) both;
+}
+
+/* muted variant: neutral icon without the blue glow */
+.hero-mark.subtle {
+  color: var(--text-3);
+  filter: drop-shadow(0 6px 16px rgba(0, 0, 0, 0.08));
+}
+
+.hero-title {
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 32px;
+  letter-spacing: -0.035em;
+  color: var(--text);
+  position: relative;
+  z-index: 1;
+  animation: hero-rise 0.8s var(--ease-out) 0.08s both;
+}
+
+.hero-sub {
+  font-size: 14px;
+  color: var(--text-2);
+  letter-spacing: -0.01em;
+  line-height: 1.5;
+  max-width: 380px;
+  position: relative;
+  z-index: 1;
+  animation: hero-rise 0.8s var(--ease-out) 0.16s both;
+}
+
+.hero-sub .accent {
+  color: var(--blue);
+  font-weight: 500;
+}
+
+@keyframes hero-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ========================================================
+   Scrollbars — thin, unobtrusive, Apple-style
+   ======================================================== */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: var(--r-pill);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+}
+
+.log-viewer::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.14);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+}
+
+.log-viewer::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.26);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+}

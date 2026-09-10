@@ -1,4 +1,4 @@
-import {lazy, Suspense, useCallback, useEffect, useMemo, useState} from "react";
+import {lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {App as AntApp, Dropdown, Tabs, Alert, Button, Spin} from "antd";
 import {listen, type UnlistenFn,} from "@tauri-apps/api/event";
 import {useShallow} from "zustand/react/shallow";
@@ -15,7 +15,7 @@ import AddProjectModal from "./components/AddProjectModal";
 import AddServiceModal from "./components/AddServiceModal";
 import ServiceConfigModal from "./components/ServiceConfigModal";
 import SettingsDrawer from "./components/SettingsDrawer";
-import {HeroLogo, Terminal} from "./components/Icons";
+import {HeroLogo, Terminal, ChevronLeft, Code, X} from "./components/Icons";
 
 type ContextMenuAction =
   | "close"
@@ -63,9 +63,21 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     return localStorage.getItem("javaboot:sidebarCollapsed") === "1";
   });
-  // 右侧主视图：日志（默认）或文件浏览器
-  const [view, setView] = useState<"logs" | "files">("logs");
+  // 分屏：日志常驻左侧，文件面板为右侧 Dock（可关、可拖宽、日志可收起）
   const [fileProjectId, setFileProjectId] = useState<string | null>(null);
+  const [fileDockOpen, setFileDockOpen] = useState(false);
+  const [dockWidth, setDockWidth] = useState<number>(() => {
+    const saved = localStorage.getItem("javaboot:dockWidth");
+    return saved ? parseInt(saved, 10) || 520 : 520;
+  });
+  /** 文件 Dock 打开时，是否收起日志面板（腾出主区给文件树/编辑器） */
+  const [logCollapsed, setLogCollapsed] = useState<boolean>(() => {
+    return localStorage.getItem("javaboot:logCollapsed") === "1";
+  });
+  const dockDraggingRef = useRef(false);
+  const [dockDragging, setDockDragging] = useState(false);
+  const dockAreaRef = useRef<HTMLDivElement>(null);
+  const splitRef = useRef<HTMLDivElement>(null);
   // Tab 右键菜单上下文
   const [contextMenu, setContextMenu] = useState<{
     serviceId: string;
@@ -73,6 +85,46 @@ export default function App() {
     y: number;
   } | null>(null);
   const { message } = AntApp.useApp();
+
+  // Dock 拖拽调宽：以 content-split 右缘为基准算宽度（Dock 固定在右侧）
+  // 旧算法用 e.clientX - dock.left，在 flex 右贴布局下结果为负/跳变，导致拖不动
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!dockDraggingRef.current || !splitRef.current) return;
+      const split = splitRef.current.getBoundingClientRect();
+      // 光标到分屏右缘的距离 = dock 目标宽度
+      const raw = split.right - e.clientX;
+      // 拖到很窄时自动收起日志侧并让 dock 充满；拖回则恢复
+      if (raw < 80 && !logCollapsed) {
+        setLogCollapsed(true);
+        localStorage.setItem("javaboot:logCollapsed", "1");
+        return;
+      }
+      if (raw > 140 && logCollapsed) {
+        setLogCollapsed(false);
+        localStorage.setItem("javaboot:logCollapsed", "0");
+      }
+      const next = Math.max(360, Math.min(Math.round(raw), split.width - 80));
+      setDockWidth(next);
+    };
+    const onUp = () => {
+      if (!dockDraggingRef.current) return;
+      dockDraggingRef.current = false;
+      setDockDragging(false);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      setDockWidth((w) => {
+        localStorage.setItem("javaboot:dockWidth", String(w));
+        return w;
+      });
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [logCollapsed]);
 
   // 初始化 + 事件监听
   useEffect(() => {
@@ -161,24 +213,70 @@ export default function App() {
     });
   }, []);
 
-  // 打开某项目的文件浏览器
+  // 打开某项目的文件浏览器（右侧 Dock，与日志并存）
   const handleOpenFiles = useCallback((project: Project) => {
     setFileProjectId(project.id);
-    setView("files");
+    setFileDockOpen(true);
   }, []);
 
-  // 点击左侧服务（或切换日志 tab）时回到日志视图
-  useEffect(() => {
-    if (selectedServiceId) setView("logs");
-  }, [selectedServiceId]);
+  // 收起编辑器 Dock（保留日志视图；若日志已收起则一并展开）
+  const closeFileDock = useCallback(() => {
+    setFileDockOpen(false);
+    setLogCollapsed(false);
+    try {
+      localStorage.setItem("javaboot:logCollapsed", "0");
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
-  // 项目被删除时关闭对应的文件浏览器
+  /** 日志页「打开/收起编辑器」：优先用当前 Dock 项目，其次当前服务所属项目，再取第一个项目 */
+  const toggleEditorDock = useCallback(() => {
+    if (fileDockOpen) {
+      closeFileDock();
+      return;
+    }
+    const svc = services.find((s) => s.id === selectedServiceId);
+    const project =
+      projects.find((p) => p.id === fileProjectId) ??
+      projects.find((p) => p.id === svc?.project_id) ??
+      projects[0];
+    if (!project) {
+      message.info("请先添加项目后再打开编辑器");
+      return;
+    }
+    setFileProjectId(project.id);
+    setFileDockOpen(true);
+  }, [fileDockOpen, closeFileDock, fileProjectId, selectedServiceId, services, projects, message]);
+
+  const toggleLogCollapsed = useCallback(() => {
+    setLogCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("javaboot:logCollapsed", next ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }, []);
+
+  // 项目被删除时关闭对应的文件 Dock
   useEffect(() => {
     if (fileProjectId && !projects.some((p) => p.id === fileProjectId)) {
       setFileProjectId(null);
-      setView("logs");
+      setFileDockOpen(false);
     }
   }, [projects, fileProjectId]);
+
+  // Dock 左缘拖拽开始
+  const startDockDrag = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dockDraggingRef.current = true;
+    setDockDragging(true);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }, []);
 
   // Tab 右键菜单处理
   const handleContextMenu = useCallback((e: React.MouseEvent, serviceId: string) => {
@@ -275,70 +373,134 @@ export default function App() {
           onToggleCollapse={toggleSidebar}
         />
 
-        <div className="log-panel">
-          {view === "logs" ? (
-            services.length === 0 ? (
-              <div className="hero-empty">
-                <div className="hero-mark">
-                  <HeroLogo size={88} />
+        {/* 分屏主区：日志左（可收起），文件 Dock 右（可拖宽） */}
+        <div
+          ref={splitRef}
+          className={`content-split ${dockDragging ? "is-dragging" : ""} ${logCollapsed && fileDockOpen ? "log-collapsed" : ""}`}
+        >
+          {/* 日志侧：Dock 打开且收起时隐藏，仅留窄条恢复入口 */}
+          {!(fileDockOpen && logCollapsed) ? (
+            <div className="log-panel">
+              {services.length === 0 ? (
+                <div className="hero-empty">
+                  <div className="hero-mark">
+                    <HeroLogo size={88} />
+                  </div>
+                  <div className="hero-title">JavaBoot Launcher</div>
+                  <div className="hero-sub">
+                    轻量本地 Spring Boot 服务编排。点击左侧
+                    <span className="accent"> 添加项目</span> 开始
+                  </div>
                 </div>
-                <div className="hero-title">JavaBoot Launcher</div>
-                <div className="hero-sub">
-                  轻量本地 Spring Boot 服务编排。点击左侧
-                  <span className="accent"> 添加项目</span> 开始
+              ) : openedTabs.length === 0 ? (
+                <div className="hero-empty">
+                  <div className="hero-mark subtle">
+                    <Terminal size={56} />
+                  </div>
+                  <div className="hero-sub">
+                    从左侧服务列表选择一个服务，在此查看实时日志
+                  </div>
                 </div>
-              </div>
-            ) : openedTabs.length === 0 ? (
-              <div className="hero-empty">
-                <div className="hero-mark subtle">
-                  <Terminal size={56} />
-                </div>
-                <div className="hero-sub">
-                  从左侧服务列表选择一个服务，在此查看实时日志
-                </div>
-              </div>
-            ) : (
-              <>
-                <div className="log-tabs">
-                  <Tabs
-                    size="small"
-                    type="editable-card"
-                    hideAdd
-                    activeKey={selectedServiceId ?? undefined}
-                    onChange={(key) => selectService(key)}
-                    onEdit={(key, action) => {
-                      if (action === "remove" && typeof key === "string") {
-                        closeTab(key);
-                      }
-                    }}
-                    items={tabItems}
-                    tabBarStyle={{ margin: 0, padding: "4px 8px 0" }}
-                  />
-                </div>
-                <LogViewer serviceId={selectedServiceId} />
-              </>
-            )
-          ) : null}
+              ) : (
+                <>
+                  <div className="log-tabs">
+                    <Tabs
+                      size="small"
+                      type="editable-card"
+                      hideAdd
+                      activeKey={selectedServiceId ?? undefined}
+                      onChange={(key) => selectService(key)}
+                      onEdit={(key, action) => {
+                        if (action === "remove" && typeof key === "string") {
+                          closeTab(key);
+                        }
+                      }}
+                      items={tabItems}
+                      tabBarStyle={{ margin: 0, padding: "4px 8px 0" }}
+                    />
+                    {projects.length > 0 && (
+                      <div className="log-tabs-actions">
+                        <button
+                          className={`log-collapse-btn ${fileDockOpen ? "accent" : ""}`}
+                          onClick={toggleEditorDock}
+                          title={fileDockOpen ? "收起编辑器" : "打开编辑器"}
+                          aria-label={fileDockOpen ? "收起编辑器" : "打开编辑器"}
+                          aria-pressed={fileDockOpen}
+                        >
+                          <Code size={14} />
+                        </button>
+                        {fileDockOpen && (
+                          <button
+                            className="log-collapse-btn"
+                            onClick={toggleLogCollapsed}
+                            title="收起日志（双击分隔条）"
+                            aria-label="收起日志"
+                          >
+                            <ChevronLeft size={14} />
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <LogViewer serviceId={selectedServiceId} />
+                </>
+              )}
+            </div>
+          ) : (
+            <button
+              className="log-expand-strip"
+              onClick={toggleLogCollapsed}
+              title="展开日志"
+              aria-label="展开日志"
+            >
+              <ChevronLeft size={14} style={{ transform: "rotate(180deg)" }} />
+              <span>日志</span>
+            </button>
+          )}
 
           {(() => {
             const fileProject = projects.find((p) => p.id === fileProjectId);
-            if (!fileProject) return null;
+            if (!fileDockOpen || !fileProject) return null;
             return (
-              <div className={`view-slot ${view === "files" ? "" : "hidden"}`}>
-                <Suspense
-                  fallback={
-                    <div style={{padding: 60, textAlign: "center"}}>
-                      <Spin />
-                    </div>
-                  }
+              <>
+                <div
+                  className="dock-resizer"
+                  onMouseDown={startDockDrag}
+                  onDoubleClick={toggleLogCollapsed}
+                  title="拖动调整宽度；双击收起/展开日志"
+                />
+                <div
+                  className="file-dock"
+                  ref={dockAreaRef}
+                  style={{ width: dockWidth }}
                 >
-                  <FilePanel
-                    project={fileProject}
-                    visible={view === "files"}
-                    onClose={() => setView("logs")}
-                  />
-                </Suspense>
-              </div>
+                  <div className="dock-header">
+                    <span className="dock-header-title">
+                      <Code size={13} />
+                      编辑器
+                    </span>
+                    <button
+                      className="icon-btn sm"
+                      onClick={closeFileDock}
+                      title="收起编辑器"
+                      aria-label="收起编辑器"
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                  <div className="dock-body">
+                    <Suspense
+                      fallback={
+                        <div style={{ padding: 60, textAlign: "center" }}>
+                          <Spin />
+                        </div>
+                      }
+                    >
+                      <FilePanel project={fileProject} visible={fileDockOpen} />
+                    </Suspense>
+                  </div>
+                </div>
+              </>
             );
           })()}
         </div>

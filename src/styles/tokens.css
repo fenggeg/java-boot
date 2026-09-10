@@ -1,0 +1,180 @@
+/*
+ * JavaBoot Launcher — Apple-inspired HIG aesthetic
+ * Light canvas · frosted vibrancy · SF system type · iOS system colors
+ * Soft shadows · spring motion · generous rounding
+ */
+
+:root {
+  /* —— Canvas (Apple signature light) —— */
+  --bg: #f5f5f7;
+  --bg-elevated: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #fbfbfd;
+  --surface-3: #f5f5f7;
+  --surface-hi: #ebebed;
+  --surface-blur: rgba(255, 255, 255, 0.72);
+
+  /* —— Hairlines (Apple uses ultra-subtle separators) —— */
+  --border: rgba(0, 0, 0, 0.06);
+  --border-2: rgba(0, 0, 0, 0.09);
+  --border-3: rgba(0, 0, 0, 0.14);
+
+  /* —— Text (Apple's exact grays) —— */
+  --text: #1d1d1f;
+  --text-2: #6e6e73;
+  --text-3: #86868b;
+  --text-4: #aeaeb2;
+
+  /* —— Apple system colors (iOS) —— */
+  --blue: #0071e3;
+  --blue-hover: #0077ed;
+  --blue-pressed: #006edb;
+  --blue-glow: rgba(0, 113, 227, 0.18);
+
+  --green: #34c759;
+  --green-glow: rgba(52, 199, 89, 0.28);
+  --orange: #ff9500;
+  --orange-glow: rgba(255, 149, 0, 0.28);
+  --red: #ff3b30;
+  --red-glow: rgba(255, 59, 48, 0.28);
+  --purple: #af52de;
+  --purple-glow: rgba(175, 82, 222, 0.28);
+  --cyan: #5ac8fa;
+  --cyan-glow: rgba(90, 200, 250, 0.32);
+  --teal: #30b0c7;
+
+  /* legacy aliases (kept for components referencing --lime etc.) */
+  --lime: var(--green);
+  --lime-dim: #28a745;
+  --lime-glow: var(--green-glow);
+  --amber: var(--orange);
+  --amber-glow: var(--orange-glow);
+  --violet: var(--purple);
+  --violet-glow: var(--purple-glow);
+
+  /* —— Type (authentic Apple SF system stack) —— */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display",
+    "SF Pro Text", "Helvetica Neue", "PingFang SC", "Microsoft YaHei",
+    "Segoe UI", sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", ui-monospace, "Cascadia Code",
+    Consolas, monospace;
+  --font-code: "SF Mono", "JetBrains Mono", ui-monospace, "Cascadia Code",
+    Consolas, monospace;
+
+  /* —— Radii —— */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 20px;
+  --r-pill: 980px;
+
+  /* —— Shadows (soft, layered, Apple-grade) —— */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04), 0 2px 8px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 1px 3px rgba(0, 0, 0, 0.05), 0 8px 24px rgba(0, 0, 0, 0.07);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.08), 0 24px 56px rgba(0, 0, 0, 0.12);
+  --shadow-focus: 0 0 0 4px var(--blue-glow);
+
+/* —— Motion (Apple easing curves) —— */
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* —— Dark mode (Apple dark palette) —— */
+[data-theme="dark"] {
+  --bg: #000000;
+  --bg-elevated: #1c1c1e;
+  --surface: #1c1c1e;
+  --surface-2: #2c2c2e;
+  --surface-3: #3a3a3c;
+  --surface-hi: #48484a;
+  --surface-blur: rgba(28, 28, 30, 0.72);
+
+  --border: rgba(255, 255, 255, 0.08);
+  --border-2: rgba(255, 255, 255, 0.12);
+  --border-3: rgba(255, 255, 255, 0.2);
+
+  --text: #f5f5f7;
+  --text-2: #98989d;
+  --text-3: #8e8e93;
+  --text-4: #636366;
+
+  --blue: #0a84ff;
+  --blue-hover: #3a9eff;
+  --blue-pressed: #0064cc;
+  --blue-glow: rgba(10, 132, 255, 0.22);
+
+  --green: #30d158;
+  --green-glow: rgba(48, 209, 88, 0.3);
+  --orange: #ff9f0a;
+  --orange-glow: rgba(255, 159, 10, 0.3);
+  --red: #ff453a;
+  --red-glow: rgba(255, 69, 58, 0.3);
+  --purple: #bf5af2;
+  --purple-glow: rgba(191, 90, 242, 0.3);
+  --cyan: #64d2ff;
+  --cyan-glow: rgba(100, 210, 255, 0.35);
+  --teal: #40cbe0;
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 1px 3px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.5), 0 24px 56px rgba(0, 0, 0, 0.6);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.47059;
+  font-weight: 400;
+  color: var(--text);
+  background: var(--bg);
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.012em;
+  /* Apple's signature ultra-soft ambient tint */
+  background-image:
+    radial-gradient(circle at 12% -8%, rgba(0, 113, 227, 0.06), transparent 42%),
+    radial-gradient(circle at 92% 108%, rgba(175, 82, 222, 0.045), transparent 46%);
+  background-attachment: fixed;
+}
+
+[data-theme="dark"] body {
+  background-image:
+    radial-gradient(circle at 12% -8%, rgba(10, 132, 255, 0.08), transparent 42%),
+    radial-gradient(circle at 92% 108%, rgba(191, 90, 242, 0.06), transparent 46%);
+}
+
+[data-theme="dark"] ::selection {
+  background: rgba(10, 132, 255, 0.22);
+}
+
+::selection {
+  background: rgba(0, 113, 227, 0.18);
+  color: var(--text);
+}
+
+.app-layout {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* Apple doesn't use grain overlays — keep the canvas pure. */

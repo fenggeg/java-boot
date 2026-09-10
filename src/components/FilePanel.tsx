@@ -6,7 +6,6 @@ import {convertFileSrc} from "@tauri-apps/api/core";
 import {isMarkdown} from "../languages";
 import {
   Binary,
-  ChevronLeft,
   ClipboardPaste,
   Commit,
   Copy,
@@ -54,14 +53,12 @@ import type {GitStatus} from "../features/git/api";
 
 interface Props {
   project: Project;
-  onClose: () => void;
   /** 面板是否可见（重新可见时刷新文件树） */
   visible?: boolean;
 }
 
 export default function FilePanel({
   project,
-  onClose,
   visible = true,
 }: Props) {
   const { message, modal } = App.useApp();
@@ -788,15 +785,6 @@ export default function FilePanel({
               </Tooltip>
             </>
           )}
-          <Tooltip title="返回日志">
-            <button
-              className="icon-btn sm"
-              onClick={onClose}
-              aria-label="返回日志"
-            >
-              <ChevronLeft size={13} />
-            </button>
-          </Tooltip>
         </div>
       </div>
 

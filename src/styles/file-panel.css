@@ -1,0 +1,408 @@
+/* ========================================================
+   文件浏览器
+   ======================================================== */
+.file-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.file-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.file-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.file-panel-sub {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-3);
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+}
+
+.file-enc-badge {
+  font-size: 11px;
+  color: var(--text-2);
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  align-self: center;
+}
+
+.file-enc-badge.readonly {
+  color: #ff9500;
+  border-color: rgba(255, 149, 0, 0.35);
+  background: rgba(255, 149, 0, 0.08);
+}
+
+.file-panel-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.file-tree {
+  min-width: 160px;
+  overflow: auto;
+  padding: 6px 6px;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+}
+
+/* 自定义文件树行：复用项目列表的紧凑交互风格 */
+.file-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none;
+  border-radius: var(--r-md);
+  transition: background 0.15s var(--ease);
+  white-space: nowrap;
+}
+
+.file-tree-row:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.file-tree-row.active {
+  background: rgba(0, 113, 227, 0.1);
+  color: var(--text);
+}
+
+.file-tree-caret {
+  color: var(--text-3);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  flex-shrink: 0;
+  transition: transform 0.2s var(--ease);
+}
+
+.file-tree-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.file-tree-icon.folder {
+  color: var(--orange);
+}
+
+.file-tree-icon.file {
+  color: var(--text-3);
+}
+
+.file-tree-row.active .file-tree-icon.file {
+  color: var(--text-2);
+}
+
+.file-tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.file-tree-empty-hint {
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--text-4);
+  font-style: italic;
+}
+
+/* 可拖拽分隔条 */
+.file-tree-resizer {
+  width: 4px;
+  cursor: col-resize;
+  flex-shrink: 0;
+  background: transparent;
+  transition: background 0.15s var(--ease);
+  position: relative;
+  z-index: 2;
+}
+
+.file-tree-resizer:hover,
+.file-tree-resizer:active {
+  background: rgba(0, 113, 227, 0.3);
+}
+
+.file-editor {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  background: var(--surface);
+}
+
+.file-editor-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  flex-shrink: 0;
+}
+
+.file-editor-path {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-editor-size {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+/* —— Markdown 预览 —— */
+.file-preview-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 22px;
+  background: var(--surface);
+}
+
+.file-preview-markdown {
+  max-width: 860px;
+  margin: 0 auto;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text);
+  user-select: text;
+}
+
+.file-preview-markdown > :first-child {
+  margin-top: 0;
+}
+
+.file-preview-markdown h1,
+.file-preview-markdown h2,
+.file-preview-markdown h3,
+.file-preview-markdown h4,
+.file-preview-markdown h5,
+.file-preview-markdown h6 {
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.3;
+  margin: 1.4em 0 0.6em;
+}
+.file-preview-markdown h1 {
+  font-size: 24px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.35em;
+}
+.file-preview-markdown h2 {
+  font-size: 19px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.3em;
+}
+.file-preview-markdown h3 {
+  font-size: 16px;
+}
+.file-preview-markdown h4,
+.file-preview-markdown h5,
+.file-preview-markdown h6 {
+  font-size: 14px;
+}
+.file-preview-markdown p {
+  margin: 0.8em 0;
+}
+.file-preview-markdown a {
+  color: var(--blue);
+  text-decoration: none;
+}
+.file-preview-markdown a:hover {
+  text-decoration: underline;
+}
+.file-preview-markdown ul,
+.file-preview-markdown ol {
+  margin: 0.8em 0;
+  padding-left: 1.6em;
+}
+.file-preview-markdown li {
+  margin: 0.25em 0;
+}
+.file-preview-markdown blockquote {
+  margin: 0.8em 0;
+  padding: 0.1em 1em;
+  border-left: 3px solid var(--border-3);
+  color: var(--text-2);
+  background: var(--surface-2);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+}
+.file-preview-markdown code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+.file-preview-markdown pre {
+  margin: 0.8em 0;
+  padding: 12px 14px;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  overflow: auto;
+  user-select: text;
+}
+.file-preview-markdown pre code {
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.file-preview-markdown table {
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  width: 100%;
+  font-size: 13px;
+}
+.file-preview-markdown th,
+.file-preview-markdown td {
+  border: 1px solid var(--border-2);
+  padding: 6px 12px;
+  text-align: left;
+}
+.file-preview-markdown th {
+  background: var(--surface-2);
+  font-weight: 600;
+}
+.file-preview-markdown tr:nth-child(2n) td {
+  background: var(--surface-2);
+}
+.file-preview-markdown hr {
+  border: none;
+  border-top: 1px solid var(--border-2);
+  margin: 1.4em 0;
+}
+.file-preview-markdown img {
+  max-width: 100%;
+  border-radius: var(--r-md);
+}
+.file-preview-markdown input[type="checkbox"] {
+  margin-right: 0.4em;
+  accent-color: var(--blue);
+}
+.file-preview-markdown del {
+  color: var(--text-3);
+}
+
+.file-editor-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.file-saving {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+/* —— 文件类型图标颜色 —— */
+.file-tree-icon.file-type-image {
+  color: var(--purple);
+}
+
+.file-tree-icon.file-type-binary {
+  color: var(--text-4);
+}
+
+.file-tree-row.active .file-tree-icon.file-type-image,
+.file-tree-row.active .file-tree-icon.file-type-binary {
+  color: var(--text-2);
+}
+
+/* —— 文件类型标签 —— */
+.file-type-badge {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  flex-shrink: 0;
+}
+
+.file-type-badge.image {
+  color: var(--purple);
+  background: var(--purple-glow);
+}
+
+.file-type-badge.binary {
+  color: var(--text-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+/* —— 图片预览区域 —— */
+.file-image-preview {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  padding: 24px;
+  background: var(--surface-2);
+}
+
+.file-image-preview img {
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-md);
+}
+
+/* —— 二进制文件提示 —— */
+.file-binary-hint {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 40px;
+  color: var(--text-3);
+  font-size: 13px;
+  text-align: center;
+}
