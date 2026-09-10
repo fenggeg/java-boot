@@ -20,6 +20,8 @@ export default tseslint.config(
       'node_modules/',
       'node_modules_pnpm_old/',
       'coverage/',
+      'website/',
+      'codefree-code-review/',
       '*.timestamp-*',
     ],
   },

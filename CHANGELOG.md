@@ -5,7 +5,21 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.21.0...HEAD)
+## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.22.0...HEAD)
+
+## [0.22.0] - 2026-09-08
+
+### 新增
+
+- **DESIGN.md 设计规范**：Vercel/Stripe 式工程极简视觉规范（色板、字体、圆角、动效、组件语言），作为后续 UI 改动的单一事实来源
+- **服务启停状态辅助**：`canStart` / `canStop` / `canRestart` / `isBusy` 覆盖 `pulling` / `stopping`，避免停止中误显示启动
+
+### 变更
+
+- **工程极简视觉改版**：中性灰阶 + 单一品牌蓝 `#0070f3`，radius 收至 4/6/8；TopBar/侧栏/弹层/按钮去毛玻璃，改实色 + 1px 边线；日志/空态/端口标签/服务卡收紧；Monaco 主题与 STATUS_META 色板对齐
+- **`is_running` 语义收紧**：`Stopped`/`Error` 恒为 false；placeholder 不单独视为运行中；按存活 PID + 过程态判断，降低僵尸 handle 误判自动重启
+- **批量启动空入参**：直接返回，避免空列表 panic
+- **自动重启文案**：明确仅对运行中服务热重启，不会拉起已停止服务
 
 ## [0.21.0] - 2026-09-08
 
