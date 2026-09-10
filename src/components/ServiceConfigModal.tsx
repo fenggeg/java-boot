@@ -293,7 +293,7 @@ export default function ServiceConfigModal({ service, onClose, onSaved }: Props)
     <Modal
       title={
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <Settings size={14} style={{ color: "#0071e3" }} />
+          <Settings size={14} style={{ color: "var(--blue)" }} />
           服务配置 — {service?.name}
         </span>
       }

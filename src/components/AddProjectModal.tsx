@@ -40,7 +40,7 @@ function toTreeData(modules: ScannedModule[]): TreeDataNode[] {
             ? "#aeaeb2"
             : isService
             ? "#1d1d1f"
-            : "#86868b",
+            : "var(--text-3)",
         }}
       >
         {m.artifact_id}
@@ -217,7 +217,7 @@ export default function AddProjectModal({
     <Modal
       title={
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <FolderOpen size={15} style={{ color: "#0071e3" }} />
+          <FolderOpen size={15} style={{ color: "var(--blue)" }} />
           {project ? `重新扫描项目 — ${project.name}` : "添加项目"}
         </span>
       }

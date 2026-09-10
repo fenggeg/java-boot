@@ -66,7 +66,8 @@
 
 .dock-resizer:hover,
 .dock-resizer:active {
-  background: rgba(0, 113, 227, 0.28);
+  background: var(--blue);
+  opacity: 0.4;
 }
 
 .dock-resizer:hover::after,
@@ -77,7 +78,8 @@
 
 [data-theme="dark"] .dock-resizer:hover,
 [data-theme="dark"] .dock-resizer:active {
-  background: rgba(10, 132, 255, 0.32);
+  background: var(--blue);
+  opacity: 0.45;
 }
 
 /* 兼容旧 view-slot */

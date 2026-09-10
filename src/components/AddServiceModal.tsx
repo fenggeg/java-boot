@@ -65,7 +65,7 @@ export default function AddServiceModal({
     <Modal
       title={
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <Plus size={15} style={{ color: "#0071e3" }} />
+          <Plus size={15} style={{ color: "var(--blue)" }} />
           添加服务
         </span>
       }

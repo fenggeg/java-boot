@@ -1,33 +1,31 @@
 /* ========================================================
-   TopBar — macOS vibrancy material
+   TopBar — solid bar + hairline (engineering minimal)
    ======================================================== */
 .topbar {
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 0 18px;
-  height: 56px;
-  background: var(--surface-blur);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  padding: 0 14px;
+  height: 44px;
+  background: var(--surface);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   position: relative;
   z-index: 10;
-  animation: fade-down 0.6s var(--ease-out) both;
+  animation: fade-down 0.2s var(--ease-out) both;
 }
 
 .topbar-stats {
   display: flex;
   align-items: center;
-  gap: 18px;
+  gap: 14px;
   margin-right: auto;
   font-size: 12px;
   color: var(--text-2);
   cursor: default;
 }
 
-/* 窗口控制（自定义标题栏）— 与顶栏同材质、同圆角、同悬停语言 */
+/* 窗口控制（自定义标题栏）— 实色，与顶栏一致 */
 .window-controls {
   display: flex;
   align-items: center;
@@ -47,26 +45,21 @@
   color: var(--text-3);
   border-radius: var(--r-sm);
   cursor: pointer;
-  transition: background 0.15s var(--ease), color 0.15s var(--ease);
+  transition: background 0.12s var(--ease), color 0.12s var(--ease);
 }
 
 .win-btn:hover {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--surface-2);
   color: var(--text);
 }
 
 .win-btn:active {
-  transform: scale(0.94);
+  transform: scale(0.96);
 }
 
 .win-btn.close:hover {
   background: var(--red);
   color: #ffffff;
-}
-
-[data-theme="dark"] .win-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--text);
 }
 
 [data-theme="dark"] .win-btn.close:hover {
@@ -109,18 +102,19 @@
   font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 500;
-  padding: 3px 10px;
-  border-radius: var(--r-pill);
-  background: rgba(0, 0, 0, 0.05);
+  padding: 2px 8px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
   color: var(--text-2);
   font-variant-numeric: tabular-nums;
 }
 
 .update-version-pill.new {
   background: var(--blue-glow);
+  border-color: transparent;
   color: var(--blue);
   font-weight: 600;
-  box-shadow: 0 0 0 1px rgba(0, 113, 227, 0.15);
 }
 
 .update-version-arrow {

@@ -119,7 +119,7 @@ export default function ProjectConfigModal({
     <Modal
       title={
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <FolderOpen size={15} style={{ color: "#0071e3" }} />
+          <FolderOpen size={15} style={{ color: "var(--blue)" }} />
           项目环境配置 — {project?.name}
         </span>
       }
@@ -164,7 +164,7 @@ export default function ProjectConfigModal({
               suffix={
                 <FolderOpen
                   onClick={handlePickJdk}
-                  style={{ cursor: "pointer", color: "#0071e3" }}
+                  style={{ cursor: "pointer", color: "var(--blue)" }}
                 />
               }
             />
@@ -198,7 +198,7 @@ export default function ProjectConfigModal({
               suffix={
                 <FolderOpen
                   onClick={handlePickMaven}
-                  style={{ cursor: "pointer", color: "#0071e3" }}
+                  style={{ cursor: "pointer", color: "var(--blue)" }}
                 />
               }
             />

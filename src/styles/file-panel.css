@@ -82,11 +82,11 @@
 }
 
 .file-tree-row:hover {
-  background: rgba(0, 0, 0, 0.04);
+  background: var(--surface-2);
 }
 
 .file-tree-row.active {
-  background: rgba(0, 113, 227, 0.1);
+  background: var(--surface-2);
   color: var(--text);
 }
 
@@ -145,7 +145,8 @@
 
 .file-tree-resizer:hover,
 .file-tree-resizer:active {
-  background: rgba(0, 113, 227, 0.3);
+  background: var(--blue);
+  opacity: 0.4;
 }
 
 .file-editor {

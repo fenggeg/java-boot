@@ -1,94 +1,93 @@
 /* ========================================================
-   Icon button — shared, Apple-style circular press
+   Icon button — shared, square compact press
    ======================================================== */
 .icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   border: none;
-  border-radius: 50%;
+  border-radius: var(--r-sm);
   background: transparent;
   color: var(--text-2);
   cursor: pointer;
-  transition: background 0.15s var(--ease), color 0.15s var(--ease),
-    transform 0.1s var(--ease);
+  transition: background 0.12s var(--ease), color 0.12s var(--ease);
   padding: 0;
 }
 
 .icon-btn:hover {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--surface-2);
   color: var(--text);
 }
 
 .icon-btn:active {
-  transform: scale(0.9);
+  transform: none;
+  background: var(--surface-3);
 }
 
 .icon-btn.danger:hover {
   color: var(--red);
-  background: rgba(255, 59, 48, 0.1);
+  background: var(--red-glow);
 }
 
 .icon-btn.accent:hover {
   color: var(--blue);
-  background: rgba(0, 113, 227, 0.1);
+  background: var(--blue-glow);
 }
 
 .icon-btn.sm {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
 }
 
 /* ========================================================
-   Ant Design overrides — coerce into Apple HIG cohesion
+   Ant Design overrides — engineering minimal
    ======================================================== */
 .ant-btn {
   font-family: var(--font-sans) !important;
-  border-radius: var(--r-pill) !important;
+  border-radius: var(--r-sm) !important;
   font-weight: 500 !important;
   letter-spacing: -0.01em !important;
-  transition: all 0.18s var(--ease) !important;
+  transition: all 0.12s var(--ease) !important;
 }
 
 .ant-btn-primary {
   background: var(--blue) !important;
   color: #ffffff !important;
   border-color: var(--blue) !important;
-  box-shadow: 0 1px 2px rgba(0, 113, 227, 0.25),
-    0 4px 12px rgba(0, 113, 227, 0.2) !important;
+  box-shadow: none !important;
 }
 
 .ant-btn-primary:hover:not(:disabled) {
   background: var(--blue-hover) !important;
   border-color: var(--blue-hover) !important;
-  transform: translateY(-1px);
-  box-shadow: 0 2px 4px rgba(0, 113, 227, 0.3),
-    0 8px 18px rgba(0, 113, 227, 0.28) !important;
+  transform: none;
+  box-shadow: none !important;
 }
 
 .ant-btn-primary:active:not(:disabled) {
   background: var(--blue-pressed) !important;
-  transform: translateY(0) scale(0.98);
+  transform: none;
 }
 
 .ant-btn-primary:disabled {
-  background: rgba(0, 0, 0, 0.06) !important;
+  background: var(--surface-3) !important;
   color: var(--text-4) !important;
   border-color: transparent !important;
   box-shadow: none !important;
 }
 
 .ant-btn-default {
-  background: rgba(0, 0, 0, 0.04) !important;
+  background: var(--surface) !important;
   color: var(--text) !important;
-  border-color: transparent !important;
+  border-color: var(--border-2) !important;
 }
 
 .ant-btn-default:hover {
-  background: rgba(0, 0, 0, 0.08) !important;
+  background: var(--surface-2) !important;
   color: var(--text) !important;
+  border-color: var(--border-2) !important;
 }
 
 .ant-btn-text {
@@ -96,7 +95,7 @@
 }
 
 .ant-btn-text:hover {
-  background: rgba(0, 0, 0, 0.05) !important;
+  background: var(--surface-2) !important;
   color: var(--text) !important;
 }
 
@@ -413,7 +412,7 @@
 }
 
 .ant-tree-node-selected {
-  background: rgba(0, 113, 227, 0.1) !important;
+  background: var(--surface-2) !important;
 }
 
 /* Drawer */
@@ -421,33 +420,33 @@
   border-bottom: 1px solid var(--border) !important;
 }
 
-/* Tooltip — Apple popover */
+/* Tooltip — solid dark chip */
 .ant-tooltip-inner {
-  background: rgba(28, 28, 30, 0.92) !important;
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  background: #171717 !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
   border: none !important;
-  border-radius: var(--r-md) !important;
+  border-radius: var(--r-sm) !important;
   font-family: var(--font-sans) !important;
   font-size: 12px !important;
   font-weight: 400 !important;
   letter-spacing: -0.01em !important;
-  color: #ffffff !important;
-  padding: 6px 10px !important;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2) !important;
+  color: #fafafa !important;
+  padding: 5px 8px !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18) !important;
 }
 
 .ant-tooltip-arrow::before {
-  background: rgba(28, 28, 30, 0.92) !important;
+  background: #171717 !important;
 }
 
-/* Popover / Popconfirm — Apple popover card */
+/* Popover / Popconfirm — solid card */
 .ant-popover-inner,
 .ant-popconfirm.ant-popover .ant-popover-inner {
   background: var(--surface) !important;
   border: 1px solid var(--border);
-  border-radius: var(--r-lg) !important;
-  box-shadow: var(--shadow-lg) !important;
+  border-radius: var(--r-md) !important;
+  box-shadow: var(--shadow-md) !important;
   padding: 4px !important;
 }
 
@@ -496,12 +495,12 @@
   margin-inline-start: 0 !important;
 }
 
-/* Dropdown menu — Apple menu */
+/* Dropdown menu — solid */
 .ant-dropdown-menu,
 .ant-popover-inner .ant-dropdown-menu {
-  background: rgba(255, 255, 255, 0.92) !important;
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  background: var(--surface) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
   border: 1px solid var(--border);
   border-radius: var(--r-md) !important;
   box-shadow: var(--shadow-md) !important;
@@ -517,8 +516,8 @@
 }
 
 .ant-dropdown-menu-item:hover {
-  background: rgba(0, 113, 227, 0.08) !important;
-  color: var(--blue) !important;
+  background: var(--surface-2) !important;
+  color: var(--text) !important;
 }
 
 .ant-dropdown-menu-item-danger {
@@ -526,7 +525,7 @@
 }
 
 .ant-dropdown-menu-item-danger:hover {
-  background: rgba(255, 59, 48, 0.1) !important;
+  background: var(--red-glow) !important;
   color: var(--red) !important;
 }
 
@@ -583,9 +582,9 @@
 
 /* AutoComplete / Select dropdown */
 .ant-select-dropdown {
-  background: rgba(255, 255, 255, 0.92) !important;
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  background: var(--surface) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
   border: 1px solid var(--border);
   border-radius: var(--r-md) !important;
   box-shadow: var(--shadow-md) !important;
@@ -599,8 +598,8 @@
 
 .ant-select-item-option-active,
 .ant-select-item-option-selected {
-  background: rgba(0, 113, 227, 0.1) !important;
-  color: var(--blue) !important;
+  background: var(--surface-2) !important;
+  color: var(--text) !important;
 }
 
 /* ========================================================

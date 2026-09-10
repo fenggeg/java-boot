@@ -1,173 +1,61 @@
 /* ========================================================
-   Dark mode overrides — invert hardcoded rgba(0,0,0,…) hovers
-   and #ffffff backgrounds that can't use CSS variables
+   Dark mode overrides — only for rules that still hardcode
+   light-only values; prefer CSS variables in base rules.
    ======================================================== */
 
-[data-theme="dark"] .project-group-header:hover {
-  background: rgba(255, 255, 255, 0.06);
-}
-
-[data-theme="dark"] .project-group-count {
-  background: rgba(255, 255, 255, 0.08);
-}
-
-[data-theme="dark"] .service-card:hover {
-  background: rgba(255, 255, 255, 0.045);
-}
-
-[data-theme="dark"] .service-card.active {
-  background: rgba(10, 132, 255, 0.12);
-  box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.22);
-}
-
-[data-theme="dark"] .log-line:hover {
-  background: rgba(255, 255, 255, 0.03);
-}
-
-[data-theme="dark"] .icon-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
-}
-
-[data-theme="dark"] .ant-btn-default {
-  background: rgba(255, 255, 255, 0.06) !important;
-  color: var(--text) !important;
-}
-
-[data-theme="dark"] .ant-btn-default:hover {
-  background: rgba(255, 255, 255, 0.12) !important;
-}
-
-[data-theme="dark"] .ant-btn-primary:disabled {
-  background: rgba(255, 255, 255, 0.08) !important;
-  color: var(--text-4) !important;
-}
-
-[data-theme="dark"] .ant-btn-text:hover {
-  background: rgba(255, 255, 255, 0.06) !important;
-}
-
-/* Segmented thumb → dark surface */
+/* Segmented */
 [data-theme="dark"] .ant-segmented {
-  background: rgba(255, 255, 255, 0.06) !important;
-}
-
-[data-theme="dark"] .ant-segmented-thumb {
-  background: var(--surface-hi) !important;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 0 0 0.5px rgba(255, 255, 255, 0.04) !important;
-}
-
-/* Input focus → dark */
-[data-theme="dark"] .ant-input:focus,
-[data-theme="dark"] .ant-input-affix-wrapper-focused,
-[data-theme="dark"] .ant-input-number-focused {
   background: var(--surface-2) !important;
 }
 
-/* Tree checkbox → dark */
+[data-theme="dark"] .ant-segmented-thumb {
+  background: var(--surface-3) !important;
+  box-shadow: none !important;
+}
+
+/* Tree checkbox */
 [data-theme="dark"] .ant-tree-checkbox-inner {
   background: var(--surface-2) !important;
 }
 
-/* Tabs hover → dark */
-[data-theme="dark"] .ant-tabs-card > .ant-tabs-nav .ant-tabs-tab:hover {
-  background: rgba(255, 255, 255, 0.04) !important;
-}
-
-/* Dropdown / Select dropdown → dark frosted */
-[data-theme="dark"] .ant-dropdown-menu,
-[data-theme="dark"] .ant-popover-inner .ant-dropdown-menu {
-  background: rgba(44, 44, 46, 0.92) !important;
-}
-
-[data-theme="dark"] .ant-dropdown-menu-item:hover {
-  background: rgba(10, 132, 255, 0.15) !important;
-}
-
-[data-theme="dark"] .ant-select-dropdown {
-  background: rgba(44, 44, 46, 0.92) !important;
-}
-
-/* Scrollbars → light-on-dark */
+/* Scrollbars */
 [data-theme="dark"] ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
+  background: #3a3a3a;
   background-clip: padding-box;
   border: 3px solid transparent;
 }
 
 [data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.25);
+  background: #525252;
   background-clip: padding-box;
 }
 
 [data-theme="dark"] .log-viewer::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
+  background: #333;
   background-clip: padding-box;
 }
 
 [data-theme="dark"] .log-viewer::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.22);
+  background: #4a4a4a;
   background-clip: padding-box;
 }
 
-/* Tree hover → dark */
-[data-theme="dark"] .ant-tree-treenode:hover {
-  background: rgba(255, 255, 255, 0.05);
-}
-
-/* Modal close hover → dark */
-[data-theme="dark"] .ant-modal-close:hover,
-[data-theme="dark"] .ant-drawer-close:hover {
-  background: rgba(255, 255, 255, 0.08) !important;
-}
-
-/* File tree row hover → dark */
-[data-theme="dark"] .file-tree-row:hover {
-  background: rgba(255, 255, 255, 0.05);
-}
-
-/* Stat dot box-shadow ring → dark */
-[data-theme="dark"] .stat-dot {
-  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.4),
-    0 0 8px currentColor;
-}
-
-/* Unread badge ring → dark */
-[data-theme="dark"] .unread-badge {
-  box-shadow: 0 0 0 2px var(--surface), 0 0 8px var(--blue-glow);
-}
-
-/* Port tag → dark */
-[data-theme="dark"] .port-tag {
-  background: rgba(100, 210, 255, 0.12);
-  color: #64d2ff;
-}
-
-[data-theme="dark"] .port-tag:hover {
-  background: var(--cyan);
-  color: #000000;
-}
-
-/* Log search highlight → dark */
+/* Log search highlight */
 [data-theme="dark"] .log-highlight {
-  background: rgba(255, 214, 10, 0.2);
-  color: #ffd60a;
+  background: rgba(50, 145, 255, 0.22);
+  color: var(--blue);
 }
 
-/* Image preview → dark */
+/* Image preview */
 [data-theme="dark"] .file-image-preview {
   background: var(--surface-2);
 }
 
 [data-theme="dark"] .file-image-preview img {
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5), 0 8px 32px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
 }
 
-/* Binary file type icon → dark */
-[data-theme="dark"] .file-tree-icon.file-type-binary {
-  color: var(--text-4);
-}
-
-/* Markdown 预览 → dark */
+/* Markdown 预览 */
 [data-theme="dark"] .file-preview-markdown h1,
 [data-theme="dark"] .file-preview-markdown h2 {
   border-bottom-color: var(--border);

@@ -762,7 +762,7 @@ export default function FilePanel({
     <div className="file-panel">
       <div className="file-panel-header">
         <span className="file-panel-title">
-          <Folder size={14} style={{ color: "#0071e3" }} />
+          <Folder size={14} style={{ color: "var(--blue)" }} />
           {project.name}
           <span className="file-panel-sub">文件</span>
         </span>
@@ -1001,7 +1001,7 @@ export default function FilePanel({
               </div>
             </>
           ) : error ? (
-            <div style={{ padding: 40, textAlign: "center", color: "#ff3b30" }}>
+            <div style={{ padding: 40, textAlign: "center", color: "var(--red)" }}>
               {error}
             </div>
           ) : (

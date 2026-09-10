@@ -130,7 +130,7 @@ export default function TopBar({ onOpenSettings }: Props) {
               style={{ background: STATUS_META.error.dot, color: STATUS_META.error.dot }}
             />
             <span className="stat-label">异常</span>
-            <span className="stat-val" style={{ color: "#ff3b30" }}>{errorCount}</span>
+            <span className="stat-val" style={{ color: "var(--red)" }}>{errorCount}</span>
           </span>
         )}
 
@@ -146,8 +146,8 @@ export default function TopBar({ onOpenSettings }: Props) {
             <span
               className="stat-dot"
               style={{
-                background: daemonConnected ? "#34c759" : "#9ca3af",
-                color: daemonConnected ? "#34c759" : "#9ca3af",
+                background: daemonConnected ? "var(--green)" : "var(--text-4)",
+                color: daemonConnected ? "var(--green)" : "var(--text-4)",
                 transition: "background .2s",
               }}
             />
@@ -188,7 +188,7 @@ export default function TopBar({ onOpenSettings }: Props) {
             aria-label="切换主题"
           >
             {themeMode === "light" ? (
-              <Moon size={15} style={{ color: hoverTheme ? "#0071e3" : undefined }} />
+              <Moon size={15} style={{ color: hoverTheme ? "var(--blue)" : undefined }} />
             ) : (
               <Sun size={15} style={{ color: hoverTheme ? "#ffd60a" : undefined }} />
             )}

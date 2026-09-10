@@ -122,7 +122,7 @@ export default function SettingsDrawer({ open, onClose }: Props) {
     <Drawer
       title={
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <Settings size={14} style={{ color: "#0071e3" }} />
+          <Settings size={14} style={{ color: "var(--blue)" }} />
           设置
         </span>
       }
@@ -151,7 +151,7 @@ export default function SettingsDrawer({ open, onClose }: Props) {
         <Divider orientation="left">自动重启</Divider>
         <Form.Item
           label="防抖时间（秒）"
-          tooltip="文件变更后等待多久再触发重启，避免频繁保存导致反复重启"
+          tooltip="仅对已开启自动重启、且正在运行的服务生效：源码变更后等待该时长再编译重启；不会拉起已停止的服务"
         >
           <InputNumber
             min={1}
