@@ -5,7 +5,19 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.20.2...HEAD)
+## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.21.0...HEAD)
+
+## [0.21.0] - 2026-09-08
+
+### 新增
+
+- **IDE 分屏布局**：日志与文件浏览器不再互斥切换，右侧文件 Dock 与日志并存；分隔条可拖宽，双击收起/展开日志；拖至极窄时自动收起日志、文件区撑满
+- **编辑器 Dock 开合**：日志 Tab 右侧新增编辑器切换按钮（优先当前服务所属项目）；Dock 顶栏提供「收起」；去掉 FilePanel「返回日志」按钮，关闭 Dock 自动展开日志
+
+### 变更
+
+- **Store 按域切片**：`src/store.ts` 拆为 services / logs / daemon / ui 四域 + `index` 聚合，对外仍导出同一 `useStore`，组件零改动
+- **样式模块化**：`styles.css`（~2600 行）拆为 `src/styles/` 九区（tokens / topbar / sidebar / service-card / log / antd / file-panel / dark / view-git）；antd Design Token 抽出 `theme-tokens.ts`，与 CSS 变量对齐（含 hairline 边框）
 
 ## [0.20.2] - 2026-09-08
 
