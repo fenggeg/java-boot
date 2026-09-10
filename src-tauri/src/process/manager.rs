@@ -598,18 +598,43 @@ impl ProcessManager {
         emit_log_raw(app, service_id, tag, line);
     }
 
+    /// 是否处于「占用中」：进程存活，或 runtime 仍处于启动/编译/拉取等过程态。
+    ///
+    /// - `Stopped` / `Error` 一律 false（即使 handle 尚未被 reaper 清理）
+    /// - 仅有 placeholder（pid==0）且状态为 Starting/Recompiling/Pulling → true（防重复 start）
+    /// - `Stopping` 不算 running（自动重启应跳过），但由 prepare_start 单独闸控
     pub fn is_running(&self, service_id: &str) -> bool {
-        // 一次性获取 handles 锁做判断，避免两把锁非原子竞态
-        if self.handles.lock().contains_key(service_id) {
-            return true;
+        let status = self.runtimes.lock().get(service_id).map(|r| r.status);
+        if matches!(
+            status,
+            Some(ServiceStatus::Stopped) | Some(ServiceStatus::Error)
+        ) {
+            return false;
         }
-        // 不再单独获取 runtimes 锁做第二次判断，
-        // handles 中不存在但 runtime 状态非 Stopped 的情况（如刚 stop 但事件未到）
-        // 由调用方通过 retry 或 get_runtime 兜底处理
-        let rt = self.runtimes.lock();
+
+        // 先取 pid 再锁 SYS（禁止 holds handles → SYS，遵守 SYS → handles 顺序）
+        let pid = {
+            let handles = self.handles.lock();
+            handles.get(service_id).map(|h| h.pid).filter(|p| *p > 0)
+        };
+        if let Some(pid) = pid {
+            let mut sys = SYS.lock();
+            sys.refresh_processes(
+                sysinfo::ProcessesToUpdate::Some(&[sysinfo::Pid::from_u32(pid)]),
+                false,
+            );
+            if sys.process(sysinfo::Pid::from_u32(pid)).is_some() {
+                return true;
+            }
+        }
+
+        // 无存活 pid：仅过程态视为占用（启动中/编译中/拉取中）
         matches!(
-            rt.get(service_id).map(|r| r.status),
-            Some(ServiceStatus::Running) | Some(ServiceStatus::Starting) | Some(ServiceStatus::Recompiling)
+            status,
+            Some(ServiceStatus::Running)
+                | Some(ServiceStatus::Starting)
+                | Some(ServiceStatus::Recompiling)
+                | Some(ServiceStatus::Pulling)
         )
     }
 
@@ -2555,6 +2580,9 @@ let deadline = std::time::Instant::now() + std::time::Duration::from_secs(DEPEND
         service_ids: &[String],
     ) -> AppResult<BatchStartResult> {
         let mut result = BatchStartResult::default();
+        if service_ids.is_empty() {
+            return Ok(result);
+        }
 
         // 收集所有服务的递归依赖关系
         let all_deps = db::list_all_dependencies()?;

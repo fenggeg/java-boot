@@ -69,12 +69,16 @@ export const createLogsSlice: StateCreator<
       // 暂停的服务：日志已写入 lines 数组（缓存），但不生成新 LogBuffer 引用，
       // 避免触发订阅重渲染；恢复时会手动递增 logFlushTick 强制刷新。
       if (!isPaused) {
-        nextLogs[sid] = { lines: trimmed, hasUnread: !isSelected };
+        // 选中服务始终未读=false；非选中：仅在原本未读或本次有新行时置 true
+        nextLogs[sid] = {
+          lines: trimmed,
+          hasUnread: isSelected ? false : true,
+        };
       } else {
-        // 暂停时也更新 lines 引用（新数组），但保持 hasUnread 不变
         nextLogs[sid] = { lines: trimmed, hasUnread: existing.hasUnread };
       }
     }
+    // 仅在确实有服务日志变更时 set，避免空 flush 触发重渲染
     set({ logs: nextLogs });
   };
 

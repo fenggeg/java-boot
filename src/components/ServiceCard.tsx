@@ -3,7 +3,7 @@ import {App, Dropdown, Switch, Tooltip} from "antd";
 import {Broom, Code, FolderOpen, More, Package, Play, Restart, Settings, Stop, Warning,} from "./Icons";
 import {useStore} from "../store";
 import type {Service} from "../types";
-import {STATUS_META} from "../types";
+import {STATUS_META, canRestartStatus, canStartStatus, canStopStatus, isBusyStatus} from "../types";
 import * as api from "../api";
 
 interface Props {
@@ -24,11 +24,12 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
 
   const status = runtime?.status ?? "stopped";
   const meta = STATUS_META[status];
-  const isRunning =
-    status === "running" || status === "starting" || status === "recompiling";
-  // 操作进行中标志：执行启动/重启/编译期间禁用所有操作按钮，防止并发触发
-  // 导致 handles map 上的 placeholder 被误判为堆叠残留而 kill 掉刚启动的进程。
+  const showStart = canStartStatus(status);
+  const showStop = canStopStatus(status);
+  const showRestart = canRestartStatus(status);
   const [busy, setBusy] = useState(false);
+  // 过程中或本地 IPC busy：禁用启停，避免并发触发 placeholder 误清理
+  const actionsDisabled = busy || isBusyStatus(status);
   const logBuf = useStore((s) => s.logs[service.id]);
   const hasUnread = logBuf?.hasUnread ?? false;
 
@@ -123,7 +124,7 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
               <div style={{ marginBottom: 8 }}>
                 产物：<code>{jarPath}</code>
               </div>
-              <div style={{ color: "#888", marginBottom: 4 }}>
+              <div style={{ color: "var(--text-3)", marginBottom: 4 }}>
                 大小：{sizeMb} MB
               </div>
             </div>
@@ -210,7 +211,7 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
       key: "clean",
       label: "清理编译产物",
       icon: <Broom size={13} />,
-      disabled: isRunning,
+      disabled: isBusyStatus(status),
       onClick: handleClean,
     },
     {
@@ -312,7 +313,7 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
             <Tooltip
               title={`端口冲突: ${runtime.conflict_with.join(", ")}`}
             >
-              <span style={{ display: "inline-flex", color: "#ff3b30" }}>
+              <span style={{ display: "inline-flex", color: "var(--red)" }}>
                 <Warning size={12} />
               </span>
             </Tooltip>
@@ -321,49 +322,58 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
       </div>
 
       <div className="service-card-actions" onClick={(e) => e.stopPropagation()}>
-        <Tooltip title={service.auto_restart ? "关闭自动重启" : "开启自动重启"}>
+        <Tooltip
+          title={
+            service.auto_restart
+              ? "关闭自动重启（仅对运行中服务：源码变更后编译并重启）"
+              : "开启自动重启（仅对运行中服务：源码变更后编译并重启，不会拉起已停止服务）"
+          }
+        >
           <Switch
             size="small"
             checked={service.auto_restart}
             onChange={handleToggleAutoRestart}
           />
         </Tooltip>
-        {!isRunning ? (
+        {showStart && (
           <Tooltip title="启动">
             <button
               className="icon-btn sm"
               onClick={handleStart}
-              disabled={busy}
+              disabled={actionsDisabled}
               aria-label="启动"
-              style={{ color: "#34c759" }}
+              style={{ color: "var(--green)" }}
             >
               <Play size={13} />
             </button>
           </Tooltip>
-        ) : (
-          <Tooltip title="停止">
+        )}
+        {showStop && (
+          <Tooltip title={status === "stopping" ? "停止中…" : "停止"}>
             <button
               className="icon-btn sm danger"
               onClick={handleStop}
-              disabled={busy}
+              disabled={actionsDisabled}
               aria-label="停止"
-              style={{ color: "#ff3b30" }}
+              style={{ color: "var(--red)" }}
             >
               <Stop size={12} />
             </button>
           </Tooltip>
         )}
-        <Tooltip title="重启">
-          <button
-            className="icon-btn sm"
-            onClick={handleRestart}
-            disabled={busy || status === "starting" || status === "recompiling"}
-            aria-label="重启"
-            style={{ color: "#0071e3" }}
-          >
-            <Restart size={13} />
-          </button>
-        </Tooltip>
+        {showRestart && (
+          <Tooltip title="重启">
+            <button
+              className="icon-btn sm"
+              onClick={handleRestart}
+              disabled={actionsDisabled}
+              aria-label="重启"
+              style={{ color: "var(--blue)" }}
+            >
+              <Restart size={13} />
+            </button>
+          </Tooltip>
+        )}
         <Dropdown menu={{ items: menuItems }} trigger={["click"]}>
           <button className="icon-btn sm" aria-label="更多">
             <More size={14} />

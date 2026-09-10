@@ -21,6 +21,7 @@ import ServiceCard from "./ServiceCard";
 import ProjectConfigModal from "./ProjectConfigModal";
 import AddProjectModal from "./AddProjectModal";
 import type {Project, Service} from "../types";
+import {canStartStatus, isBusyStatus, isTransientStatus} from "../types";
 
 interface Props {
   onAddProject: () => void;
@@ -89,7 +90,7 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
   const runningServiceIds = useMemo(() => {
     const ids = new Set<string>();
     for (const [id, rt] of Object.entries(runtimes)) {
-      if (rt.status === "running" || rt.status === "starting") {
+      if (isBusyStatus(rt.status)) {
         ids.add(id);
       }
     }
@@ -169,11 +170,10 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
     const groupServices = services.filter(
       (s) => s.project_id === project.id,
     );
-    const stopped = groupServices.filter(
-      (s) =>
-        runtimes[s.id]?.status !== "running" &&
-        runtimes[s.id]?.status !== "starting",
-    );
+    const stopped = groupServices.filter((s) => {
+      const st = runtimes[s.id]?.status ?? "stopped";
+      return canStartStatus(st);
+    });
     if (stopped.length === 0) {
       message.info("项目下所有服务已在运行中");
       return;
@@ -273,18 +273,13 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
     const groupServices = services.filter(
       (s) => s.project_id === project.id
     );
-    const runningCount = groupServices.filter(
-      (s) =>
-        runtimes[s.id]?.status === "running" ||
-        runtimes[s.id]?.status === "starting"
+    const runningCount = groupServices.filter((s) =>
+      isBusyStatus(runtimes[s.id]?.status ?? "stopped")
     ).length;
     const isCollapsed = collapsed[project.id];
-    // 互斥检查：项目下是否有服务在编译/启动
-    const isBusy = groupServices.some(
-      (s) =>
-        runtimes[s.id]?.status === "starting" ||
-        runtimes[s.id]?.status === "recompiling" ||
-        runtimes[s.id]?.status === "pulling"
+    // 互斥检查：项目下是否有服务在启动/编译/拉取
+    const isBusy = groupServices.some((s) =>
+      isTransientStatus(runtimes[s.id]?.status ?? "stopped")
     );
 
     // 项目级 More 下拉菜单（收纳低频操作）
@@ -483,7 +478,7 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
                       <CaretDown size={10} />
                     )}
                   </span>
-                  <span className="group-icon" style={{ color: "#86868b" }}>
+                  <span className="group-icon" style={{ color: "var(--text-3)" }}>
                     <FolderOpen size={14} />
                   </span>
                   <span className="group-name">未分组</span>

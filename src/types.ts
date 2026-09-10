@@ -75,6 +75,41 @@ export type ServiceStatus =
   | "error"
   | "stopping";
 
+/** 过程中状态：启动/编译/拉取/停止未完成，UI 不应再触发新的启停 */
+export function isTransientStatus(status: ServiceStatus): boolean {
+  return (
+    status === "starting" ||
+    status === "recompiling" ||
+    status === "pulling" ||
+    status === "stopping"
+  );
+}
+
+/** 「在跑」语义：进程/编排流程占用中（含 starting/recompiling/pulling/stopping） */
+export function isBusyStatus(status: ServiceStatus): boolean {
+  return status === "running" || isTransientStatus(status);
+}
+
+/** 可启动：仅 stopped / error */
+export function canStartStatus(status: ServiceStatus): boolean {
+  return status === "stopped" || status === "error";
+}
+
+/** 可停止：已起来或正在起来（不含 stopping） */
+export function canStopStatus(status: ServiceStatus): boolean {
+  return (
+    status === "running" ||
+    status === "starting" ||
+    status === "recompiling" ||
+    status === "pulling"
+  );
+}
+
+/** 可重启：已稳定运行，或上次失败 */
+export function canRestartStatus(status: ServiceStatus): boolean {
+  return status === "running" || status === "error";
+}
+
 export interface ServiceRuntime {
   service_id: string;
   status: ServiceStatus;
@@ -179,11 +214,11 @@ export const STATUS_META: Record<
   ServiceStatus,
   { label: string; color: string; dot: string; live?: boolean }
 > = {
-  stopped: { label: "已停止", color: "default", dot: "#86868b" },
-  starting: { label: "启动中", color: "processing", dot: "#5ac8fa", live: true },
-  running: { label: "运行中", color: "success", dot: "#34c759", live: true },
-  recompiling: { label: "重新编译中", color: "processing", dot: "#ff9500", live: true },
-  pulling: { label: "拉取中", color: "processing", dot: "#af52de", live: true },
-  error: { label: "异常", color: "error", dot: "#ff3b30", live: true },
-  stopping: { label: "停止中", color: "processing", dot: "#ff9500", live: true },
+  stopped: { label: "已停止", color: "default", dot: "#a3a3a3" },
+  starting: { label: "启动中", color: "processing", dot: "#d97706", live: true },
+  running: { label: "运行中", color: "success", dot: "#16a34a", live: true },
+  recompiling: { label: "重新编译中", color: "processing", dot: "#d97706", live: true },
+  pulling: { label: "拉取中", color: "processing", dot: "#7c3aed", live: true },
+  error: { label: "异常", color: "error", dot: "#dc2626", live: true },
+  stopping: { label: "停止中", color: "processing", dot: "#d97706", live: true },
 };

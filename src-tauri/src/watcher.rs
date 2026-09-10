@@ -310,9 +310,10 @@ fn trigger_restart(app: &AppHandle, service_id: &str) {
     if !service.auto_restart {
         return;
     }
-    // 仅当服务正在运行时才自动重启
+    // 仅当服务「正在运行/启动中」才自动重启；已停止的服务不会被热重启拉起
     let mgr = process::get_manager();
     if !mgr.is_running(service_id) {
+        log::debug!("跳过自动重启（服务 {} 当前不在运行）", service_id);
         return;
     }
     // 【TOCTOU 修复】原子地检查状态并设置重启中标志，避免检查与 spawn 之间的竞态
