@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="JavaBoot Launcher 是面向 Windows 的 Spring Boot 多服务启动与管理桌面工作台。"
+    />
+    <title>JavaBoot Launcher - Spring Boot 服务启动台</title>
+    <link rel="icon" type="image/png" href="./favicon.png" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script defer src="./app.js"></script>
+  </head>
+  <body>
+    <div class="site-shell">
+      <header class="site-nav">
+        <a class="brand" href="#top" aria-label="JavaBoot Launcher 首页">
+          <img src="./logo.png" alt="" width="34" height="34" />
+          <span>JavaBoot Launcher</span>
+        </a>
+        <nav>
+          <a href="#why">能力</a>
+          <a href="#preview">预览</a>
+          <a href="#install">安装</a>
+          <a href="#faq">FAQ</a>
+        </nav>
+        <div class="nav-actions">
+          <a class="nav-github" href="https://github.com/fenggeg/java-boot" target="_blank" rel="noopener noreferrer" aria-label="GitHub 仓库">
+            <svg viewBox="0 0 16 16" width="22" height="22" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          </a>
+          <a class="nav-cta" href="#install">下载</a>
+        </div>
+      </header>
+
+      <main id="top">
+        <section class="hero-section">
+          <div class="hero-copy">
+            <p class="eyebrow">Windows Desktop Runner For Spring Boot Services</p>
+            <h1>Spring Boot 多服务，一键启停全收。</h1>
+            <p class="hero-lead">
+              JavaBoot Launcher 把 Maven 聚合工程里的 Spring Boot 服务识别、编译策略、启动/停止、实时日志、端口与 CPU/内存监控、文件编辑与打包更新收进同一个 Windows 桌面工作台——轻量版 IDEA Services 面板，打开就能跑。
+            </p>
+            <div class="hero-actions">
+              <a class="primary-button" data-download-link href="#install">获取 Windows 版本</a>
+              <a class="secondary-button" href="#preview">查看界面预览</a>
+            </div>
+            <div class="hero-tags" aria-label="核心支持">
+              <span>Spring Boot 识别</span>
+              <span>独立 Daemon</span>
+              <span>三档编译策略</span>
+              <span>日志与监控</span>
+              <span>Git 只读集成</span>
+            </div>
+          </div>
+
+          <div class="product-preview" aria-label="服务管理器界面预览">
+            <div class="preview-topbar">
+              <span></span><span></span><span></span><strong>JavaBoot Launcher</strong>
+            </div>
+            <div class="preview-layout">
+              <aside class="preview-sidebar">
+                <div class="preview-nav">项目</div>
+                <div class="preview-nav active">服务</div>
+                <div class="preview-nav">日志</div>
+                <div class="preview-nav">文件</div>
+              </aside>
+              <main class="preview-main">
+                <div class="preview-heading">
+                  <div>
+                    <p>Services</p>
+                    <h3>order-center</h3>
+                  </div>
+                  <button>启动全部</button>
+                </div>
+                <div class="module-tree">
+                  <div class="module-row selected"><span>●</span><b>gateway-api</b><em class="meta">8080</em><em>running</em></div>
+                  <div class="module-row"><span>○</span><b>order-service</b><em class="meta">8081</em><em>stopped</em></div>
+                  <div class="module-row"><span>○</span><b>user-center</b><em class="meta">8082</em><em>stopped</em></div>
+                  <div class="module-row"><span>—</span><b>common-lib</b><em class="meta">jar</em><em>skip</em></div>
+                </div>
+                <div class="command-card">
+                  <div class="command-line">[daemon] spawn java -cp target/classes:... GatewayApplication</div>
+                  <div class="log-line success">Started GatewayApplication in 4.21 seconds</div>
+                  <div class="log-line">cpu 3.2% · mem 412 MB · port 8080 ready</div>
+                </div>
+              </main>
+            </div>
+          </div>
+        </section>
+
+        <section class="metric-strip" aria-label="产品摘要">
+          <div><strong>1</strong><span>桌面启动台</span></div>
+          <div><strong>3</strong><span>档编译策略</span></div>
+          <div><strong>0</strong><span>fat jar 锁定</span></div>
+          <div><strong>0.21</strong><span>当前版本线</span></div>
+        </section>
+
+        <section class="section" id="why">
+          <div class="section-heading">
+            <p class="eyebrow">Why JavaBoot</p>
+            <h2>多模块服务不用再在终端和 IDE 之间来回切。</h2>
+            <p>本地联调 Spring Boot 多服务时，编译、启动顺序、日志、端口冲突和残留进程往往散落在多个工具里。Launcher 把它们收进同一操作闭环，用独立 daemon 托管进程生命周期。</p>
+          </div>
+          <div class="capability-grid">
+            <article class="capability-card"><p>Service Discovery</p><h3>Spring Boot 模块自动识别</h3><span>递归解析 Maven 聚合 pom，按 IDEA 标准只收 <code>@SpringBootApplication</code> 应用；工具包模块自动作依赖编入 classpath，不污染服务列表。</span></article>
+            <article class="capability-card"><p>Build Strategies</p><h3>三档编译，启动更快</h3><span>Skip / CompileCurrent / CompileAll 按源码 mtime 与 classpath 缓存决策；离线优先 Maven 调用，弱网环境显著提速，改代码自动升档重编译。</span></article>
+            <article class="capability-card"><p>Daemon Runtime</p><h3>独立守护，UI 崩溃也不丢服务</h3><span>java 进程的 spawn、日志、退出监控与 CPU/内存指标下沉到常驻 daemon；Launcher 重启后对账恢复，Job Object 防止残留子进程。</span></article>
+            <article class="capability-card"><p>Logs & Metrics</p><h3>日志聚合与端口监控</h3><span>stdout/stderr 分流、级别过滤、正则高亮、虚拟滚动；端口占用扫描与冲突高亮，CPU / 内存实时展示。</span></article>
+            <article class="capability-card"><p>File & Git</p><h3>内置编辑器与只读 Git</h3><span>Monaco 多标签编辑、Ctrl+P 快速打开；gutter 变更标记、Diff 对比、blame 悬浮——全部 git 调用在 Rust 后端完成，只读不改仓库。</span></article>
+            <article class="capability-card"><p>Windows Native</p><h3>为本地联调场景打磨</h3><span>Tauri 2 + Rust + SQLite；环境变量按项目/服务注入，支持打包 fat jar 与应用自更新，贴合 Windows 开发习惯。</span></article>
+          </div>
+        </section>
+
+        <section class="section" id="preview">
+          <div class="section-heading">
+            <p class="eyebrow">Preview</p>
+            <h2>从添加项目到服务跑起来，路径很短。</h2>
+          </div>
+          <div class="preview-grid">
+            <article class="preview-card">
+              <h3>项目与模块树</h3>
+              <p>选择根 pom 或目录，自动扫描并勾选要托管的 Spring Boot 服务；工具包模块安静跳过。</p>
+            </article>
+            <article class="preview-card">
+              <h3>服务卡片</h3>
+              <p>启停 / 编译 / 打包 / 重启一目了然；dev_mode、auto_restart、环境变量可按服务单独配置。</p>
+            </article>
+            <article class="preview-card">
+              <h3>日志工作台</h3>
+              <p>多 Tab 日志、级别过滤、搜索跳转、跟随滚动；Started ... in ... 自动标记 running。</p>
+            </article>
+            <article class="preview-card">
+              <h3>文件 Dock</h3>
+              <p>日志与文件浏览器分屏并存，编辑器 Dock 一键展开；Monaco 语法高亮与 Git Diff 同屏。</p>
+            </article>
+          </div>
+        </section>
+
+        <section class="section install-section" id="install">
+          <div class="install-copy">
+            <p class="eyebrow">Install</p>
+            <h2>装完选工程，服务列表立刻可用。</h2>
+            <p>面向 Windows 10/11。运行环境需要系统可用的 JDK 与 Maven；Launcher 负责探测、注入与托管。</p>
+          </div>
+          <div class="install-grid">
+            <div class="terminal-card">
+              <span>Windows</span>
+              <a class="download-card-link" data-download-link href="#install">
+                正在获取 GitHub 最新版本下载地址...
+              </a>
+              <small data-release-note>如果自动获取失败，会打开 GitHub 最新 Release 页面。</small>
+            </div>
+            <div class="terminal-card">
+              <span>开发者构建</span>
+              <code>npm install</code>
+              <code>npm run tauri:build</code>
+            </div>
+          </div>
+        </section>
+
+        <section class="section faq-section" id="faq">
+          <div class="section-heading">
+            <p class="eyebrow">FAQ</p>
+            <h2>启动前最常被问到的问题。</h2>
+          </div>
+          <div class="faq-list">
+            <details><summary>它是 Web 系统还是桌面应用？</summary><p>它是面向 Windows 的本地桌面应用，用来管理本机 Maven 工程里的 Spring Boot 服务启动、日志与产物，不依赖云端。</p></details>
+            <details><summary>只支持 Spring Boot 吗？</summary><p>当前只支持 Spring Boot。判定与 IDEA 一致：packaging 为 jar/war 且存在 @SpringBootApplication 主类。公共 jar 不会出现在服务列表。</p></details>
+            <details><summary>打包会停掉运行中的服务吗？</summary><p>不会。服务用 exploded classpath 启动，JVM 不锁定 fat jar；打包失败也会恢复打包前状态。</p></details>
+            <details><summary>UI 崩溃会不会把 Java 进程一起带走？</summary><p>不会。自 v0.16.0 起 java 进程由独立 daemon 托管；Launcher 崩溃或重启后可对账恢复映射与日志。</p></details>
+            <details><summary>能自动重启改代码的服务吗？</summary><p>可以。按服务开启 auto_restart，watcher 维护脏标记，配合三档编译策略在变更后自动重编译并重启。</p></details>
+            <details><summary>跨平台吗？</summary><p>当前只在 Windows 路径验证（Job Object、taskkill 等）；macOS / Linux 暂未适配。</p></details>
+          </div>
+        </section>
+      </main>
+
+      <footer class="site-footer">
+        <div>
+          <strong>JavaBoot Launcher</strong>
+          <p>把 Spring Boot 多服务启停，收回同一张工作台。</p>
+        </div>
+        <a class="primary-button" data-download-link href="#install">开始安装</a>
+      </footer>
+    </div>
+  </body>
+</html>

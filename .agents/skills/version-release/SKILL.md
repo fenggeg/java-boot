@@ -1,10 +1,7 @@
-***
-
+---
 name: version-release
-description: JavaBoot Launcher 项目专用版本发布流程：同步版本号、维护 CHANGELOG、本地预检、规范化提交并推送 master、打 v\* 标签触发 CI 构建。当用户说「发版」「发布新版本」「打个 tag」「release」「发个版本」或要求升级版本号发布时使用。
-metadata:
-scope: project
---------------
+description: JavaBoot Launcher 项目专用版本发布流程：同步版本号、维护 CHANGELOG、本地预检、规范化提交并推送 master、打 v* 标签触发 CI 构建。当用户说「发版」「发布新版本」「打个 tag」「release」「发个版本」或要求升级版本号发布时使用。
+---
 
 # JavaBoot Launcher 版本发布技能
 
