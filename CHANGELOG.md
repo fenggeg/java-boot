@@ -5,7 +5,13 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.22.0...HEAD)
+## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.22.1...HEAD)
+
+## [0.22.1] - 2026-09-08
+
+### 修复
+
+- **运行中停止/重启按钮失效**：v0.22.0 将 `actionsDisabled` 误设为 `busy || isBusyStatus(status)`，而 `isBusyStatus` 把 `running` 也算作占用中，导致服务运行时停止/重启按钮虽显示却处于 disabled。现改为仅 `starting` / `recompiling` / `pulling` / `stopping` 或本地 IPC busy 时禁用
 
 ## [0.22.0] - 2026-09-08
 
