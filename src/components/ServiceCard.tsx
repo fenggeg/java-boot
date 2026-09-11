@@ -3,7 +3,7 @@ import {App, Dropdown, Switch, Tooltip} from "antd";
 import {Broom, Code, FolderOpen, More, Package, Play, Restart, Settings, Stop, Warning,} from "./Icons";
 import {useStore} from "../store";
 import type {Service} from "../types";
-import {STATUS_META, canRestartStatus, canStartStatus, canStopStatus, isBusyStatus} from "../types";
+import {STATUS_META, canRestartStatus, canStartStatus, canStopStatus, isBusyStatus, isTransientStatus} from "../types";
 import * as api from "../api";
 
 interface Props {
@@ -28,8 +28,8 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
   const showStop = canStopStatus(status);
   const showRestart = canRestartStatus(status);
   const [busy, setBusy] = useState(false);
-  // 过程中或本地 IPC busy：禁用启停，避免并发触发 placeholder 误清理
-  const actionsDisabled = busy || isBusyStatus(status);
+  // 仅「过程中」或本地 IPC busy 时禁用；running 本身必须可点停止/重启
+  const actionsDisabled = busy || isTransientStatus(status);
   const logBuf = useStore((s) => s.logs[service.id]);
   const hasUnread = logBuf?.hasUnread ?? false;
 
