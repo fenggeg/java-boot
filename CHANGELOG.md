@@ -5,12 +5,19 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.22.1...HEAD)
+## [Unreleased](https://github.com/fenggeg/java-boot/compare/v0.23.0...HEAD)
 
-### 移除
+## [0.23.0] - 2026-11-26
+
+### 变更
 
 - **编辑器模块整套移除**：删除 Monaco 多标签编辑器、项目文件浏览器（文件树 / Ctrl+P 快速打开 / 读写 / 重命名 / 复制 / 移动）与只读 Git 集成（gutter 变更标记 / Diff 对比 / blame / 文件树状态标记），前端与 Rust 后端对应命令、依赖与样式一并清理；日志区回归单栏。保留打包产物「打开目录」入口及更新弹窗的 Markdown 渲染
 - **清理死状态 `Pulling`**：前后端状态枚举、文案与色板中已无任何代码路径产出的「拉取中」状态
+- **命令层按职责拆模块**：`commands.rs` 拆为 project / service / process / config / daemon / tools / fs_util / util / run_data 九个子模块，对外路径不变
+- **错误结构化**：`AppError` 序列化为 `{kind, message}`，前端可据 kind 判断（如 cancelled 不再弹失败提示）
+- **工具探测优化**：JDK/Maven 探测期间不再持有缓存写锁，且 `detect_mavens` 复用已缓存的 JDK 结果，避免一次添加流程重复拉起 JVM
+- **快捷键与右键**：Ctrl+F 改为聚焦日志搜索框；输入框内保留原生右键菜单
+- **版本同步脚本**：新增 `npm run version:sync <x.y.z>`，一次同步 5 个发布文件
 
 ### 修复
 
@@ -18,14 +25,6 @@
 - **依赖链 / 批量启动 / 批量打包无视停止**：新增停止纪元，编排循环在每次迭代检测到停止即中止
 - **运行数据清理 panic**：`clear_tree` 在目录读取失败时调用 `unreachable!()` 占位函数，现改为静默跳过
 - **退出守卫误杀**：10 秒强制退出守卫改为可被正常退出流程取消，不再硬截断 `stop_all`
-
-### 变更
-
-- **命令层按职责拆模块**：`commands.rs` 拆为 project / service / process / config / daemon / tools / fs_util / util / run_data 九个子模块，对外路径不变
-- **错误结构化**：`AppError` 序列化为 `{kind, message}`，前端可据 kind 判断（如 cancelled 不再弹失败提示）
-- **工具探测优化**：JDK/Maven 探测期间不再持有缓存写锁，且 `detect_mavens` 复用已缓存的 JDK 结果，避免一次添加流程重复拉起 JVM
-- **快捷键与右键**：Ctrl+F 改为聚焦日志搜索框；输入框内保留原生右键菜单
-- **版本同步脚本**：新增 `npm run version:sync <x.y.z>`，一次同步 5 个发布文件
 
 ## [0.22.1] - 2026-09-08
 
