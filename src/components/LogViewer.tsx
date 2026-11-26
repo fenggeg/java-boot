@@ -304,6 +304,7 @@ export default function LogViewer({ serviceId }: Props) {
         <Input
           size="small"
           allowClear
+          data-log-search="1"
           prefix={<Search size={13} style={{ color: "var(--text-3)" }} />}
           placeholder={useRegex ? "正则搜索..." : "搜索日志..."}
           value={search}

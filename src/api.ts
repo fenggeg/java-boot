@@ -5,8 +5,6 @@ import type {
     BatchPackageResult,
     DaemonHello,
     DaemonProcessInfo,
-    FileContent,
-    FileEntry,
     JdkInfo,
     MavenInfo,
     PackageResult,
@@ -128,51 +126,11 @@ export const getDaemonHello = () =>
 export const reconcileDaemon = () =>
   invoke<DaemonProcessInfo[]>("daemon_reconcile");
 
-// ============================ Files（项目文件浏览/编辑） ============================
+// ============================ Util（文件系统） ============================
 
-export const listFiles = (projectId: string, path: string) =>
-  invoke<FileEntry[]>("list_files", { projectId, path });
-export const readProjectFile = (projectId: string, path: string) =>
-  invoke<FileContent>("read_project_file", { projectId, path });
-export const writeProjectFile = (
-  projectId: string,
-  path: string,
-  content: string,
-) =>
-  invoke<void>("write_project_file", { projectId, path, content });
-
-export const getFileAbsPath = (projectId: string, path: string) =>
-  invoke<string>("get_file_abs_path", { projectId, path });
-
-/// 重命名文件 / 目录，返回新相对路径
-export const fsRename = (projectId: string, path: string, newName: string) =>
-  invoke<string>("fs_rename", { projectId, path, newName });
-
-/// 复制文件 / 目录到目标目录，返回新路径
-export const fsCopyEntry = (projectId: string, srcPath: string, destDir: string) =>
-  invoke<string>("fs_copy_entry", { projectId, srcPath, destDir });
-
-/// 移动文件 / 目录到目标目录，返回新路径
-export const fsMoveEntry = (projectId: string, srcPath: string, destDir: string) =>
-  invoke<string>("fs_move_entry", { projectId, srcPath, destDir });
-
-/// 在系统文件管理器中定位该条目
-export const revealInFileManager = (projectId: string, path: string) =>
-  invoke<void>("reveal_in_file_manager", { projectId, path });
-
-/// 在系统文件管理器中定位显示指定绝对路径（不依赖项目根目录）
+/// 在系统文件管理器中定位显示指定绝对路径（打包产物 / target 目录）
 export const revealPathInFileManager = (path: string) =>
   invoke<void>("reveal_path_in_file_manager", { path });
-
-/** 项目内全量文件扁平条目（快速打开用，已排除依赖/构建目录与符号链接） */
-export interface FlatFile {
-  path: string;
-  name: string;
-}
-
-/// 扁平遍历项目内全部文件（快速打开数据源，上限 5 万条）
-export const walkFiles = (projectId: string) =>
-  invoke<FlatFile[]>("walk_files", { projectId });
 
 // ============================ Config ============================
 
@@ -217,4 +175,12 @@ export function toErrMsg(e: unknown): string {
     return String((e as { message: unknown }).message);
   }
   return String(e);
+}
+
+/** 后端主动取消的操作（用户点了停止）不算错误，避免弹出误导性的失败提示 */
+export function isCancelledError(e: unknown): boolean {
+  if (typeof e === "object" && e !== null && "kind" in e) {
+    if ((e as { kind?: unknown }).kind === "cancelled") return true;
+  }
+  return toErrMsg(e).includes("操作已取消");
 }

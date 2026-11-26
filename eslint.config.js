@@ -65,7 +65,7 @@ export default tseslint.config(
 
   // 配置文件规则
   {
-    files: ['*.ts', '*.mjs'],
+    files: ['*.ts', '*.mjs', 'scripts/**/*.mjs'],
     languageOptions: {
       ecmaVersion: 2022,
       globals: globals.node,

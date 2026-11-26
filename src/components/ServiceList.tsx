@@ -4,7 +4,6 @@ import {
     CaretDown,
     CaretRight,
     ChevronLeft,
-    File,
     Filter,
     FolderOpen,
     Layers,
@@ -27,7 +26,6 @@ interface Props {
   onAddProject: () => void;
   onAddService: () => void;
   onConfigService: (service: Service) => void;
-  onOpenFiles: (project: Project) => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
 }
@@ -51,7 +49,7 @@ const ServiceRow = memo(function ServiceRow({
   );
 });
 
-export default function ServiceList({ onAddProject, onAddService, onConfigService, onOpenFiles, collapsed: sidebarCollapsed, onToggleCollapse: onToggleSidebar }: Props) {
+export default function ServiceList({ onAddProject, onAddService, onConfigService, collapsed: sidebarCollapsed, onToggleCollapse: onToggleSidebar }: Props) {
   const projects = useStore((s) => s.projects);
   const services = useStore((s) => s.services);
   const runtimes = useStore((s) => s.runtimes);
@@ -359,16 +357,6 @@ export default function ServiceList({ onAddProject, onAddService, onConfigServic
                 style={isBusy ? { opacity: 0.4, cursor: "not-allowed" } : undefined}
               >
                 <Layers size={13} />
-              </button>
-            </Tooltip>
-            {/* 文件浏览器：与启动按钮同一层级，直接可见 */}
-            <Tooltip title="文件浏览器">
-              <button
-                className="icon-btn sm"
-                onClick={() => onOpenFiles(project)}
-                aria-label="文件浏览器"
-              >
-                <File size={13} />
               </button>
             </Tooltip>
             {/* 低频操作收纳到 More 下拉 */}

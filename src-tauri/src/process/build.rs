@@ -11,6 +11,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -71,9 +72,14 @@ fn run_mvn_once(
     cwd: &Path,
     env_cfg: &EnvConfig,
     compile_pid: CompilePidSlot,
+    cancel: Arc<AtomicBool>,
     app: AppHandle,
     service_id: String,
 ) -> std::io::Result<MvnRun> {
+    // 已取消则不再 spawn，避免 "stop 后编译又重新启动" 的竞态
+    if cancel.load(Ordering::Relaxed) {
+        return Err(cancelled_io_error());
+    }
     let mut cmd = std::process::Command::new(program);
     cmd.args(args);
     cmd.current_dir(cwd);
@@ -86,6 +92,13 @@ fn run_mvn_once(
     let mut child = cmd.spawn()?;
     let child_pid = child.id();
     *compile_pid.lock() = Some(child_pid);
+    // spawn 与登记 PID 之间也可能收到 stop：这里补一次检查，确保一定杀掉子进程。
+    if cancel.load(Ordering::Relaxed) {
+        kill_child(child_pid);
+        let _ = child.wait();
+        *compile_pid.lock() = None;
+        return Err(cancelled_io_error());
+    }
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -120,7 +133,7 @@ fn run_mvn_once(
     });
 
     // 给 wait 加 10 分钟超时，防止 Maven 卡死导致 spawn_blocking 线程池耗尽
-    let status = wait_with_timeout(&mut child, child_pid)?;
+    let status = wait_with_timeout(&mut child, child_pid, cancel)?;
     let _ = t_out.join();
     let _ = t_err.join();
     *compile_pid.lock() = None;
@@ -138,11 +151,12 @@ pub fn run_mvn_capture(
     cwd: &Path,
     env_cfg: &EnvConfig,
     compile_pid: CompilePidSlot,
+    cancel: Arc<AtomicBool>,
     app: AppHandle,
     service_id: String,
 ) -> std::io::Result<std::process::ExitStatus> {
     Ok(
-        run_mvn_once(program, args, cwd, env_cfg, compile_pid, app, service_id)?
+        run_mvn_once(program, args, cwd, env_cfg, compile_pid, cancel, app, service_id)?
             .status,
     )
 }
@@ -170,6 +184,7 @@ pub fn run_mvn_offline_first(
     cwd: &Path,
     env_cfg: &EnvConfig,
     compile_pid: CompilePidSlot,
+    cancel: Arc<AtomicBool>,
     app: AppHandle,
     service_id: String,
 ) -> std::io::Result<std::process::ExitStatus> {
@@ -182,11 +197,17 @@ pub fn run_mvn_offline_first(
         cwd,
         env_cfg,
         compile_pid.clone(),
+        cancel.clone(),
         app.clone(),
         service_id.clone(),
     )?;
     if first.status.success() {
         return Ok(first.status);
+    }
+    // 两次 mvn 之间 PID slot 短暂为空，stop() 无法杀到进程；
+    // 这里显式检查取消令牌，避免在线重试在 stop 之后继续跑。
+    if cancel.load(Ordering::Relaxed) {
+        return Err(cancelled_io_error());
     }
     if looks_like_offline_failure(&first.output) {
         emit_log_raw(
@@ -195,21 +216,29 @@ pub fn run_mvn_offline_first(
             "[mvn]",
             "[javaboot] 离线模式失败（本地仓库缺构件/元数据），回退在线模式重试...",
         );
-        let second =
-            run_mvn_once(program, args, cwd, env_cfg, compile_pid, app, service_id)?;
+        let second = run_mvn_once(program, args, cwd, env_cfg, compile_pid, cancel, app, service_id)?;
         return Ok(second.status);
     }
     Ok(first.status)
 }
 
-/// 带超时的 child.wait()，超时则强杀进程防止线程泄漏
-fn wait_with_timeout(child: &mut std::process::Child, pid: u32) -> std::io::Result<std::process::ExitStatus> {
+/// 带超时 + 可取消的 child.wait()，超时或被取消则强杀进程防止线程泄漏
+fn wait_with_timeout(
+    child: &mut std::process::Child,
+    pid: u32,
+    cancel: Arc<AtomicBool>,
+) -> std::io::Result<std::process::ExitStatus> {
     use std::time::{Duration, Instant};
     let deadline = Instant::now() + Duration::from_secs(600);
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return Ok(status),
             Ok(None) => {
+                if cancel.load(Ordering::Relaxed) {
+                    let _ = kill_child(pid);
+                    let _ = child.wait();
+                    return Err(cancelled_io_error());
+                }
                 if Instant::now() >= deadline {
                     // 超时：强杀进程树
                     let _ = kill_child(pid);
@@ -226,6 +255,10 @@ fn wait_with_timeout(child: &mut std::process::Child, pid: u32) -> std::io::Resu
             Err(e) => return Err(e),
         }
     }
+}
+
+fn cancelled_io_error() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Interrupted, "构建已取消")
 }
 
 /// 强杀进程树（委托 manager 的实现）

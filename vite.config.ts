@@ -24,9 +24,8 @@ export default defineConfig({
     target: "chrome105",
     minify: "esbuild",
     sourcemap: false,
-    // monaco（3.3MB，已 React.lazy 懒加载，不进首帧）与 antd（928KB，独立 vendor
-    // chunk 利于缓存）是有意保持的大 chunk；提高阈值避免误报，超出的才是真问题。
-    chunkSizeWarningLimit: 4000,
+    // antd 体积大但变化少，独立 vendor chunk 利于缓存；提高阈值避免误报。
+    chunkSizeWarningLimit: 1500,
     rollupOptions: {
       output: {
         manualChunks: {
@@ -36,8 +35,6 @@ export default defineConfig({
           react: ["react", "react-dom"],
           // Tauri API 层
           tauri: ["@tauri-apps/api", "@tauri-apps/plugin-dialog", "@tauri-apps/plugin-opener"],
-          // Monaco Editor 体积大且独立，独立 chunk 避免主包膨胀
-          monaco: ["monaco-editor", "@monaco-editor/react"],
         },
       },
     },

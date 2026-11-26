@@ -287,15 +287,6 @@ export function StatusDot({ color, live }: { color: string; live?: boolean }) {
   );
 }
 
-export function Edit({ size, ...rest }: IconProps) {
-  return (
-    <Svg size={size} {...rest}>
-      <path d="M4 20 L4 16.5 L16.5 4 L20 7.5 L7.5 20 Z" />
-      <path d="M14.5 6 L18.5 10" />
-    </Svg>
-  );
-}
-
 export function Check({ size, ...rest }: IconProps) {
   return (
     <Svg size={size} {...rest}>
@@ -364,26 +355,6 @@ export function ChevronLeft({ size, ...rest }: IconProps) {
   );
 }
 
-export function Commit({ size, ...rest }: IconProps) {
-  return (
-    <Svg size={size} {...rest}>
-      <circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none" />
-      <path d="M12 3 V9.5 M12 14.5 V21" />
-      <path d="M4 12 H9.5 M14.5 12 H20" />
-    </Svg>
-  );
-}
-
-export function Save({ size, ...rest }: IconProps) {
-  return (
-    <Svg size={size} {...rest}>
-      <path d="M5 4 H15 L20 9 V20 H5 Z" />
-      <path d="M8 4 V10 H16 V4" />
-      <path d="M8 20 V14 H16 V20" />
-    </Svg>
-  );
-}
-
 export function Pause({ size, ...rest }: IconProps) {
   return (
     <Svg size={size} {...rest}>
@@ -443,47 +414,6 @@ export function Copy({ size, ...rest }: IconProps) {
     <Svg size={size} {...rest}>
       <rect x="3" y="3" width="13" height="13" rx="2" />
       <path d="M8 8 H19 V20 H8" />
-    </Svg>
-  );
-}
-
-export function Scissors({ size, ...rest }: IconProps) {
-  return (
-    <Svg size={size} {...rest}>
-      <circle cx="6" cy="6" r="2.4" />
-      <circle cx="6" cy="18" r="2.4" />
-      <path d="M8.2 7.6 L19 18" />
-      <path d="M8.2 16.4 L19 6" />
-    </Svg>
-  );
-}
-
-export function ClipboardPaste({ size, ...rest }: IconProps) {
-  return (
-    <Svg size={size} {...rest}>
-      <rect x="5" y="4" width="14" height="17" rx="2" />
-      <path d="M9 4 V2.8 H15 V4" />
-      <path d="M9 11 H15 M9 15 H13" />
-    </Svg>
-  );
-}
-
-export function Image({ size, ...rest }: IconProps) {
-  return (
-    <Svg size={size} {...rest}>
-      <rect x="3" y="3" width="18" height="18" rx="2" />
-      <circle cx="8.5" cy="8.5" r="1.5" />
-      <path d="M21 15 L16 10 L5 21" />
-    </Svg>
-  );
-}
-
-export function Binary({ size, ...rest }: IconProps) {
-  return (
-    <Svg size={size} {...rest}>
-      <rect x="3" y="3" width="18" height="18" rx="2" />
-      <path d="M7 8 V12 M9 10 L5 10 M9 12 L5 12 M7 14 L7 16 M5 16 L9 16" />
-      <path d="M14 7 V17 M12 7 L16 7 M12 17 L16 17 M14 12 L14 12" />
     </Svg>
   );
 }

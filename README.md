@@ -1,6 +1,6 @@
 # JavaBoot Launcher
 
-**Windows 桌面端的 Spring Boot 多服务启动/管理器**，基于 Tauri 2 + React + Rust 实现。定位类似"轻量版 IDEA Services 面板"：从磁盘选择一个 Maven 聚合工程，一键识别、勾选、启动、停止、重编译多个 Spring Boot 服务，并集中查看日志、端口、CPU/内存；同时内置项目文件浏览器（浏览 / 编辑）、服务打包与一键更新。
+**Windows 桌面端的 Spring Boot 多服务启动/管理器**，基于 Tauri 2 + React + Rust 实现。定位类似"轻量版 IDEA Services 面板"：从磁盘选择一个 Maven 聚合工程，一键识别、勾选、启动、停止、重编译多个 Spring Boot 服务，并集中查看日志、端口、CPU/内存；同时支持服务打包与一键更新。
 
 > **仅支持 Spring Boot 项目。** 判定标准与 IDEA 一致：模块 `packaging` 为 `jar` / `war` **且** `src/main/java` 下存在带 `@SpringBootApplication` 注解的类。工具包 / 公共模块（无主类的 jar）不会出现在服务列表中。
 
@@ -58,22 +58,6 @@
 - 打包产物智能识别（排除 `*-sources.jar` / `*-javadoc.jar` / `original-*`，取最大文件），弹窗提供「打开目录」（资源管理器定位 jar）和「复制路径」
 - 服务卡片常驻**打开 target 目录**入口
 
-### 项目文件浏览器
-- **文件树**：懒加载 + 紧凑路径合并（`src/main/java` 单链目录折叠显示）
-- **快速打开（Ctrl+P）**：项目级文件名 / 路径过滤跳转面板，按文件名前缀 > 文件名包含 > 路径包含排序，↑↓ 选择、回车打开、Esc 关闭；后台 `walk_files` 拉取全量扁平文件列表（5 万条目 + 24 层深度上限防御 junction 循环），结果按 project_id 缓存（TTL 5 秒）
-- **Monaco 多标签编辑器**：替换原 Prism 手写高亮方案，内置语法高亮 / 行号 / 搜索（Ctrl+F）/ 代码折叠 / minimap / 括号配对着色 / sticky scroll；每个标签独立保存未保存内容（切换不丢编辑），脏标记圆点提示；切换标签时按 path 精确隔离滚动位置与 view state
-- **查看模式**：Markdown 支持预览 ↔ 编辑切换；其他文本文件直接在单页内编辑；GBK / 超大文件（>2MB）只读保护；图片预览、二进制文件识别
-- **右键菜单**：重命名、复制、粘贴、剪切、在文件管理器中显示（explorer 定位高亮）；支持目录间拖拽移动；同名粘贴自动生成 `(2)` 序号；标签栏右键支持关闭 / 关闭其他 / 关闭右侧 / 全部关闭、复制路径、重命名
-- **快捷键**：文件树 Ctrl+C / Ctrl+V 复制粘贴选中条目；编辑器内 Ctrl+F 搜索（上限 2MB，与可编辑范围对齐）
-
-### Git 集成（文件编辑器，只读）
-- **Gutter 变更标记**：行号旁绿（新增）/ 黄（修改）/ 红（删除）标记，含 minimap 与 overview ruler 着色；`git diff HEAD -U0` 解析 hunk（纯删除画在 `newStart+1` 行）；打字不重算 diff（decoration 锚点 stickiness 自动跟随），仅文件加载与 `git://changed` 事件时刷新
-- **Diff 对比面板**：工具栏 Diff 按钮打开并排独立面板，Monaco DiffEditor 对比 HEAD 版本（`git cat-file`）与当前缓冲区（实时跟随输入）
-- **文件树状态标记**：`git status --porcelain=v1 -z` 解析，未跟踪 / 新增 / 修改 / 删除 / 重命名以彩色圆点标注
-- **Blame 悬浮**：hover 行号显示提交摘要、作者、时间（`git blame --porcelain` 懒加载）
-- **删除代码内联查看**：点击删除标记，view zone 内联展示被删除的原始代码
-- **只读 & 安全**：全部 git 调用在 Rust 后端完成（`git_cli` 执行层 + `git_watcher` 监听），前端不直接执行 shell 命令；repoRoot canonicalize + filePath strip_prefix 校验 + 路径参数一律置于 `--` 分隔符之后，杜绝注入；`--no-optional-locks` 防止 status 写入 index 触发监听死循环；git 子进程并发上限 2；git 未安装显示轻量提示条、非 git 目录静默隐藏
-
 ### 环境与依赖探测
 - **JDK 自动探测**：覆盖系统 `JAVA_HOME` / PATH / scoop shims（记录 `current` 稳定路径，升级后自动跟随）/ IDEA「Download JDK」落点 `~/.jdks` / JetBrains SDK 注册表 `jdk.table.xml`（支持 `$USER_HOME$` 宏）/ IDE 自带 JBR；探测结果进程内缓存（RwLock，读锁快速路径 + 写锁双重检查）
 - **Maven 自动探测**：系统 `MAVEN_HOME` / PATH / scoop / IDEA 捆绑 maven3 / `~/.m2/wrapper/dists` 分发包
@@ -90,8 +74,8 @@
 - 多项目并存，每个项目可单独绑定 `JAVA_HOME` / `MAVEN_HOME`（覆盖系统 PATH）
 - 全局配置：端口刷新间隔、日志缓冲行数、编译失败是否停旧进程、dev_mode 懒加载开关、退出时是否停掉全部子进程等
 - **ErrorBoundary 自动恢复**：渲染错误时提供「尝试恢复」按钮重置组件状态（不刷新页面），最多自动恢复 2 次，超过后仅保留「重新加载」
-- **浏览器快捷键拦截**：拦截 Tauri WebView 原生刷新（Ctrl+R / F5）、缩放（Ctrl+±/0）、开发者工具（F12）、Backspace 后退；Ctrl+F 交由编辑器内置搜索
-- **深色模式**：亮 / 暗主题一键切换，Monaco 主题（`jb-light` / `jb-dark`）跟随
+- **浏览器快捷键拦截**：拦截 Tauri WebView 原生刷新（Ctrl+R / F5）、查找（Ctrl+F）、缩放（Ctrl+±/0）、开发者工具（F12）、Backspace 后退
+- **深色模式**：亮 / 暗主题一键切换
 
 ---
 
@@ -107,6 +91,10 @@
 - Node.js 18+
 - Rust stable（`rustup target add x86_64-pc-windows-msvc`）
 - VS Build Tools（Tauri Windows 打包依赖）
+
+> 单独运行 `cargo check` / `cargo test` 前需先构建 daemon 资源：
+> `cargo build --release -p javaboot-daemon --manifest-path src-tauri/Cargo.toml`。
+> `npm run tauri:build` 会自动通过 `beforeBuildCommand` 完成这一步。
 
 ---
 
@@ -127,7 +115,7 @@ npm run tauri:build
 1. **项目 → 添加项目**，选中根 `pom.xml` 或项目根目录
 2. Launcher 扫描后弹出模块树，勾选要托管的 Spring Boot 服务
 3. 每个服务可单独配置：`maven_opts`、`spring.profiles.active`、`dev_mode`、`auto_restart`、覆盖属性、环境变量、依赖
-4. 服务卡片上的文件夹图标打开**文件面板**（Ctrl+P 快速打开文件，Ctrl+F 编辑器内搜索）；卡片「更多」菜单可**打包**或**打开 target 目录**
+4. 服务卡片「更多」菜单可**打包**或**打开 target 目录**
 5. 顶栏「检查更新」可拉取最新版本
 
 ---
@@ -137,10 +125,6 @@ npm run tauri:build
 ```
 ├── src/                       # React 前端
 │   ├── components/
-│   │   ├── FilePanel.tsx      # 文件树 + 多标签编辑器 + 快速打开编排
-│   │   ├── FileTreeRow.tsx    # 递归树行组件 + FileTypeIcon + 拖拽合法性 / drop 高亮
-│   │   ├── QuickOpenPanel.tsx # Ctrl+P 快速打开面板
-│   │   ├── MonacoCodeEditor.tsx # Monaco 代码编辑器（语法高亮 / 搜索 / 折叠 / minimap）
 │   │   ├── LogViewer.tsx      # 日志虚拟列表 + 级别过滤 + 正则搜索
 │   │   ├── ServiceCard.tsx    # 服务卡片（启停 / 编译 / 打包 / 更多菜单）
 │   │   ├── ServiceList.tsx    # 服务列表 + 依赖编排
@@ -154,18 +138,12 @@ npm run tauri:build
 │   │   └── envVars.ts         # 环境变量 / 覆盖属性公共解析与序列化
 │   ├── api.ts                 # Tauri invoke 封装 + toErrMsg 错误归一化
 │   ├── update.ts              # 更新检查 + isGithubRelease 类型守卫
-│   ├── monaco-setup.ts        # Monaco Worker 入口（editor/json/css/html/ts）+ jb-light/jb-dark 主题
-│   ├── languages.ts           # 扩展名 → Monaco 语言 ID 映射
-│   ├── features/
-│   │   └── git/               # Git 集成（api 封装 / useGitGutter / DiffView 面板）
 │   ├── store.ts               # zustand（含 HMR 清理）
 │   ├── theme.ts               # 亮 / 暗主题
 │   └── types.ts
 ├── src-tauri/
 │   ├── src/
-│   │   ├── commands.rs        # Tauri 命令入口（project / service / process / files / config / git / util）
-│   │   ├── git_cli.rs         # Git CLI 执行层（GitRunner + 固定前缀 + `--` 分隔）+ 纯函数解析器（hunk / status-z / blame / 路径校验）+ 单元测试
-│   │   ├── git_watcher.rs     # git 目录监听（notify-debouncer-full + hash 去重防死循环 + git://changed 推送）
+│   │   ├── commands.rs        # Tauri 命令入口（project / service / process / config / util）
 │   │   ├── db/                # SQLite (rusqlite + r2d2 连接池) - schema/models/mod，PRAGMA user_version 幂等迁移
 │   │   ├── pom/               # Maven pom 解析 + SpringBoot 识别（module 路径越界校验）
 │   │   ├── process/
@@ -177,7 +155,7 @@ npm run tauri:build
 │   │   │   └── job.rs         # Windows Job Object 封装
 │   │   ├── ipc.rs             # daemon IPC 客户端（TCP 连接 / 握手 / 请求响应 / 事件转发）
 │   │   ├── port/              # 端口占用扫描（噪声端口过滤）
-│   │   ├── project_fs.rs      # 项目文件浏览/读写/重命名/复制/移动/资源管理器定位/walk_files
+│   │   ├── project_fs.rs      # 在系统文件管理器中定位路径（打包产物 / target 目录）
 │   │   ├── watcher.rs         # 文件变更监听（notify）+ 模块脏标记 + worker panic 重建（指数退避）
 │   │   ├── update.rs          # 应用自更新（下载白名单 / 安装包校验 / 取消令牌）
 │   │   └── util.rs            # 通用工具（junction 解析、输出解码等）
@@ -212,10 +190,9 @@ A：当前只测过 Windows。macOS / Linux 上 Job Object、`taskkill` 路径�
 
 | 层 | 组件 |
 |---|---|
-| 前端 | React 18 + antd 5 + zustand + Vite 5 + TypeScript + Monaco Editor（语法高亮 / 搜索 / 折叠 / minimap）+ react-markdown |
+| 前端 | React 18 + antd 5 + zustand + Vite 5 + TypeScript + react-markdown |
 | 桥接 | Tauri 2 (IPC / 事件) |
-| 后端 | Rust (tokio, rusqlite + r2d2, sysinfo, notify + notify-debouncer-full, parking_lot, once_cell, quick-xml, reqwest, encoding_rs, windows crate) |
-| Git 集成 | git CLI（只读：status / diff / cat-file / blame），Rust 端统一执行 + 路径校验 + `--` 分隔防注入 |
+| 后端 | Rust (tokio, rusqlite + r2d2, sysinfo, notify, parking_lot, once_cell, quick-xml, reqwest, encoding_rs, windows crate) |
 | 存储 | SQLite（用户配置目录），`PRAGMA user_version` 幂等迁移 |
 | 平台 | Windows（Job Object + CREATE_NEW_PROCESS_GROUP） |
 

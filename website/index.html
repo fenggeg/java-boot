@@ -108,7 +108,7 @@
             <article class="capability-card"><p>Build Strategies</p><h3>三档编译，启动更快</h3><span>Skip / CompileCurrent / CompileAll 按源码 mtime 与 classpath 缓存决策；离线优先 Maven 调用，弱网环境显著提速，改代码自动升档重编译。</span></article>
             <article class="capability-card"><p>Daemon Runtime</p><h3>独立守护，UI 崩溃也不丢服务</h3><span>java 进程的 spawn、日志、退出监控与 CPU/内存指标下沉到常驻 daemon；Launcher 重启后对账恢复，Job Object 防止残留子进程。</span></article>
             <article class="capability-card"><p>Logs & Metrics</p><h3>日志聚合与端口监控</h3><span>stdout/stderr 分流、级别过滤、正则高亮、虚拟滚动；端口占用扫描与冲突高亮，CPU / 内存实时展示。</span></article>
-            <article class="capability-card"><p>File & Git</p><h3>内置编辑器与只读 Git</h3><span>Monaco 多标签编辑、Ctrl+P 快速打开；gutter 变更标记、Diff 对比、blame 悬浮——全部 git 调用在 Rust 后端完成，只读不改仓库。</span></article>
+            <article class="capability-card"><p>Package & Update</p><h3>打包与自更新</h3><span>mvn clean package 生成可执行 fat jar，产物路径一键定位；应用内置更新检查、下载进度与安全校验，新版本不漏掉。</span></article>
             <article class="capability-card"><p>Windows Native</p><h3>为本地联调场景打磨</h3><span>Tauri 2 + Rust + SQLite；环境变量按项目/服务注入，支持打包 fat jar 与应用自更新，贴合 Windows 开发习惯。</span></article>
           </div>
         </section>
@@ -132,8 +132,8 @@
               <p>多 Tab 日志、级别过滤、搜索跳转、跟随滚动；Started ... in ... 自动标记 running。</p>
             </article>
             <article class="preview-card">
-              <h3>文件 Dock</h3>
-              <p>日志与文件浏览器分屏并存，编辑器 Dock 一键展开；Monaco 语法高亮与 Git Diff 同屏。</p>
+              <h3>打包产物</h3>
+              <p>服务卡片「更多」菜单一键打包，生成可执行 jar；完成后弹窗展示产物路径并支持打开目录。</p>
             </article>
           </div>
         </section>

@@ -28,8 +28,11 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
   const showStop = canStopStatus(status);
   const showRestart = canRestartStatus(status);
   const [busy, setBusy] = useState(false);
-  // 仅「过程中」或本地 IPC busy 时禁用；running 本身必须可点停止/重启
+  // 停止单独管理：编译/启动过程中必须仍能点「停止」来中止流程，
+  // busy 只禁用启动/重启/编译/打包等操作按钮。
+  const [stopBusy, setStopBusy] = useState(false);
   const actionsDisabled = busy || isTransientStatus(status);
+  const stopDisabled = stopBusy || status === "stopping";
   const logBuf = useStore((s) => s.logs[service.id]);
   const hasUnread = logBuf?.hasUnread ?? false;
 
@@ -43,21 +46,22 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
       await api.startServiceWithDependencies(service.id);
       // 启动是异步的，真实结果通过 service://status 事件通知
     } catch (e) {
-      message.error(`启动失败: ${api.toErrMsg(e)}`);
+      if (!api.isCancelledError(e)) message.error(`启动失败: ${api.toErrMsg(e)}`);
     } finally {
       setBusy(false);
     }
   };
 
   const handleStop = async () => {
-    if (busy) return;
-    setBusy(true);
+    // 不再受 busy 限制：编译/启动中的进程必须能被强行停止
+    if (stopBusy) return;
+    setStopBusy(true);
     try {
       await api.stopService(service.id);
     } catch (e) {
-      message.error(`停止失败: ${api.toErrMsg(e)}`);
+      if (!api.isCancelledError(e)) message.error(`停止失败: ${api.toErrMsg(e)}`);
     } finally {
-      setBusy(false);
+      setStopBusy(false);
     }
   };
 
@@ -68,7 +72,7 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
       await api.restartService(service.id);
       // 重启是异步的，真实结果通过事件通知
     } catch (e) {
-      message.error(`重启失败: ${api.toErrMsg(e)}`);
+      if (!api.isCancelledError(e)) message.error(`重启失败: ${api.toErrMsg(e)}`);
     } finally {
       setBusy(false);
     }
@@ -81,7 +85,7 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
       await api.compileAndStart(service.id);
       // 编译并启动是异步的
     } catch (e) {
-      message.error(`编译失败: ${api.toErrMsg(e)}`);
+      if (!api.isCancelledError(e)) message.error(`编译失败: ${api.toErrMsg(e)}`);
     } finally {
       setBusy(false);
     }
@@ -94,7 +98,7 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
       await api.recompileAndStart(service.id);
       // 重新编译并启动是异步的
     } catch (e) {
-      message.error(`重新编译失败: ${api.toErrMsg(e)}`);
+      if (!api.isCancelledError(e)) message.error(`重新编译失败: ${api.toErrMsg(e)}`);
     } finally {
       setBusy(false);
     }
@@ -105,7 +109,7 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
       await api.cleanService(service.id);
       message.success(`${service.name}: 清理完成`);
     } catch (e) {
-      message.error(`清理失败: ${api.toErrMsg(e)}`);
+      if (!api.isCancelledError(e)) message.error(`清理失败: ${api.toErrMsg(e)}`);
     }
   };
 
@@ -143,7 +147,7 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
         message.success(`${service.name}: 打包完成（未找到 jar 产物，可能是聚合模块）`);
       }
     } catch (e) {
-      message.error(`打包失败: ${api.toErrMsg(e)}`);
+      if (!api.isCancelledError(e)) message.error(`打包失败: ${api.toErrMsg(e)}`);
     } finally {
       setBusy(false);
     }
@@ -353,7 +357,7 @@ function ServiceCardInner({ service, active, onConfig }: Props) {
             <button
               className="icon-btn sm danger"
               onClick={handleStop}
-              disabled={actionsDisabled}
+              disabled={stopDisabled}
               aria-label="停止"
               style={{ color: "var(--red)" }}
             >

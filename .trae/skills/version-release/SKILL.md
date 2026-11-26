@@ -69,7 +69,7 @@ npm run build         # 0 警告
 
 # src-tauri 目录
 cargo check
-cargo test            # 全绿（含 git_cli 集成测试）
+cargo test            # 全绿
 ```
 
 任一项失败即停止，修复后再继续。

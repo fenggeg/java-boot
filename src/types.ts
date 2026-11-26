@@ -71,21 +71,19 @@ export type ServiceStatus =
   | "starting"
   | "running"
   | "recompiling"
-  | "pulling"
   | "error"
   | "stopping";
 
-/** 过程中状态：启动/编译/拉取/停止未完成，UI 不应再触发新的启停 */
+/** 过程中状态：启动/编译/停止未完成。注意：停止操作本身仍需可用（可中止编译/启动） */
 export function isTransientStatus(status: ServiceStatus): boolean {
   return (
     status === "starting" ||
     status === "recompiling" ||
-    status === "pulling" ||
     status === "stopping"
   );
 }
 
-/** 「在跑」语义：进程/编排流程占用中（含 starting/recompiling/pulling/stopping） */
+/** 「在跑」语义：进程/编排流程占用中（含 starting/recompiling/stopping） */
 export function isBusyStatus(status: ServiceStatus): boolean {
   return status === "running" || isTransientStatus(status);
 }
@@ -100,8 +98,7 @@ export function canStopStatus(status: ServiceStatus): boolean {
   return (
     status === "running" ||
     status === "starting" ||
-    status === "recompiling" ||
-    status === "pulling"
+    status === "recompiling"
   );
 }
 
@@ -171,27 +168,6 @@ export interface ScannedModule {
   children: ScannedModule[];
 }
 
-// ============================ Files（项目文件浏览/编辑） ============================
-
-/** 项目根目录下的单层目录条目 */
-export interface FileEntry {
-  name: string;
-  /** 相对项目根的路径（/ 分隔，空串为根目录） */
-  path: string;
-  is_dir: boolean;
-  size: number;
-}
-
-/** 项目文件内容 + 可编辑性 */
-export interface FileContent {
-  content: string;
-  /** "utf-8" | "gbk" | "unknown" */
-  encoding: string;
-  /** 非 UTF-8 或超大文件时为 true（只读预览，防止写坏编码） */
-  readonly: boolean;
-  size: number;
-}
-
 export interface LogLine {
   service_id: string;
   source: string; // [app] [mvn]
@@ -218,7 +194,6 @@ export const STATUS_META: Record<
   starting: { label: "启动中", color: "processing", dot: "#d97706", live: true },
   running: { label: "运行中", color: "success", dot: "#16a34a", live: true },
   recompiling: { label: "重新编译中", color: "processing", dot: "#d97706", live: true },
-  pulling: { label: "拉取中", color: "processing", dot: "#7c3aed", live: true },
   error: { label: "异常", color: "error", dot: "#dc2626", live: true },
   stopping: { label: "停止中", color: "processing", dot: "#d97706", live: true },
 };

@@ -6,8 +6,6 @@
 pub mod commands;
 pub mod db;
 pub mod error;
-pub mod git_cli;
-pub mod git_watcher;
 pub mod ipc;
 pub mod pom;
 pub mod port;
@@ -79,31 +77,41 @@ pub fn run() {
                 // 退出竞态中可能恰好触发 trigger_restart → compile_and_start
                 // → stop 杀进程，导致 stop_all_on_exit=false 时服务被误杀。
                 watcher::get_watch_manager().unwatch_all();
-                // 停止 git 监听，避免退出时仍有 git 子进程/事件线程运行
-                git_watcher::get_git_watch_manager().unwatch_all();
                 let cfg = db::load_config().unwrap_or_default();
+                // 退出守卫的可取消标志：正常退出流程走到 app.exit 后置 true，
+                // 守卫线程发现后自行结束，不再强制杀进程。
+                let exited = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 if cfg.stop_all_on_exit {
                     let app_handle = window.app_handle().clone();
+                    let exited = exited.clone();
                     api.prevent_close();
                     tauri::async_runtime::spawn(async move {
                         process::get_manager().stop_all(app_handle.clone()).await.ok();
                         // 用 app.exit 走正常退出流程，确保 Drop/清理执行
+                        exited.store(true, std::sync::atomic::Ordering::Relaxed);
                         app_handle.exit(0);
                     });
                 } else {
                     let app_handle = window.app_handle().clone();
+                    let exited = exited.clone();
                     api.prevent_close();
                     tauri::async_runtime::spawn(async move {
+                        exited.store(true, std::sync::atomic::Ordering::Relaxed);
                         app_handle.exit(0);
                     });
                 }
-                // 兜底：如果 async task panic 或 runtime 提前关闭，
-                // app.exit(0) 不会执行，窗口被永久阻止关闭。
-                // 10 秒后无论如何强制退出进程，避免用户只能通过任务管理器强杀。
-                std::thread::spawn(|| {
-                    std::thread::sleep(std::time::Duration::from_secs(10));
-                    log::warn!("退出超时，强制退出进程");
-                    std::process::exit(0);
+                // 兜底：如果 async task panic 或 runtime 提前关闭，app.exit(0) 不会执行，
+                // 窗口会被永久阻止关闭。10 秒后强制退出；但正常退出路径会先取消守卫，
+                // 避免 stop_all 耗时较长时被硬截断（服务清理不完整）。
+                std::thread::spawn(move || {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                    while !exited.load(std::sync::atomic::Ordering::Relaxed) {
+                        if std::time::Instant::now() >= deadline {
+                            log::warn!("退出超时，强制退出进程");
+                            std::process::exit(0);
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
                 });
             }
         })
@@ -205,17 +213,6 @@ pub fn run() {
             // 初始化文件监听
             let handle = app.handle().clone();
             watcher::get_watch_manager().refresh_all(&handle);
-            // 初始化 git 监听（防死循环；非 git 仓库静默跳过）。
-            // 注意：在 spawn_blocking 中异步执行——refresh_all 会对每个项目
-            // 同步拉起 git 子进程（rev-parse），若在 setup 主线程同步执行会
-            // 阻塞首帧渲染（项目多 / 路径慢时表现为启动白屏久）。
-            {
-                let handle2 = app.handle().clone();
-                git_watcher::get_git_watch_manager().init(&handle2);
-                tauri::async_runtime::spawn_blocking(|| {
-                    git_watcher::get_git_watch_manager().refresh_all();
-                });
-            }
             // 清理旧版本遗留的 <working_dir>/.javaboot 目录（后台执行，不阻塞启动）
             tauri::async_runtime::spawn_blocking(|| {
                 process::get_manager().cleanup_legacy_javaboot_dirs();
@@ -288,17 +285,8 @@ pub fn run() {
             commands::get_runtime,
             commands::get_all_runtimes,
             commands::refresh_port_conflicts,
-            // files
-            commands::list_files,
-            commands::read_project_file,
-            commands::write_project_file,
-            commands::get_file_abs_path,
-            commands::fs_rename,
-            commands::fs_copy_entry,
-            commands::fs_move_entry,
-            commands::reveal_in_file_manager,
+            // util（文件系统）
             commands::reveal_path_in_file_manager,
-            commands::walk_files,
             // config
             commands::get_config,
             commands::save_config,
@@ -323,12 +311,6 @@ pub fn run() {
             commands::daemon_recovery_ignore,
             commands::daemon_scan_start,
             commands::daemon_scan_cancel,
-            // git（只读集成）
-            commands::git_availability,
-            commands::git_status_all,
-            commands::git_file_diff,
-            commands::git_file_at_head,
-            commands::git_blame,
             // update
             update::download_update,
             update::install_update,

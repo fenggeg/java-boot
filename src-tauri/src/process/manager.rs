@@ -23,7 +23,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -188,6 +188,9 @@ pub(crate) fn kill_process_tree_by_pid(pid: u32) {
 pub struct ProcessManager {
     handles: PMutex<HashMap<String, ProcessHandle>>,
     runtimes: PMutex<HashMap<String, ServiceRuntime>>,
+    /// 停止纪元：每次 stop / stop_all 递增。多服务编排（依赖链、批量启动）
+    /// 在开始时快照此值，发现变化即中止，避免「点了停止，编排仍在继续启动」。
+    stop_epoch: AtomicU64,
 }
 
 impl ProcessManager {
@@ -195,7 +198,38 @@ impl ProcessManager {
         Self {
             handles: PMutex::new(HashMap::new()),
             runtimes: PMutex::new(HashMap::new()),
+            stop_epoch: AtomicU64::new(0),
         }
+    }
+
+    /// 为「编译 / 清理 / 打包」等长时间操作取得取消令牌与 Maven PID 槽位。
+    /// 复用同一个 placeholder handle，使 stop() 能通过 kill_token 中止整条流程，
+    /// 而不仅仅是杀掉当前 Maven 子进程。
+    fn operation_slot(&self, service_id: &str) -> (CompilePidSlot, Arc<AtomicBool>) {
+        let mut handles = self.handles.lock();
+        let handle = handles
+            .entry(service_id.to_string())
+            .or_insert_with(ProcessHandle::placeholder);
+        (handle.compile_pid.clone(), handle.kill_token.clone())
+    }
+
+    /// 统一处理「用户中途停止」：清掉编译期 placeholder、恢复状态并推送日志。
+    fn cancelled(&self, app: &AppHandle, service_id: &str, restore: ServiceStatus) -> AppError {
+        {
+            let mut handles = self.handles.lock();
+            if let Some(h) = handles.get(service_id) {
+                if h.pid == 0 {
+                    handles.remove(service_id);
+                }
+            }
+        }
+        self.set_status(app, service_id, restore);
+        Self::emit_log(app, service_id, LogSource::Mvn, "[javaboot] 操作已取消");
+        AppError::Cancelled(service_id.to_string())
+    }
+
+    fn stop_requested(&self, epoch: u64) -> bool {
+        self.stop_epoch.load(Ordering::SeqCst) != epoch
     }
 
     /// 清理旧版本遗留的 `<working_dir>/.javaboot` 目录。
@@ -601,7 +635,7 @@ impl ProcessManager {
     /// 是否处于「占用中」：进程存活，或 runtime 仍处于启动/编译/拉取等过程态。
     ///
     /// - `Stopped` / `Error` 一律 false（即使 handle 尚未被 reaper 清理）
-    /// - 仅有 placeholder（pid==0）且状态为 Starting/Recompiling/Pulling → true（防重复 start）
+    /// - 仅有 placeholder（pid==0）且状态为 Starting/Recompiling → true（防重复 start）
     /// - `Stopping` 不算 running（自动重启应跳过），但由 prepare_start 单独闸控
     pub fn is_running(&self, service_id: &str) -> bool {
         let status = self.runtimes.lock().get(service_id).map(|r| r.status);
@@ -634,7 +668,6 @@ impl ProcessManager {
             Some(ServiceStatus::Running)
                 | Some(ServiceStatus::Starting)
                 | Some(ServiceStatus::Recompiling)
-                | Some(ServiceStatus::Pulling)
         )
     }
 
@@ -1122,14 +1155,14 @@ impl ProcessManager {
                 try_cleanup!(
                     self.run_maven_build(
                         &app, &service, &env_cfg, &working_dir, &program, &base_args,
-                        &compile_pid, strategy, false,
+                        &compile_pid, &kill_token, strategy, false,
                     ).await
                 );
             } else {
                 match self
                     .build_and_resolve_classpath(
                         &app, &service, &env_cfg, &working_dir, &program, &base_args,
-                        &compile_pid, &strategy, &cache, &cache_key,
+                        &compile_pid, &kill_token, &strategy, &cache, &cache_key,
                     )
                     .await
                 {
@@ -1147,7 +1180,7 @@ impl ProcessManager {
                         try_cleanup!(
                             self.run_maven_build(
                                 &app, &service, &env_cfg, &working_dir, &program, &base_args,
-                                &compile_pid, strategy, false,
+                                &compile_pid, &kill_token, strategy, false,
                             ).await
                         );
                     }
@@ -1178,7 +1211,7 @@ impl ProcessManager {
                     let cp = try_cleanup!(
                         self.resolve_classpath_via_mvn(
                             &app, &service, &env_cfg, &working_dir, &program, &base_args,
-                            &compile_pid, &cache, &cache_key,
+                            &compile_pid, &kill_token, &cache, &cache_key,
                         ).await
                     );
                     Self::assemble_classpath(&working_dir, &env_cfg, &cp)
@@ -1188,7 +1221,7 @@ impl ProcessManager {
             let cp = try_cleanup!(
                 self.resolve_classpath_via_mvn(
                     &app, &service, &env_cfg, &working_dir, &program, &base_args,
-                    &compile_pid, &cache, &cache_key,
+                    &compile_pid, &kill_token, &cache, &cache_key,
                 ).await
             );
             Self::assemble_classpath(&working_dir, &env_cfg, &cp)
@@ -1491,6 +1524,7 @@ impl ProcessManager {
         program: &str,
         base_args: &[String],
         compile_pid: &CompilePidSlot,
+        cancel: &Arc<AtomicBool>,
         strategy: BuildStrategy,
         clean: bool,
     ) -> AppResult<()> {
@@ -1541,6 +1575,7 @@ impl ProcessManager {
         let cwd_clone = cwd.clone();
         let env_cfg_clone = env_cfg.clone();
         let compile_pid_clone = compile_pid.clone();
+        let cancel_clone = cancel.clone();
         let app_clone = app.clone();
         let sid_clone = service.id.clone();
 
@@ -1551,6 +1586,7 @@ impl ProcessManager {
                 &cwd_clone,
                 &env_cfg_clone,
                 compile_pid_clone,
+                cancel_clone,
                 app_clone,
                 sid_clone,
             )
@@ -1582,6 +1618,7 @@ impl ProcessManager {
         program: &str,
         base_args: &[String],
         compile_pid: &CompilePidSlot,
+        cancel: &Arc<AtomicBool>,
         cache: &ClasspathCache,
         cache_key: &str,
     ) -> AppResult<String> {
@@ -1611,6 +1648,7 @@ impl ProcessManager {
         let program = program.to_string();
         let env_cfg_clone = env_cfg.clone();
         let compile_pid_clone = compile_pid.clone();
+        let cancel_clone = cancel.clone();
         let app_clone = app.clone();
         let sid_clone = service.id.clone();
 
@@ -1621,6 +1659,7 @@ impl ProcessManager {
                 &cwd,
                 &env_cfg_clone,
                 compile_pid_clone,
+                cancel_clone,
                 app_clone,
                 sid_clone,
             )
@@ -1674,6 +1713,7 @@ impl ProcessManager {
         program: &str,
         base_args: &[String],
         compile_pid: &CompilePidSlot,
+        cancel: &Arc<AtomicBool>,
         strategy: &BuildStrategy,
         cache: &ClasspathCache,
         cache_key: &str,
@@ -1721,6 +1761,7 @@ impl ProcessManager {
         let program = program.to_string();
         let env_cfg_clone = env_cfg.clone();
         let compile_pid_clone = compile_pid.clone();
+        let cancel_clone = cancel.clone();
         let app_clone = app.clone();
         let sid_clone = service.id.clone();
 
@@ -1731,6 +1772,7 @@ impl ProcessManager {
                 &cwd,
                 &env_cfg_clone,
                 compile_pid_clone,
+                cancel_clone,
                 app_clone,
                 sid_clone,
             )
@@ -1849,6 +1891,8 @@ impl ProcessManager {
     }
 
     pub async fn stop(&self, app: AppHandle, service_id: &str) -> AppResult<()> {
+        // 推进停止纪元：正在运行的依赖链 / 批量启动会因此中止
+        self.stop_epoch.fetch_add(1, Ordering::SeqCst);
         // P4：daemon 托管的服务，停止交给 daemon（进程/管道/退出由 daemon 承担）
         if super::delegate::daemon_online(&app) && super::delegate::is_managed(service_id) {
             Self::emit_log(&app, service_id, LogSource::Mvn, "[javaboot] 停止（daemon 托管）...");
@@ -2054,16 +2098,17 @@ impl ProcessManager {
         );
 
         if strategy != BuildStrategy::Skip {
-            // 从 handles 中获取或创建 compile_pid，确保 stop() 能中断编译进程
-            let compile_pid = {
-                let mut handles = self.handles.lock();
-                let handle = handles.entry(service.id.clone()).or_insert_with(ProcessHandle::placeholder);
-                handle.compile_pid.clone()
-            };
-            self.run_maven_build(
+            // 复用同一个 placeholder 的取消令牌：stop() 不仅杀 Maven 子进程，
+            // 还会 signal 令牌，让整条 compile_and_start 链路在此终止。
+            let (compile_pid, cancel) = self.operation_slot(&service.id);
+            let result = self.run_maven_build(
                 app, service, &env_cfg, &working_dir, &program, &base_args,
-                &compile_pid, strategy, false,
-            ).await?;
+                &compile_pid, &cancel, strategy, false,
+            ).await;
+            if cancel.load(Ordering::Relaxed) {
+                return Err(self.cancelled(app, &service.id, ServiceStatus::Stopped));
+            }
+            result?;
         }
         Ok(())
     }
@@ -2097,16 +2142,23 @@ impl ProcessManager {
             "[javaboot] 重新编译：强制 clean compile（忽略缓存）",
         );
 
-        // 从 handles 中获取或创建 compile_pid，确保 stop() 能中断编译进程
-        let compile_pid = {
-            let mut handles = self.handles.lock();
-            let handle = handles.entry(service.id.clone()).or_insert_with(ProcessHandle::placeholder);
-            handle.compile_pid.clone()
-        };
-        self.run_maven_build(
+        // 复用同一个 placeholder 的取消令牌：stop() 会 signal 它，
+        // 使编译中断后不再继续 start()，避免「停止后进程又起来」。
+        let (compile_pid, cancel) = self.operation_slot(&service.id);
+        let result = self.run_maven_build(
             &app, &service, &env_cfg, &working_dir, &program, &base_args,
-            &compile_pid, strategy, true,
-        ).await?;
+            &compile_pid, &cancel, strategy, true,
+        ).await;
+        if cancel.load(Ordering::Relaxed) {
+            return Err(self.cancelled(&app, &service.id, ServiceStatus::Stopped));
+        }
+        result?;
+
+        // 编译已结束、尚未进入 start()：这里再检查一次取消信号。
+        // 之后到 self.start() 之间没有 await 点，stop() 无法插入，不存在竞态窗口。
+        if cancel.load(Ordering::Relaxed) {
+            return Err(self.cancelled(&app, &service.id, ServiceStatus::Stopped));
+        }
 
         // 编译成功，启动（mvn clean 已删除 target，classpath 缓存文件也随之删除）
         // 关键：清理编译期间插入的 placeholder handle（pid==0, kill_token=false），
@@ -2169,17 +2221,14 @@ impl ProcessManager {
             &format!("[javaboot] {}: mvn {}", action_desc, args.join(" ")),
         );
 
-        // 获取 compile_pid 用于中断
-        let compile_pid = {
-            let mut handles = self.handles.lock();
-            let handle = handles.entry(service.id.clone()).or_insert_with(ProcessHandle::placeholder);
-            handle.compile_pid.clone()
-        };
+        // 获取 compile_pid + 取消令牌，让 stop() 能中止整个流程
+        let (compile_pid, cancel) = self.operation_slot(&service.id);
 
         let program = program.to_string();
         let cwd_clone = cwd.clone();
         let env_cfg_clone = env_cfg.clone();
         let compile_pid_clone = compile_pid.clone();
+        let cancel_clone = cancel.clone();
         let app_clone = app.clone();
         let sid_clone = service.id.clone();
 
@@ -2190,11 +2239,16 @@ impl ProcessManager {
                 &cwd_clone,
                 &env_cfg_clone,
                 compile_pid_clone,
+                cancel_clone,
                 app_clone,
                 sid_clone,
             )
         })
-        .await
+        .await;
+        if cancel.load(Ordering::Relaxed) {
+            return Err(self.cancelled(&app, &service.id, ServiceStatus::Stopped));
+        }
+        let status = status
         .map_err(|e| AppError::Process(format!("Maven 任务失败: {}", e)))?
         .map_err(|e| AppError::Process(format!("Maven 执行失败: {}", e)))?;
 
@@ -2298,17 +2352,14 @@ impl ProcessManager {
             &format!("[javaboot] {}: mvn {}", action_desc, args.join(" ")),
         );
 
-        // 获取 compile_pid 用于中断
-        let compile_pid = {
-            let mut handles = self.handles.lock();
-            let handle = handles.entry(service.id.clone()).or_insert_with(ProcessHandle::placeholder);
-            handle.compile_pid.clone()
-        };
+        // 获取 compile_pid + 取消令牌，让 stop() 能中止整个流程
+        let (compile_pid, cancel) = self.operation_slot(&service.id);
 
         let program = program.to_string();
         let cwd_clone = cwd.clone();
         let env_cfg_clone = env_cfg.clone();
         let compile_pid_clone = compile_pid.clone();
+        let cancel_clone = cancel.clone();
         let app_clone = app.clone();
         let sid_clone = service.id.clone();
 
@@ -2319,11 +2370,18 @@ impl ProcessManager {
                 &cwd_clone,
                 &env_cfg_clone,
                 compile_pid_clone,
+                cancel_clone,
                 app_clone,
                 sid_clone,
             )
         })
-        .await
+        .await;
+        if cancel.load(Ordering::Relaxed) {
+            // 取消只可能来自用户点停止（含停止全部）：此时服务确实已被停止，
+            // 不能恢复到打包前的 Running，否则 UI 会显示一个已死进程仍在运行。
+            return Err(self.cancelled(&app, &service.id, ServiceStatus::Stopped));
+        }
+        let status = status
         .map_err(|e| AppError::Process(format!("Maven 任务失败: {}", e)))?
         .map_err(|e| AppError::Process(format!("Maven 执行失败: {}", e)))?;
 
@@ -2404,6 +2462,7 @@ impl ProcessManager {
         }
 
         let total = service_ids.len();
+        let epoch = self.stop_epoch.load(Ordering::SeqCst);
         // 推送开始日志到第一个服务面板（让用户看到批量进度）
         Self::emit_log(
             &app,
@@ -2413,6 +2472,10 @@ impl ProcessManager {
         );
 
         for (idx, sid) in service_ids.iter().enumerate() {
+            if self.stop_requested(epoch) {
+                Self::emit_log_static(&app, sid, "[javaboot]", "[javaboot] 批量打包已被停止中止");
+                break;
+            }
             let service = match db::get_service(sid) {
                 Ok(s) => s,
                 Err(e) => {
@@ -2455,6 +2518,7 @@ impl ProcessManager {
 
     /// 停止所有运行中的服务（真正并行：每个 stop 独立 spawn 到 tokio runtime）
     pub async fn stop_all(&self, app: AppHandle) -> AppResult<()> {
+        self.stop_epoch.fetch_add(1, Ordering::SeqCst);
         let ids: Vec<String> = self.handles.lock().keys().cloned().collect();
         let count = ids.len();
         if count == 0 {
@@ -2494,6 +2558,7 @@ impl ProcessManager {
         service: Service,
     ) -> AppResult<()> {
         let target_id = service.id.clone();
+        let epoch = self.stop_epoch.load(Ordering::SeqCst);
 
         // 1. 递归收集所有依赖
         let all_deps = db::list_all_dependencies()?;
@@ -2501,6 +2566,9 @@ impl ProcessManager {
 
         // 2. 按拓扑序启动
         for sid in &sorted {
+            if self.stop_requested(epoch) {
+                return Err(self.cancelled(&app, &target_id, ServiceStatus::Stopped));
+            }
             // 跳过目标服务本身（在循环结束后由调用方启动）
             if sid == &target_id {
                 continue;
@@ -2530,6 +2598,9 @@ impl ProcessManager {
             // 等待依赖变为 Running（轮询 runtime status）
 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(DEPENDENCY_START_TIMEOUT_SECS);
                 loop {
+                    if self.stop_requested(epoch) {
+                        return Err(self.cancelled(&app, &target_id, ServiceStatus::Stopped));
+                    }
                     let rt = self.get_runtime(sid);
                 if rt.status == ServiceStatus::Running {
                     break;
@@ -2557,6 +2628,9 @@ let deadline = std::time::Instant::now() + std::time::Duration::from_secs(DEPEND
         }
 
         // 3. 启动目标服务本身
+        if self.stop_requested(epoch) {
+            return Err(self.cancelled(&app, &target_id, ServiceStatus::Stopped));
+        }
         Self::emit_log(
             &app,
             &target_id,
@@ -2583,6 +2657,7 @@ let deadline = std::time::Instant::now() + std::time::Duration::from_secs(DEPEND
         if service_ids.is_empty() {
             return Ok(result);
         }
+        let epoch = self.stop_epoch.load(Ordering::SeqCst);
 
         // 收集所有服务的递归依赖关系
         let all_deps = db::list_all_dependencies()?;
@@ -2604,6 +2679,10 @@ let deadline = std::time::Instant::now() + std::time::Duration::from_secs(DEPEND
 
         // 按拓扑序逐个启动
         for sid in &sorted {
+            if self.stop_requested(epoch) {
+                Self::emit_log_static(&app, sid, "[javaboot]", "[javaboot] 批量启动已被停止中止");
+                break;
+            }
             // 已在运行则跳过
             if self.is_running(sid) {
                 result.skipped.push(sid.clone());
@@ -2631,6 +2710,10 @@ let deadline = std::time::Instant::now() + std::time::Duration::from_secs(DEPEND
                     let deadline = std::time::Instant::now()
 + std::time::Duration::from_secs(DEPENDENCY_START_TIMEOUT_SECS);
                         loop {
+                            if self.stop_requested(epoch) {
+                                Self::emit_log_static(&app, sid, "[javaboot]", "[javaboot] 批量启动已被停止中止");
+                                return Ok(result);
+                            }
                             let rt = self.get_runtime(sid);
                         if rt.status == ServiceStatus::Running {
                             result.succeeded.push(sid.clone());

@@ -2,7 +2,7 @@
 
 > 方向：**Vercel / Stripe 式「工程极简」**（工程控制台，不是 Apple 生活方式软件）  
 > 替换对象：现有 Apple HIG（毛玻璃 / 大圆角 / 多彩 glow / 弹簧动效）  
-> 范围：桌面端主界面（TopBar · 侧栏 · 日志 · 编辑器 Dock · Modal/Drawer）
+> 范围：桌面端主界面（TopBar · 侧栏 · 日志 · Modal/Drawer）
 
 ---
 
@@ -25,7 +25,7 @@
 |----|-----|
 | 产品 | JavaBoot Launcher（Tauri 2 + React + antd 5） |
 | 用户 | 本机跑多 Spring Boot 服务的后端/全栈开发者 |
-| 主场景 | 看日志、启停服务、开文件/Diff、盯端口与异常 |
+| 主场景 | 看日志、启停服务、盯端口与异常 |
 | 非场景 | 营销落地页、消费级内容流、需要「可爱」的场景 |
 | 现状基线 | `src/styles/tokens.css`（Apple HIG）+ `src/theme-tokens.ts`（antd） |
 
@@ -129,7 +129,6 @@ Scale（紧凑桌面）：
 | running | 实心 `--green`（可 1.2s 微弱 pulse，仅圆点） |
 | starting / recompiling / stopping | `--orange` |
 | error | `--red` |
-| pulling | `--purple` |
 
 侧栏服务行：**默认无彩色底**；error 行可用 `border-left: 2px solid red` 或整行极淡 `rgba(220,38,38,0.04)`。
 
@@ -158,7 +157,7 @@ Scale（紧凑桌面）：
 
 ## 5. Voice & Tone
 
-- UI 文案：短、工程化（「停止全部」「端口冲突」「收起编辑器」）
+- UI 文案：短、工程化（「停止全部」「端口冲突」「全部启动」）
 - 空态：一句话 + 主 CTA，无营销口号
 - 错误：原因优先，少感叹号
 
@@ -170,7 +169,7 @@ Scale（紧凑桌面）：
 - 消灭组件内硬编码 `#0071e3` / `rgba(0,0,0,0.06)` hover，改 `var(--*)`
 - antd `ConfigProvider`：`borderRadius: 4`，colorPrimary → `#0070f3` / dark `#3291ff`
 - 毛玻璃相关类（`--surface-blur`、`backdrop-filter`）迁移期可保留变量但 **UI 不再引用**
-- 分屏/Dock 行为不变，只改视觉 token 与表面材质
+- 布局行为不变，只改视觉 token 与表面材质
 
 ---
 

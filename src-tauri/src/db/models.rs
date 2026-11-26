@@ -50,7 +50,6 @@ pub enum ServiceStatus {
     Starting,
     Running,
     Recompiling,
-    Pulling,
     Error,
     Stopping,
 }
@@ -62,7 +61,6 @@ impl ServiceStatus {
             ServiceStatus::Starting => "启动中",
             ServiceStatus::Running => "运行中",
             ServiceStatus::Recompiling => "重新编译中",
-            ServiceStatus::Pulling => "拉取中",
             ServiceStatus::Error => "异常",
             ServiceStatus::Stopping => "停止中",
         }

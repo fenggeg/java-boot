@@ -16,7 +16,19 @@ import "./styles.css";
 // 所有模块顶层 DOM 操作统一移入 useEffect，确保在 React 生命周期内执行。
 function useGlobalKeyGuard() {
   useEffect(() => {
-    const onContextMenu = (e: MouseEvent) => e.preventDefault();
+    // 只在非输入控件上禁用原生右键菜单，输入框/文本选择区保留复制粘贴能力。
+    const onContextMenu = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
+      e.preventDefault();
+    };
     document.addEventListener("contextmenu", onContextMenu);
 
     const onKeyDown = (e: KeyboardEvent) => {
@@ -30,9 +42,13 @@ function useGlobalKeyGuard() {
         return;
       }
 
-      // 查找：Ctrl+F — 仅 preventDefault，不阻断传播
+      // 查找：Ctrl+F — 聚焦日志搜索框，替代被禁用的 WebView 原生查找
       if (ctrl && !e.altKey && k === "f") {
         e.preventDefault();
+        e.stopPropagation();
+        document
+          .querySelector<HTMLInputElement>('[data-log-search="1"]')
+          ?.focus();
         return;
       }
 
